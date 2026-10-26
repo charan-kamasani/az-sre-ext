@@ -1028,9 +1028,52 @@ def _validate_global_settings_shape(parsed):
             raise CLIError("--value.approvalExpirationSetting.approvalExpirationInMinutes must be a number.")
 
 
+def _validate_plugin_marketplaces_shape(parsed):
+    """Confirmed via AAPT-SREAgent-ControlPlane's Agents.http worked example
+    and a real base64-decoded payload; live create/show round-trip against
+    a test agent confirmed the shape passes service-side validation (it
+    fails later at Kubernetes provisioning in this test environment, which
+    is an infra limitation, not a shape problem)."""
+    if not isinstance(parsed, dict):
+        raise CLIError("--value for --extension-type pluginMarketplaces must be a JSON object.")
+    if "sourceType" in parsed and not isinstance(parsed["sourceType"], str):
+        raise CLIError("--value.sourceType must be a string (e.g. \"github\").")
+    if "sourceUrl" in parsed and not isinstance(parsed["sourceUrl"], str):
+        raise CLIError("--value.sourceUrl must be a string.")
+    if "owner" in parsed:
+        owner = parsed["owner"]
+        if not isinstance(owner, dict) or ("name" in owner and not isinstance(owner["name"], str)):
+            raise CLIError("--value.owner must be a JSON object with a string 'name'.")
+    if "description" in parsed and not isinstance(parsed["description"], str):
+        raise CLIError("--value.description must be a string.")
+
+
+def _validate_plugin_installations_shape(parsed):
+    """Confirmed via a real live create/show round-trip against a test
+    agent (Agents.http's worked example payload), which the service
+    accepted and echoed back enriched with defaults (autoUpdate,
+    mcpConnectorStatus, source.credentials/ref/sha/url)."""
+    if not isinstance(parsed, dict):
+        raise CLIError("--value for --extension-type pluginInstallations must be a JSON object.")
+    if "marketplaceName" in parsed and not isinstance(parsed["marketplaceName"], str):
+        raise CLIError("--value.marketplaceName must be a string.")
+    if "pluginName" in parsed and not isinstance(parsed["pluginName"], str):
+        raise CLIError("--value.pluginName must be a string.")
+    if "source" in parsed:
+        source = parsed["source"]
+        if not isinstance(source, dict):
+            raise CLIError("--value.source must be a JSON object (e.g. {\"type\": \"relative\", \"repo\": \"owner/repo\"}).")
+        if "type" in source and not isinstance(source["type"], str):
+            raise CLIError("--value.source.type must be a string.")
+        if "repo" in source and not isinstance(source["repo"], str):
+            raise CLIError("--value.source.repo must be a string.")
+
+
 EXTENSION_VALUE_VALIDATORS = {
     "commonPrompts": _validate_common_prompts_shape,
     "globalSettings": _validate_global_settings_shape,
+    "pluginMarketplaces": _validate_plugin_marketplaces_shape,
+    "pluginInstallations": _validate_plugin_installations_shape,
 }
 
 

@@ -420,6 +420,84 @@ class GlobalSettingsShapeValidationTests(unittest.TestCase):
         self.assertIn("approvalExpirationInMinutes must be a number", str(raised.exception))
 
 
+class PluginMarketplacesShapeValidationTests(unittest.TestCase):
+    """--extension-type pluginMarketplaces' inner shape is confirmed via
+    AAPT-SREAgent-ControlPlane's Agents.http worked example (a real
+    base64-decoded payload) plus a live create round-trip against a real
+    test agent: the service accepted the payload past its own validation
+    (it later failed at Kubernetes provisioning in that environment, an
+    infra limitation unrelated to the payload shape)."""
+
+    def test_accepts_the_real_confirmed_example_payload(self):
+        raw = json.dumps({
+            "sourceType": "github",
+            "sourceUrl": "owner/repo",
+            "owner": {"name": "Test Owner"},
+            "description": "Test marketplace",
+        })
+        encoded = _encode_extension_value(raw, "pluginMarketplaces")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_non_object_value(self):
+        raw = json.dumps(["not", "an", "object"])
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "pluginMarketplaces")
+        self.assertIn("must be a JSON object", str(raised.exception))
+
+    def test_rejects_non_string_source_type(self):
+        raw = json.dumps({"sourceType": 123})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "pluginMarketplaces")
+        self.assertIn("sourceType must be a string", str(raised.exception))
+
+    def test_rejects_owner_without_string_name(self):
+        raw = json.dumps({"owner": {"name": 123}})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "pluginMarketplaces")
+        self.assertIn("owner must be a JSON object with a string 'name'", str(raised.exception))
+
+
+class PluginInstallationsShapeValidationTests(unittest.TestCase):
+    """--extension-type pluginInstallations' inner shape is confirmed via a
+    REAL live create/show round-trip against a test agent: the service
+    accepted this exact payload (sourced from Agents.http's worked example)
+    and echoed it back enriched with server-side defaults (autoUpdate,
+    mcpConnectorStatus, source.credentials/ref/sha/url)."""
+
+    def test_accepts_the_real_confirmed_example_payload(self):
+        raw = json.dumps({
+            "marketplaceName": "test-marketplace",
+            "pluginName": "azure-kubernetes",
+            "source": {"type": "relative", "repo": "owner/repo"},
+        })
+        encoded = _encode_extension_value(raw, "pluginInstallations")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_non_object_value(self):
+        raw = json.dumps(["not", "an", "object"])
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "pluginInstallations")
+        self.assertIn("must be a JSON object", str(raised.exception))
+
+    def test_rejects_non_string_plugin_name(self):
+        raw = json.dumps({"pluginName": 123})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "pluginInstallations")
+        self.assertIn("pluginName must be a string", str(raised.exception))
+
+    def test_rejects_non_object_source(self):
+        raw = json.dumps({"source": "not-an-object"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "pluginInstallations")
+        self.assertIn("source must be a JSON object", str(raised.exception))
+
+    def test_rejects_non_string_source_repo(self):
+        raw = json.dumps({"source": {"repo": 123}})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "pluginInstallations")
+        self.assertIn("source.repo must be a string", str(raised.exception))
+
+
 class ExtensionTypeEnumTests(unittest.TestCase):
     """Mirrors AgentExtensionsApiService.GetExtensionTypes() exactly (the
     canonical ApiType/ExtensionType pairs) -- a drift here means the CLI's
