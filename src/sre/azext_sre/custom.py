@@ -57,6 +57,10 @@ from .aaz.latest.app.agent import Show as _GeneratedShow
 from .aaz.latest.app.agent import Start as _GeneratedStart
 from .aaz.latest.app.agent import Stop as _GeneratedStop
 from .aaz.latest.app.agent import Update as _GeneratedUpdate
+from .aaz.latest.app.agent.connector import Create as _GeneratedConnectorCreate
+from .aaz.latest.app.agent.connector import Update as _GeneratedConnectorUpdate
+from .aaz.latest.app.agent.connector import Show as _GeneratedConnectorShow
+from .aaz.latest.app.agent.connector import List as _GeneratedConnectorList
 
 logger = get_logger(__name__)
 
@@ -260,6 +264,156 @@ class Update(_ModelProviderArgMixin, _GeneratedUpdate):
     """Update an SRE Agent."""
 
     _args_schema = None
+
+
+# Real wire values confirmed live (running notes section 1a): "Kusto" covers
+# Azure Data Explorer/App Insights/Log Analytics (differentiated by
+# --data-source endpoint, not a separate type value), "Mcp" covers generic
+# MCP-compatible connectors (PagerDuty/ServiceNow/Datadog/Splunk/etc.),
+# "Outlook", "Teams". Same friendly-name-vs-wire-value problem as
+# --model-provider: the swagger types this as a bare string, so the generated
+# arg accepts anything -- we tighten it here without touching the generated
+# file.
+DATA_CONNECTOR_TYPES = {
+    "kusto": "Kusto",
+    "mcp": "Mcp",
+    "outlook": "Outlook",
+    "teams": "Teams",
+}
+
+
+def _normalize_data_connector_type(value):
+    if value is None:
+        return value
+    normalized = DATA_CONNECTOR_TYPES.get(str(value).strip().lower())
+    if normalized is None:
+        raise ValueError(
+            "--data-connector-type must be one of: "
+            + ", ".join(sorted(DATA_CONNECTOR_TYPES))
+            + f" (got '{value}')."
+        )
+    return normalized
+
+
+class _DataConnectorTypeArgMixin:
+    """Shared --data-connector-type help/validation for connector create and update.
+
+    Mirrors _ModelProviderArgMixin above: the generated schema types
+    data_connector_type as a bare AAZStrArg (the swagger models it as
+    `string`, not an enum). We tighten it here without touching the
+    generated file: real values are case-insensitively accepted and
+    normalized to the exact wire casing the service expects.
+    """
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        data_connector_type = getattr(schema, "data_connector_type", None)
+        if data_connector_type is not None:
+            data_connector_type._help = (
+                "Type of the data connector. Real API values are 'Kusto' "
+                "(covers Azure Data Explorer, App Insights, and Log "
+                "Analytics -- differentiated by --data-source, not a "
+                "separate type), 'Mcp' (PagerDuty/ServiceNow/Datadog/Splunk/"
+                "etc.), 'Outlook', 'Teams'. Case-insensitive."
+            )
+        return schema
+
+    def pre_operations(self):
+        args = self.ctx.args
+        data_connector_type = getattr(args, "data_connector_type", None)
+        if has_value(data_connector_type):
+            args.data_connector_type = _normalize_data_connector_type(
+                data_connector_type.to_serialized_data()
+            )
+        super().pre_operations()
+
+
+@register_command("sre agent connector create")
+class ConnectorCreate(_DataConnectorTypeArgMixin, _GeneratedConnectorCreate):
+    """Create an Agent Connector."""
+
+    _args_schema = None
+
+
+@register_command("sre agent connector update")
+class ConnectorUpdate(_DataConnectorTypeArgMixin, _GeneratedConnectorUpdate):
+    """Update an Agent Connector."""
+
+    _args_schema = None
+
+
+# Consent-flow surfacing (issue #10). Confirmed via direct inspection of
+# AAPT-SREAgent-ControlPlane src/WebApi/Views/Version20261101Preview/
+# DataConnectorView.cs (SetCommonPropertiesFromModel, lines 176-182) and
+# src/ApiResources/DataModels/McpEntraOAuth/McpEntraConnectorReference.cs:
+# for an EntraOAuth-authenticated Mcp connector, the ARM response's
+# properties.extendedProperties dict always contains "authType":
+# "EntraOAuth", plus an "entraOAuth" key that is null until the user
+# completes the separate browser OAuth consent flow (handled by a
+# different, non-ARM service -- src/AuthenticationEndpoint, route "sso",
+# Mise-authenticated -- not something the CLI calls directly), and a
+# McpEntraConnectorReference JSON object (ConnectorName/Endpoint/ClientId/
+# Profile/Principal/etc., via ToPublicJson()) once consent is granted.
+# This lets the CLI report consent status purely from data already on the
+# existing ARM connector resource -- no new data-plane call needed.
+def _connector_consent_status(extended_properties):
+    if not isinstance(extended_properties, dict):
+        return None
+    auth_type = extended_properties.get("authType")
+    if not isinstance(auth_type, str) or auth_type.strip().lower() != "entraoauth":
+        return None
+    return "Consented" if extended_properties.get("entraOAuth") else "PendingConsent"
+
+
+def _annotate_connector_consent_status(connector):
+    """Add a CLI-only consentStatus field to a connector response dict,
+    computed from properties.extendedProperties.{authType,entraOAuth}.
+    No-ops (leaves the dict unchanged) for connectors that are not
+    EntraOAuth-authenticated -- e.g. Kusto/Outlook/Teams connectors, or
+    Mcp connectors using a different auth type, have no consent step.
+    """
+    if not isinstance(connector, dict):
+        return connector
+    extended_properties = connector.get("extendedProperties")
+    if not isinstance(extended_properties, dict):
+        properties = connector.get("properties")
+        if isinstance(properties, dict):
+            extended_properties = properties.get("extendedProperties")
+    status = _connector_consent_status(extended_properties)
+    if status is not None:
+        connector["consentStatus"] = status
+    return connector
+
+
+@register_command("sre agent connector show")
+class ConnectorShow(_GeneratedConnectorShow):
+    """Show the details of an Agent Connector, including OAuth consent
+    status (consentStatus: Consented/PendingConsent) for EntraOAuth-backed
+    Mcp connectors."""
+
+    _args_schema = None
+
+    def _output(self, *args, **kwargs):
+        result = super()._output(*args, **kwargs)
+        return _annotate_connector_consent_status(result)
+
+
+@register_command("sre agent connector list")
+class ConnectorList(_GeneratedConnectorList):
+    """List an SRE Agent's Connectors, including OAuth consent status
+    (consentStatus: Consented/PendingConsent) for EntraOAuth-backed Mcp
+    connectors."""
+
+    _args_schema = None
+
+    def _output(self, *args, **kwargs):
+        result = super()._output(*args, **kwargs)
+        if isinstance(result, dict) and isinstance(result.get("value"), list):
+            result["value"] = [
+                _annotate_connector_consent_status(item) for item in result["value"]
+            ]
+        return result
 
 
 @register_command("sre agent show")
@@ -732,22 +886,120 @@ def _extension_type_arg():
     )
 
 
-def _encode_extension_value(raw_value):
+# Per-extension-type inner JSON shape, confirmed where noted. The control-
+# plane repo's own route (AgentExtensionsApiController.cs) is a pure
+# base64 pass-through with zero shape validation -- it never tells us if
+# a payload is malformed until the data-plane cluster rejects it. We
+# tighten client-side only for shapes we've actually confirmed from real
+# source, to fail fast without inventing shapes for types we haven't
+# verified (see issue #18 -- confirmed: pluginMarketplaces, commonPrompts,
+# globalSettings; ~9 of 12 ready types still unconfirmed).
+#
+# commonPrompts: confirmed via
+# DebugApp/Client/ModelPromptsViewer.tsx's own TypeScript prop type
+# (`commonPrompts?: string | Array<{ name: string; content: string }>`),
+# which is how the control-plane team's own debug UI renders this exact
+# extension's value back out.
+def _validate_common_prompts_shape(parsed):
+    if not isinstance(parsed, list):
+        raise CLIError(
+            "--value for --extension-type commonPrompts must be a JSON "
+            "array of {\"name\": ..., \"content\": ...} objects (confirmed "
+            "via the control-plane debug UI's ModelPromptsViewer)."
+        )
+    for idx, item in enumerate(parsed):
+        if not isinstance(item, dict) or "name" not in item or "content" not in item:
+            raise CLIError(
+                f"--value[{idx}] for --extension-type commonPrompts must be "
+                "an object with 'name' and 'content' string fields."
+            )
+
+
+# globalSettings: confirmed via a REAL end-to-end round-trip integration
+# test (not a pass-through mock) --
+# Tests.Integration/Version20261101Preview/GlobalSettingsExtensionTests.cs,
+# "Configured" const (lines 32-37) -- the control-plane team's own test
+# payload that is base64-encoded, PUT, decoded server-side, and asserted
+# byte-for-byte equal on GET/list. All fields are optional (the test also
+# exercises "{}" as valid), so we only type-check fields if present.
+def _validate_global_settings_shape(parsed):
+    if not isinstance(parsed, dict):
+        raise CLIError(
+            "--value for --extension-type globalSettings must be a JSON "
+            "object (confirmed via GlobalSettingsExtensionTests.cs's "
+            "real round-trip test payload)."
+        )
+
+    def _require_str_list(obj, key, path):
+        if key not in obj:
+            return
+        value = obj[key]
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise CLIError(f"{path}.{key} must be a JSON array of strings.")
+
+    if "toolPermissions" in parsed:
+        tp = parsed["toolPermissions"]
+        if not isinstance(tp, dict):
+            raise CLIError("--value.toolPermissions must be a JSON object with optional 'allow'/'ask'/'deny' arrays.")
+        for key in ("allow", "ask", "deny"):
+            _require_str_list(tp, key, "--value.toolPermissions")
+
+    def _require_name_enabled_list(obj, key):
+        if key not in obj:
+            return
+        value = obj[key]
+        if not isinstance(value, list):
+            raise CLIError(f"--value.{key} must be a JSON array of {{\"name\": ..., \"enabled\": ...}} objects.")
+        for idx, item in enumerate(value):
+            if not isinstance(item, dict) or "name" not in item or "enabled" not in item:
+                raise CLIError(f"--value.{key}[{idx}] must be an object with 'name' and 'enabled' fields.")
+            if not isinstance(item["name"], str) or not isinstance(item["enabled"], bool):
+                raise CLIError(f"--value.{key}[{idx}].name must be a string and .enabled must be a boolean.")
+
+    _require_name_enabled_list(parsed, "toolStatuses")
+    _require_name_enabled_list(parsed, "skillStatuses")
+
+    if "customInstructions" in parsed and not isinstance(parsed["customInstructions"], str):
+        raise CLIError("--value.customInstructions must be a string.")
+
+    if "approvalExpirationSetting" in parsed:
+        aes = parsed["approvalExpirationSetting"]
+        if not isinstance(aes, dict):
+            raise CLIError("--value.approvalExpirationSetting must be a JSON object.")
+        if "enabled" in aes and not isinstance(aes["enabled"], bool):
+            raise CLIError("--value.approvalExpirationSetting.enabled must be a boolean.")
+        if "approvalExpirationInMinutes" in aes and not isinstance(aes["approvalExpirationInMinutes"], (int, float)):
+            raise CLIError("--value.approvalExpirationSetting.approvalExpirationInMinutes must be a number.")
+
+
+EXTENSION_VALUE_VALIDATORS = {
+    "commonPrompts": _validate_common_prompts_shape,
+    "globalSettings": _validate_global_settings_shape,
+}
+
+
+def _encode_extension_value(raw_value, extension_type=None):
     """Base64-encode a user-supplied JSON string for properties.value, the
     wire format confirmed in Agents.http (e.g. pluginMarketplaces' example
     body). Validates the input is JSON first so typos fail fast client-side
     instead of as an opaque base64 blob the service will silently accept
-    but the data plane can't parse.
+    but the data plane can't parse. Additionally applies a per-type shape
+    check for any extension_type we have a confirmed real shape for (see
+    EXTENSION_VALUE_VALIDATORS) -- unconfirmed types are passed through
+    with only the baseline JSON-syntax check.
     """
     import base64
 
     try:
-        json.loads(raw_value)
+        parsed = json.loads(raw_value)
     except (TypeError, ValueError) as ex:
         raise CLIError(
             f"--value must be a JSON document (it is base64-encoded and sent "
             f"as-is to the agent's data plane): {ex}"
         ) from ex
+    validator = EXTENSION_VALUE_VALIDATORS.get(extension_type)
+    if validator is not None:
+        validator(parsed)
     return base64.b64encode(raw_value.encode("utf-8")).decode("ascii")
 
 
@@ -822,7 +1074,14 @@ class ExtensionCreate(AAZCommand):
                 "Extension configuration as a JSON document (the CLI "
                 "base64-encodes it for you -- the wire format is "
                 "properties.value = base64(json), confirmed via the "
-                "internal control-plane repo's Agents.http examples)."
+                "internal control-plane repo's Agents.http examples). For "
+                "--extension-type commonPrompts, the confirmed shape is a "
+                "JSON array of {\"name\": ..., \"content\": ...} objects. "
+                "For globalSettings, the confirmed shape is a JSON object "
+                "with optional toolPermissions/toolStatuses/skillStatuses/"
+                "customInstructions/approvalExpirationSetting fields. "
+                "Other extension types' inner shapes are not yet "
+                "confirmed -- see issue #18."
             ),
             required=True,
         )
@@ -852,7 +1111,7 @@ class ExtensionCreate(AAZCommand):
         resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
         body = {
             "type": f"microsoft.app/agents/{extension_type}",
-            "properties": {"value": _encode_extension_value(raw_value)},
+            "properties": {"value": _encode_extension_value(raw_value, extension_type)},
         }
         result = _arm_request(self.cli_ctx, "PUT", resource_id, EXTENSION_API_VERSION, body=body)
         return _decode_extension_envelope(result)

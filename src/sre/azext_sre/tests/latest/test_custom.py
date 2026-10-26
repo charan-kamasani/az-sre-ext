@@ -31,10 +31,13 @@ from azext_sre.custom import (
     ExtensionShow,
     GrantAccess,
     UpdateNetwork,
+    _annotate_connector_consent_status,
     _arg_value,
+    _connector_consent_status,
     _decode_extension_envelope,
     _encode_extension_value,
     _extension_type_arg,
+    _normalize_data_connector_type,
     _normalize_model_provider,
 )
 
@@ -77,6 +80,89 @@ class ModelProviderNormalizationTests(unittest.TestCase):
     def test_rejects_unknown_value(self):
         with self.assertRaises(ValueError):
             _normalize_model_provider("openai")
+
+
+class DataConnectorTypeNormalizationTests(unittest.TestCase):
+    """--data-connector-type accepts real API values case-insensitively and
+    rejects anything outside the known set (same pattern as
+    --model-provider -- see _DataConnectorTypeArgMixin docstring)."""
+
+    def test_accepts_known_values_case_insensitively(self):
+        self.assertEqual(_normalize_data_connector_type("kusto"), "Kusto")
+        self.assertEqual(_normalize_data_connector_type("KUSTO"), "Kusto")
+        self.assertEqual(_normalize_data_connector_type("Mcp"), "Mcp")
+        self.assertEqual(_normalize_data_connector_type("mcp"), "Mcp")
+        self.assertEqual(_normalize_data_connector_type("outlook"), "Outlook")
+        self.assertEqual(_normalize_data_connector_type("TEAMS"), "Teams")
+
+    def test_none_passes_through_unchanged(self):
+        self.assertIsNone(_normalize_data_connector_type(None))
+
+    def test_rejects_unknown_value(self):
+        with self.assertRaises(ValueError) as raised:
+            _normalize_data_connector_type("pagerduty")
+        self.assertIn(
+            "--data-connector-type must be one of", str(raised.exception)
+        )
+
+
+class ConnectorConsentStatusTests(unittest.TestCase):
+    """Consent surfacing (issue #10): confirmed via
+    AAPT-SREAgent-ControlPlane's DataConnectorView.cs and
+    McpEntraConnectorReference.cs that an EntraOAuth-backed Mcp connector's
+    properties.extendedProperties always has authType=="EntraOAuth", plus
+    an entraOAuth key that is null until browser OAuth consent completes."""
+
+    def test_pending_consent_when_entra_oauth_is_null(self):
+        self.assertEqual(
+            _connector_consent_status({"authType": "EntraOAuth", "entraOAuth": None}),
+            "PendingConsent",
+        )
+
+    def test_consented_when_entra_oauth_is_populated(self):
+        self.assertEqual(
+            _connector_consent_status(
+                {"authType": "EntraOAuth", "entraOAuth": {"connectorName": "x"}}
+            ),
+            "Consented",
+        )
+
+    def test_auth_type_is_case_insensitive(self):
+        self.assertEqual(
+            _connector_consent_status({"authType": "entraoauth", "entraOAuth": None}),
+            "PendingConsent",
+        )
+
+    def test_none_for_non_entra_connectors(self):
+        self.assertIsNone(_connector_consent_status({"authType": "ApiKey"}))
+        self.assertIsNone(_connector_consent_status({}))
+        self.assertIsNone(_connector_consent_status(None))
+
+    def test_annotate_adds_consent_status_from_flattened_extended_properties(self):
+        connector = {
+            "name": "my-mcp-connector",
+            "extendedProperties": {"authType": "EntraOAuth", "entraOAuth": None},
+        }
+        annotated = _annotate_connector_consent_status(connector)
+        self.assertEqual(annotated["consentStatus"], "PendingConsent")
+
+    def test_annotate_falls_back_to_nested_properties_extended_properties(self):
+        connector = {
+            "name": "my-mcp-connector",
+            "properties": {
+                "extendedProperties": {"authType": "EntraOAuth", "entraOAuth": {"a": 1}}
+            },
+        }
+        annotated = _annotate_connector_consent_status(connector)
+        self.assertEqual(annotated["consentStatus"], "Consented")
+
+    def test_annotate_no_ops_for_non_entra_connector(self):
+        connector = {"name": "my-kusto-connector", "dataConnectorType": "Kusto"}
+        annotated = _annotate_connector_consent_status(connector)
+        self.assertNotIn("consentStatus", annotated)
+
+    def test_annotate_passes_through_non_dict(self):
+        self.assertEqual(_annotate_connector_consent_status("not a dict"), "not a dict")
 
 
 class ArgValueTests(unittest.TestCase):
@@ -200,6 +286,101 @@ class ExtensionValueCodecTests(unittest.TestCase):
             _decode_extension_envelope({"properties": "not a dict either"}),
             {"properties": "not a dict either"},
         )
+
+
+class CommonPromptsShapeValidationTests(unittest.TestCase):
+    """--extension-type commonPrompts' inner shape is confirmed via the
+    control-plane repo's own debug UI (DebugApp/Client/ModelPromptsViewer.tsx
+    prop type: Array<{ name: string; content: string }>). Other extension
+    types are intentionally NOT shape-checked yet -- their real payloads
+    are still unconfirmed (issue #18)."""
+
+    def test_accepts_well_formed_common_prompts_array(self):
+        raw = json.dumps([{"name": "greeting", "content": "Hello!"}])
+        encoded = _encode_extension_value(raw, "commonPrompts")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_non_array_common_prompts_value(self):
+        raw = json.dumps({"name": "greeting", "content": "Hello!"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "commonPrompts")
+        self.assertIn("must be a JSON array", str(raised.exception))
+
+    def test_rejects_common_prompts_item_missing_required_fields(self):
+        raw = json.dumps([{"name": "greeting"}])
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "commonPrompts")
+        self.assertIn("must be an object with 'name' and 'content'", str(raised.exception))
+
+    def test_unconfirmed_extension_types_skip_shape_validation(self):
+        # "tools" has no confirmed shape yet -- any JSON document is accepted
+        # (baseline JSON-syntax check still applies, from the existing
+        # ExtensionValueCodecTests coverage).
+        raw = json.dumps({"anything": "goes"})
+        encoded = _encode_extension_value(raw, "tools")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+
+class GlobalSettingsShapeValidationTests(unittest.TestCase):
+    """--extension-type globalSettings' inner shape is confirmed via a REAL
+    end-to-end round-trip integration test in the control-plane repo (not a
+    pass-through mock):
+    Tests.Integration/Version20261101Preview/GlobalSettingsExtensionTests.cs,
+    the "Configured" const -- base64-encoded, PUT, decoded server-side, and
+    asserted byte-for-byte equal on GET/list. All fields are optional (the
+    same test also exercises "{}" as valid)."""
+
+    def test_accepts_empty_object(self):
+        raw = json.dumps({})
+        encoded = _encode_extension_value(raw, "globalSettings")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_accepts_the_real_confirmed_example_payload(self):
+        raw = json.dumps({
+            "toolPermissions": {"allow": ["ReadFile"], "ask": [], "deny": ["DeleteFile"]},
+            "toolStatuses": [{"name": "PlotPieChart", "enabled": False}],
+            "skillStatuses": [{"name": "redis", "enabled": False}],
+            "customInstructions": "Investigate carefully",
+            "approvalExpirationSetting": {"enabled": True, "approvalExpirationInMinutes": 60},
+        })
+        encoded = _encode_extension_value(raw, "globalSettings")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_non_object_value(self):
+        raw = json.dumps(["not", "an", "object"])
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "globalSettings")
+        self.assertIn("must be a JSON object", str(raised.exception))
+
+    def test_rejects_non_list_tool_permissions_entry(self):
+        raw = json.dumps({"toolPermissions": {"allow": "ReadFile"}})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "globalSettings")
+        self.assertIn("toolPermissions.allow must be a JSON array of strings", str(raised.exception))
+
+    def test_rejects_tool_statuses_item_missing_enabled(self):
+        raw = json.dumps({"toolStatuses": [{"name": "PlotPieChart"}]})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "globalSettings")
+        self.assertIn("toolStatuses[0] must be an object with 'name' and 'enabled'", str(raised.exception))
+
+    def test_rejects_non_bool_skill_status_enabled(self):
+        raw = json.dumps({"skillStatuses": [{"name": "redis", "enabled": "false"}]})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "globalSettings")
+        self.assertIn("skillStatuses[0].name must be a string and .enabled must be a boolean", str(raised.exception))
+
+    def test_rejects_non_string_custom_instructions(self):
+        raw = json.dumps({"customInstructions": 123})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "globalSettings")
+        self.assertIn("customInstructions must be a string", str(raised.exception))
+
+    def test_rejects_non_numeric_approval_expiration_minutes(self):
+        raw = json.dumps({"approvalExpirationSetting": {"approvalExpirationInMinutes": "60"}})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "globalSettings")
+        self.assertIn("approvalExpirationInMinutes must be a number", str(raised.exception))
 
 
 class ExtensionTypeEnumTests(unittest.TestCase):
