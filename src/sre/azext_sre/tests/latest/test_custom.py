@@ -598,6 +598,250 @@ class IncidentHandlersShapeValidationTests(unittest.TestCase):
         self.assertIn("incidentProcessingGuide must be a JSON array of strings", str(raised.exception))
 
 
+class ToolsShapeValidationTests(unittest.TestCase):
+    """--extension-type tools' inner shape is confirmed via sreagent-runtime
+    (the real SRE Agent runtime/CLI source) -- Agent.Cli/Models/ToolSpecV2.cs
+    + Kusto/Link/Python/HttpClientToolSpecV2.cs."""
+
+    def test_accepts_a_real_kusto_tool_payload(self):
+        raw = json.dumps({
+            "type": "KustoTool",
+            "connector": "my-kusto-connector",
+            "toolMode": "Auto",
+            "description": "Query the cluster",
+            "database": "MyDatabase",
+            "query": "MyTable | take 10",
+            "parameters": [
+                {"name": "limit", "type": "int", "description": "row limit", "required": False},
+            ],
+        })
+        encoded = _encode_extension_value(raw, "tools")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_accepts_a_real_http_client_tool_payload(self):
+        raw = json.dumps({
+            "type": "HttpClientTool",
+            "description": "Call an API",
+            "url": "https://example.com/{{id}}",
+            "method": "GET",
+            "headers": [{"key": "Accept", "value": "application/json"}],
+            "timeout_seconds": 30,
+        })
+        encoded = _encode_extension_value(raw, "tools")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_invalid_type(self):
+        raw = json.dumps({"type": "NotARealTool"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "tools")
+        self.assertIn("--value.type must be one of", str(raised.exception))
+
+    def test_rejects_invalid_http_method(self):
+        raw = json.dumps({"type": "HttpClientTool", "method": "FOO"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "tools")
+        self.assertIn("--value.method must be one of", str(raised.exception))
+
+    def test_rejects_kusto_tool_missing_query_type(self):
+        raw = json.dumps({"type": "KustoTool", "query": 123})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "tools")
+        self.assertIn("--value.query must be a string", str(raised.exception))
+
+
+class SkillsShapeValidationTests(unittest.TestCase):
+    """--extension-type skills' inner shape is confirmed via sreagent-runtime
+    Agent.Cli/Models/ExtendedSkillV2.cs's SkillSpecV2."""
+
+    def test_accepts_the_real_confirmed_example_payload(self):
+        raw = json.dumps({
+            "description": "Investigates pod restarts",
+            "tools": ["KustoClient", "AzureCLI"],
+            "skillContent": "# Steps\n1. Check logs\n",
+        })
+        encoded = _encode_extension_value(raw, "skills")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_non_list_tools(self):
+        raw = json.dumps({"tools": "KustoClient"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "skills")
+        self.assertIn("--value.tools must be a JSON array of strings", str(raised.exception))
+
+
+class HooksShapeValidationTests(unittest.TestCase):
+    """--extension-type hooks' inner shape is confirmed via sreagent-runtime
+    Agent.Cli/Models/HookV2.cs's HookSpecV2/HookDefinitionModel, which carry
+    explicit JsonPropertyName wire-field attributes."""
+
+    def test_accepts_the_real_confirmed_example_payload(self):
+        raw = json.dumps({
+            "eventType": "PostToolUse",
+            "activationMode": "always",
+            "description": "Blocks dangerous commands",
+            "hook": {
+                "type": "command",
+                "command": "echo ok",
+                "matcher": "Bash.*",
+                "timeout": 30,
+                "failMode": "Allow",
+            },
+        })
+        encoded = _encode_extension_value(raw, "hooks")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_invalid_event_type(self):
+        raw = json.dumps({"eventType": "NotAnEvent"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "hooks")
+        self.assertIn("--value.eventType must be", str(raised.exception))
+
+    def test_rejects_invalid_hook_type(self):
+        raw = json.dumps({"hook": {"type": "notarealtype"}})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "hooks")
+        self.assertIn("--value.hook.type must be", str(raised.exception))
+
+
+class ScheduledTasksShapeValidationTests(unittest.TestCase):
+    """--extension-type scheduledTasks' inner shape is confirmed via
+    sreagent-runtime Agent.Cli/Models/ScheduledTaskV2.cs's
+    ScheduledTaskSpecV2, whose doc comment states these are exactly the
+    fields the real v2 scheduledtasks API returns/accepts."""
+
+    def test_accepts_the_real_confirmed_example_payload(self):
+        raw = json.dumps({
+            "description": "Nightly compliance scan",
+            "cronExpression": "0 2 * * *",
+            "agentPrompt": "Run the compliance scan",
+            "maxExecutions": 10,
+        })
+        encoded = _encode_extension_value(raw, "scheduledTasks")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_non_number_max_executions(self):
+        raw = json.dumps({"maxExecutions": "ten"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "scheduledTasks")
+        self.assertIn("--value.maxExecutions must be a number", str(raised.exception))
+
+
+class RepositoriesShapeValidationTests(unittest.TestCase):
+    """--extension-type repositories' inner shape is confirmed via
+    sreagent-runtime Agent.Cli/Models/RepositoryV2.cs's own
+    RepositoryV2.Validate() method."""
+
+    def test_accepts_the_real_confirmed_example_payload(self):
+        raw = json.dumps({
+            "url": "https://github.com/contoso/repo",
+            "type": "GitHub",
+            "branch": "main",
+        })
+        encoded = _encode_extension_value(raw, "repositories")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_missing_url(self):
+        raw = json.dumps({"type": "GitHub"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "repositories")
+        self.assertIn("--value.url is required", str(raised.exception))
+
+    def test_rejects_invalid_type(self):
+        raw = json.dumps({"url": "https://x", "type": "Bitbucket"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "repositories")
+        self.assertIn("--value.type must be", str(raised.exception))
+
+    def test_rejects_incomplete_feed_credential(self):
+        raw = json.dumps({"url": "https://x", "feedCredentials": [{"orgName": "contoso"}]})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "repositories")
+        self.assertIn("feedUrl is required", str(raised.exception))
+
+
+class GitHubAuthsShapeValidationTests(unittest.TestCase):
+    """--extension-type githubAuths' inner shape is confirmed via
+    sreagent-runtime Agent.Cli/Models/GitHubAuthV2.cs's own
+    GitHubAuthV2.Validate() method."""
+
+    def test_accepts_a_real_pat_payload(self):
+        raw = json.dumps({"authType": "Pat", "pat": "ghp_xxx"})
+        encoded = _encode_extension_value(raw, "githubAuths")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_accepts_a_real_github_app_payload(self):
+        raw = json.dumps({
+            "authType": "GitHubApp",
+            "clientId": "abc123",
+            "privateKeySecretUri": "https://myvault.vault.azure.net/secrets/key",
+        })
+        encoded = _encode_extension_value(raw, "githubAuths")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_pat_type_missing_pat(self):
+        raw = json.dumps({"authType": "Pat"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "githubAuths")
+        self.assertIn("--value.pat is required", str(raised.exception))
+
+    def test_rejects_invalid_auth_type(self):
+        raw = json.dumps({"authType": "Basic"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "githubAuths")
+        self.assertIn("--value.authType must be", str(raised.exception))
+
+
+class AzureDevOpsAuthsShapeValidationTests(unittest.TestCase):
+    """--extension-type azureDevOpsAuths' inner shape is confirmed via
+    sreagent-runtime Agent.Cli/Models/AzureDevOpsAuthV2.cs's own
+    AzureDevOpsAuthV2.Validate() method."""
+
+    def test_accepts_a_real_managed_identity_payload(self):
+        raw = json.dumps({"authType": "ManagedIdentity", "identity": "/subscriptions/x/.../mi"})
+        encoded = _encode_extension_value(raw, "azureDevOpsAuths")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_managed_identity_missing_identity(self):
+        raw = json.dumps({"authType": "ManagedIdentity"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "azureDevOpsAuths")
+        self.assertIn("--value.identity is required", str(raised.exception))
+
+    def test_rejects_partial_federated_fields(self):
+        raw = json.dumps({
+            "authType": "ManagedIdentity",
+            "identity": "/subscriptions/x/.../mi",
+            "federatedClientId": "abc",
+        })
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "azureDevOpsAuths")
+        self.assertIn("must both be provided or both be omitted", str(raised.exception))
+
+
+class HttpTriggersShapeValidationTests(unittest.TestCase):
+    """--extension-type httpTriggers' inner shape is confirmed via
+    sreagent-runtime Agent.Web/Controllers/v1/HttpTriggersController.cs's
+    ARM-alias route, whose own code comment documents this exact shape
+    (the control plane wraps every extension payload as
+    { name, type, properties } and unwraps properties before forwarding)."""
+
+    def test_accepts_the_real_confirmed_example_payload(self):
+        raw = json.dumps({
+            "name": "my-trigger",
+            "description": "Runs on webhook",
+            "agentPrompt": "Investigate the alert",
+            "agentMode": "readonly",
+        })
+        encoded = _encode_extension_value(raw, "httpTriggers")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_invalid_agent_mode(self):
+        raw = json.dumps({"agentMode": "yolo"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "httpTriggers")
+        self.assertIn("--value.agentMode must be", str(raised.exception))
+
+
 class ExtensionTypeEnumTests(unittest.TestCase):
     """Mirrors AgentExtensionsApiService.GetExtensionTypes() exactly (the
     canonical ApiType/ExtensionType pairs) -- a drift here means the CLI's

@@ -1120,6 +1120,286 @@ def _validate_incident_handlers_shape(parsed):
                 raise CLIError(f"--value.{list_field} must be a JSON array of strings.")
 
 
+def _require_str(obj, key, path):
+    if key in obj and not isinstance(obj[key], str):
+        raise CLIError(f"{path}.{key} must be a string.")
+
+
+def _require_bool(obj, key, path):
+    if key in obj and not isinstance(obj[key], bool):
+        raise CLIError(f"{path}.{key} must be a boolean.")
+
+
+def _require_str_list(obj, key, path):
+    if key in obj:
+        value = obj[key]
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise CLIError(f"{path}.{key} must be a JSON array of strings.")
+
+
+# tools: confirmed via sreagent-runtime (the real SRE Agent runtime/CLI
+# source, a strictly more authoritative source than the ARM control-plane
+# proxy repo) -- Agent.Cli/Models/ToolSpecV2.cs (base/common fields,
+# polymorphic on "type") + KustoToolSpecV2.cs/LinkToolSpecV2.cs/
+# PythonToolSpecV2.cs/HttpClientToolSpecV2.cs (per-type fields). The CLI's
+# YamlMember aliases are camelCase and line up 1:1 with other confirmed
+# types' JsonPropertyName casing (see HookSpecV2), so these are used
+# directly as the JSON wire field names.
+def _validate_tools_shape(parsed):
+    if not isinstance(parsed, dict):
+        raise CLIError(
+            "--value for --extension-type tools must be a JSON object "
+            "(confirmed via sreagent-runtime's ToolSpecV2 model)."
+        )
+    valid_types = ("KustoTool", "LinkTool", "PythonTool", "HttpClientTool")
+    if "type" in parsed:
+        if not isinstance(parsed["type"], str) or parsed["type"] not in valid_types:
+            raise CLIError(f"--value.type must be one of: {', '.join(valid_types)}.")
+    _require_str(parsed, "connector", "--value")
+    _require_str(parsed, "toolMode", "--value")
+    _require_str(parsed, "description", "--value")
+    if "parameters" in parsed:
+        params = parsed["parameters"]
+        if not isinstance(params, list):
+            raise CLIError("--value.parameters must be a JSON array of parameter objects.")
+        for idx, p in enumerate(params):
+            if not isinstance(p, dict):
+                raise CLIError(f"--value.parameters[{idx}] must be a JSON object.")
+            _require_str(p, "name", f"--value.parameters[{idx}]")
+            _require_str(p, "type", f"--value.parameters[{idx}]")
+            _require_str(p, "description", f"--value.parameters[{idx}]")
+            _require_bool(p, "required", f"--value.parameters[{idx}]")
+    tool_type = parsed.get("type")
+    if tool_type == "KustoTool":
+        _require_str(parsed, "database", "--value")
+        _require_str(parsed, "query", "--value")
+    elif tool_type == "LinkTool":
+        _require_str(parsed, "template", "--value")
+    elif tool_type == "PythonTool":
+        _require_str(parsed, "functionCode", "--value")
+        if "timeoutSeconds" in parsed and not isinstance(parsed["timeoutSeconds"], (int, float)):
+            raise CLIError("--value.timeoutSeconds must be a number.")
+        _require_str_list(parsed, "dependencies", "--value")
+        _require_bool(parsed, "authEnabled", "--value")
+        _require_str_list(parsed, "authScopes", "--value")
+    elif tool_type == "HttpClientTool":
+        _require_str(parsed, "url", "--value")
+        if "method" in parsed:
+            if not isinstance(parsed["method"], str) or parsed["method"].upper() not in (
+                "GET", "POST", "PUT", "DELETE", "PATCH",
+            ):
+                raise CLIError("--value.method must be one of: GET, POST, PUT, DELETE, PATCH.")
+        _require_str(parsed, "body", "--value")
+        if "headers" in parsed:
+            headers = parsed["headers"]
+            if not isinstance(headers, list):
+                raise CLIError("--value.headers must be a JSON array of {\"key\": ..., \"value\": ...} objects.")
+            for idx, h in enumerate(headers):
+                if not isinstance(h, dict):
+                    raise CLIError(f"--value.headers[{idx}] must be a JSON object.")
+                _require_str(h, "key", f"--value.headers[{idx}]")
+                _require_str(h, "value", f"--value.headers[{idx}]")
+        if "auth" in parsed:
+            auth = parsed["auth"]
+            if not isinstance(auth, dict):
+                raise CLIError("--value.auth must be a JSON object.")
+            _require_str(auth, "dataconnector", "--value.auth")
+            _require_str(auth, "scope", "--value.auth")
+        if "timeout_seconds" in parsed and not isinstance(parsed["timeout_seconds"], (int, float)):
+            raise CLIError("--value.timeout_seconds must be a number.")
+
+
+# skills: confirmed via sreagent-runtime Agent.Cli/Models/ExtendedSkillV2.cs
+# (SkillSpecV2). The CLI's primary authoring format is SKILL.md with
+# frontmatter (name/description/tools), but the API-facing fields map to
+# description/tools/skillContent -- only description and tools are
+# settable-looking JSON fields; skillContent is markdown body text.
+def _validate_skills_shape(parsed):
+    if not isinstance(parsed, dict):
+        raise CLIError(
+            "--value for --extension-type skills must be a JSON object "
+            "(confirmed via sreagent-runtime's SkillSpecV2 model)."
+        )
+    _require_str(parsed, "description", "--value")
+    _require_str_list(parsed, "tools", "--value")
+    _require_str(parsed, "skillContent", "--value")
+
+
+# hooks: confirmed via sreagent-runtime Agent.Cli/Models/HookV2.cs
+# (HookSpecV2/HookDefinitionModel) -- these fields carry explicit
+# [JsonPropertyName] attributes confirming camelCase wire field names
+# distinct from (but matching) the YAML aliases, the strongest evidence
+# available for any type this session.
+def _validate_hooks_shape(parsed):
+    if not isinstance(parsed, dict):
+        raise CLIError(
+            "--value for --extension-type hooks must be a JSON object "
+            "(confirmed via sreagent-runtime's HookSpecV2/HookDefinitionModel, "
+            "which carry explicit JsonPropertyName wire-field attributes)."
+        )
+    if "eventType" in parsed:
+        if not isinstance(parsed["eventType"], str) or parsed["eventType"] not in ("Stop", "PostToolUse"):
+            raise CLIError("--value.eventType must be \"Stop\" or \"PostToolUse\".")
+    if "activationMode" in parsed:
+        if not isinstance(parsed["activationMode"], str) or parsed["activationMode"] not in ("always", "onDemand"):
+            raise CLIError("--value.activationMode must be \"always\" or \"onDemand\".")
+    _require_str(parsed, "description", "--value")
+    if "hook" in parsed:
+        hook = parsed["hook"]
+        if not isinstance(hook, dict):
+            raise CLIError("--value.hook must be a JSON object.")
+        if "type" in hook and (not isinstance(hook["type"], str) or hook["type"] not in ("prompt", "command")):
+            raise CLIError("--value.hook.type must be \"prompt\" or \"command\".")
+        for str_field in ("prompt", "command", "script", "matcher", "model", "failMode"):
+            _require_str(hook, str_field, "--value.hook")
+        if "timeout" in hook and not isinstance(hook["timeout"], (int, float)):
+            raise CLIError("--value.hook.timeout must be a number.")
+        if "maxRejections" in hook and not isinstance(hook["maxRejections"], (int, float)):
+            raise CLIError("--value.hook.maxRejections must be a number.")
+        _require_str_list(hook, "sources", "--value.hook")
+
+
+# scheduledTasks: confirmed via sreagent-runtime
+# Agent.Cli/Models/ScheduledTaskV2.cs's ScheduledTaskSpecV2 -- explicit
+# doc comment there states these are exactly the fields the real
+# "GET api/v2/extendedAgent/scheduledtasks" endpoint returns in each
+# envelope's properties bag (server-owned runtime fields like status/
+# executionHistory are intentionally excluded from the caller-owned spec).
+def _validate_scheduled_tasks_shape(parsed):
+    if not isinstance(parsed, dict):
+        raise CLIError(
+            "--value for --extension-type scheduledTasks must be a JSON "
+            "object (confirmed via sreagent-runtime's ScheduledTaskSpecV2 "
+            "model, which documents these as exactly the fields the real "
+            "v2 scheduledtasks API returns/accepts)."
+        )
+    for str_field in (
+        "description", "cronExpression", "agentPrompt", "agent", "threadId",
+        "notificationChannel", "modelTier", "agentMode",
+    ):
+        _require_str(parsed, str_field, "--value")
+    for date_field in ("startTime", "endTime"):
+        if date_field in parsed and not isinstance(parsed[date_field], str):
+            raise CLIError(f"--value.{date_field} must be an ISO-8601 date-time string.")
+    if "maxExecutions" in parsed and not isinstance(parsed["maxExecutions"], (int, float)):
+        raise CLIError("--value.maxExecutions must be a number.")
+
+
+# repositories: confirmed via sreagent-runtime
+# Agent.Cli/Models/RepositoryV2.cs's own RepositoryV2.Validate() method,
+# the most direct evidence available (actual shipped validation logic,
+# not just a model shape guess).
+def _validate_repositories_shape(parsed):
+    if not isinstance(parsed, dict):
+        raise CLIError(
+            "--value for --extension-type repositories must be a JSON "
+            "object (confirmed via sreagent-runtime's RepositoryV2.Validate())."
+        )
+    if "url" not in parsed or not isinstance(parsed["url"], str):
+        raise CLIError("--value.url is required and must be a string.")
+    _require_str(parsed, "description", "--value")
+    if "type" in parsed:
+        if not isinstance(parsed["type"], str) or parsed["type"] not in ("GitHub", "AzureDevOps", "GitLab"):
+            raise CLIError("--value.type must be \"GitHub\", \"AzureDevOps\", or \"GitLab\".")
+    _require_str(parsed, "branch", "--value")
+    _require_str_list(parsed, "sparseCheckoutPaths", "--value")
+    if "feedCredentials" in parsed:
+        feeds = parsed["feedCredentials"]
+        if not isinstance(feeds, list):
+            raise CLIError("--value.feedCredentials must be a JSON array.")
+        for idx, feed in enumerate(feeds):
+            if not isinstance(feed, dict):
+                raise CLIError(f"--value.feedCredentials[{idx}] must be a JSON object.")
+            if "orgName" not in feed or not isinstance(feed["orgName"], str):
+                raise CLIError(f"--value.feedCredentials[{idx}].orgName is required and must be a string.")
+            if "feedUrl" not in feed or not isinstance(feed["feedUrl"], str):
+                raise CLIError(f"--value.feedCredentials[{idx}].feedUrl is required and must be a string.")
+            if "feedType" not in feed or feed["feedType"] not in ("NuGet", "Npm", "Pip"):
+                raise CLIError(f"--value.feedCredentials[{idx}].feedType must be \"NuGet\", \"Npm\", or \"Pip\".")
+            if "pat" not in feed or not isinstance(feed["pat"], str):
+                raise CLIError(f"--value.feedCredentials[{idx}].pat is required and must be a string.")
+
+
+# githubAuths: confirmed via sreagent-runtime
+# Agent.Cli/Models/GitHubAuthV2.cs's own GitHubAuthV2.Validate() method.
+def _validate_github_auths_shape(parsed):
+    if not isinstance(parsed, dict):
+        raise CLIError(
+            "--value for --extension-type githubAuths must be a JSON "
+            "object (confirmed via sreagent-runtime's GitHubAuthV2.Validate())."
+        )
+    auth_type = parsed.get("authType")
+    if "authType" in parsed and auth_type not in ("Pat", "GitHubApp"):
+        raise CLIError("--value.authType must be \"Pat\" or \"GitHubApp\".")
+    if auth_type == "Pat" and ("pat" not in parsed or not isinstance(parsed["pat"], str)):
+        raise CLIError("--value.pat is required and must be a string when --value.authType is \"Pat\".")
+    if auth_type == "GitHubApp":
+        if "clientId" not in parsed or not isinstance(parsed["clientId"], str):
+            raise CLIError("--value.clientId is required and must be a string when --value.authType is \"GitHubApp\".")
+        if "privateKeySecretUri" not in parsed or not isinstance(parsed["privateKeySecretUri"], str):
+            raise CLIError(
+                "--value.privateKeySecretUri is required and must be a string when "
+                "--value.authType is \"GitHubApp\"."
+            )
+    _require_str(parsed, "keyVaultManagedIdentityId", "--value")
+
+
+# azureDevOpsAuths: confirmed via sreagent-runtime
+# Agent.Cli/Models/AzureDevOpsAuthV2.cs's own AzureDevOpsAuthV2.Validate()
+# method.
+def _validate_azure_devops_auths_shape(parsed):
+    if not isinstance(parsed, dict):
+        raise CLIError(
+            "--value for --extension-type azureDevOpsAuths must be a JSON "
+            "object (confirmed via sreagent-runtime's "
+            "AzureDevOpsAuthV2.Validate())."
+        )
+    auth_type = parsed.get("authType")
+    if "authType" in parsed and auth_type not in ("Pat", "ManagedIdentity"):
+        raise CLIError("--value.authType must be \"Pat\" or \"ManagedIdentity\".")
+    if auth_type == "Pat" and ("pat" not in parsed or not isinstance(parsed["pat"], str)):
+        raise CLIError("--value.pat is required and must be a string when --value.authType is \"Pat\".")
+    if auth_type == "ManagedIdentity":
+        if "identity" not in parsed or not isinstance(parsed["identity"], str):
+            raise CLIError(
+                "--value.identity is required and must be a string when "
+                "--value.authType is \"ManagedIdentity\"."
+            )
+        has_client_id = "federatedClientId" in parsed and parsed["federatedClientId"]
+        has_tenant_id = "federatedTenantId" in parsed and parsed["federatedTenantId"]
+        if bool(has_client_id) != bool(has_tenant_id):
+            raise CLIError(
+                "--value.federatedClientId and --value.federatedTenantId must "
+                "both be provided or both be omitted."
+            )
+
+
+# httpTriggers: confirmed via sreagent-runtime
+# Agent.Web/Controllers/v1/HttpTriggersController.cs's
+# UpdateHttpTriggerApiRequest/HttpTriggerArmPutRequest records -- this is
+# the strongest evidence of any type this session: the controller's own
+# ARM-alias route comment states verbatim "The control plane wraps every
+# extension payload as { name, type, properties } before forwarding it to
+# the runtime, so the trigger fields arrive nested under properties",
+# i.e. the exact base64-decoded --value shape our CLI constructs IS this
+# inner properties/UpdateHttpTriggerApiRequest object.
+def _validate_http_triggers_shape(parsed):
+    if not isinstance(parsed, dict):
+        raise CLIError(
+            "--value for --extension-type httpTriggers must be a JSON "
+            "object (confirmed via sreagent-runtime's "
+            "HttpTriggersController ARM-alias route, whose own code "
+            "comment documents this exact shape)."
+        )
+    for str_field in ("name", "description", "agentPrompt", "agent", "modelTier", "threadId"):
+        _require_str(parsed, str_field, "--value")
+    if "agentMode" in parsed:
+        if not isinstance(parsed["agentMode"], str) or parsed["agentMode"] not in (
+            "readonly", "review", "autonomous",
+        ):
+            raise CLIError("--value.agentMode must be \"readonly\", \"review\", or \"autonomous\".")
+
+
 EXTENSION_VALUE_VALIDATORS = {
     "commonPrompts": _validate_common_prompts_shape,
     "globalSettings": _validate_global_settings_shape,
@@ -1127,6 +1407,14 @@ EXTENSION_VALUE_VALIDATORS = {
     "pluginInstallations": _validate_plugin_installations_shape,
     "incidentFilters": _validate_incident_filters_shape,
     "incidentHandlers": _validate_incident_handlers_shape,
+    "tools": _validate_tools_shape,
+    "skills": _validate_skills_shape,
+    "hooks": _validate_hooks_shape,
+    "scheduledTasks": _validate_scheduled_tasks_shape,
+    "repositories": _validate_repositories_shape,
+    "githubAuths": _validate_github_auths_shape,
+    "azureDevOpsAuths": _validate_azure_devops_auths_shape,
+    "httpTriggers": _validate_http_triggers_shape,
 }
 
 
