@@ -33,6 +33,9 @@ jobs:
         working-directory: src/sre
         run: python -m unittest discover -s azext_sre/tests -v
 
+      - name: Check CLI reference is up to date
+        run: python scripts/generate_cli_reference.py --check
+
       - name: Build wheel
         working-directory: src/sre
         run: python -m build --wheel

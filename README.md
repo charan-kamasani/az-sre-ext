@@ -90,16 +90,20 @@ cd src/sre
 python -m unittest discover -s azext_sre/tests -v
 ```
 
-27+ offline, credential-free tests cover every hand-written command in
+54+ offline, credential-free tests cover every hand-written command in
 `custom.py`: RBAC role-name mapping, the networking GET-merge-PUT logic,
 extension create/show/list/delete resource-ID and payload shape, the
-base64/JSON extension-value codec, model-provider normalization, extension-type
-enum completeness, command registration, and CLI-level argument enforcement
+base64/JSON extension-value codec, model-provider and data-connector-type
+normalization, extension-type enum completeness, command registration,
+arg-schema help regressions, and CLI-level argument enforcement
 (invalid/missing arguments rejected by argparse before any handler runs) —
-following the same pattern `azext-aigateway`'s own test suite uses.
+following the same pattern `azext-aigateway`'s own test suite uses. See
+[docs/testing.md](docs/testing.md) for the full coverage breakdown and the
+live-verification workflow used on top of these unit tests.
 
 GitHub Actions runs this same command on every push/PR (see
-`.github/workflows/ci.yml`), then builds and uploads a wheel artifact.
+`.github/workflows/ci.yml`), checks that `docs/cli-reference.md` is not
+stale, then builds and uploads a wheel artifact.
 
 ## Development
 
@@ -109,17 +113,32 @@ pip install azure-cli-core azure-cli-testsdk build setuptools wheel
 python -m unittest discover -s azext_sre/tests
 ```
 
+Install the repository-tracked commit hook once per checkout (regenerates
+and stages `docs/cli-reference.md` on every commit):
+
+```bash
+git config core.hooksPath .githooks
+```
+
 The generated AAZ recipes under `azext_sre/aaz/latest/` are produced from the
 `Microsoft.App/agents` Swagger using `aaz-dev` and should not be hand-edited —
 regenerate them instead. Everything hand-written lives in
 `azext_sre/custom.py`, which `commands.py` auto-discovers by scanning
 `vars(custom)` for `@register_command`-decorated classes (the same pattern
-`azext-aigateway` uses). See [Implementation plan](PLAN.md) for the full list
-of API versions pinned and why, plus every architecture decision and its
-evidence.
+`azext-aigateway` uses). See [docs/development.md](docs/development.md) and
+[docs/source-code.md](docs/source-code.md) for the full architecture
+walkthrough, and [PLAN.md](PLAN.md) for the API versions pinned, why, plus
+every architecture decision and its evidence.
 
 ## More documentation
 
 | Guide | Use it for |
 |---|---|
+| [CLI ergonomics reference](docs/cli-reference.md) | Every group, command, exact syntax, option, and default — generated, never drifts |
+| [Operations](docs/operations.md) | Agent lifecycle, RBAC, connectors, and confirmed/unconfirmed runbook extension payload shapes |
+| [Networking](docs/networking.md) | VNet injection, sandbox egress, and safe sequencing for `update-network` |
+| [Testing](docs/testing.md) | Coverage layers and the live-verification workflow (rebuild/reinstall, throwaway agents, round-trip shape confirmation) |
+| [Development](docs/development.md) | Architecture, local validation, CLI reference regeneration, commit hook |
+| [Source code guide](docs/source-code.md) | Repository layout, generated vs. hand-authored code, how a command flows, security boundaries |
 | [Implementation plan](PLAN.md) | Control-plane/data-plane scope, architecture decisions, evidence, roadmap, and open blockers |
+
