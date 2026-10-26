@@ -11,12 +11,29 @@ actually supplied and leaving everything else on the resource untouched.
 
 ## Inspect current networking configuration
 
-```bash
-az sre agent show -g myrg -n myagent --query properties
-```
+> [!WARNING]
+> `agent show`/`agent list` query ARM at the pinned, older
+> `API_VERSION = "2026-01-01"` (see `custom.py`), which does not expose
+> `sandboxConfiguration`/`vnetConfiguration` at all. Live-verified: setting
+> `--sandbox-configuration` via `update-network` succeeds (confirmed in the
+> PUT's own response body, which is read at `NETWORK_API_VERSION =
+> "2026-11-01-preview"`), but a subsequent `agent show` on the same agent
+> returns `null` for both fields — not because the write was lost, but
+> because `agent show` is reading the wrong api-version to see them. There
+> is currently **no command in this CLI that can read back** a
+> previously-set networking configuration. Use `az rest` directly against
+> the preview api-version as a workaround until a dedicated `agent network
+> show` (or an `update-network`-equivalent read) is added:
+>
+> ```bash
+> az rest --method get \
+>   --url "https://management.azure.com/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.App/agents/<name>?api-version=2026-11-01-preview" \
+>   --query "properties.{sandbox:sandboxConfiguration, vnet:vnetConfiguration}"
+> ```
 
 There is no dedicated `agent network show` — networking fields are part of
-the main agent resource body.
+the main agent resource body, and today only readable at the preview
+api-version (see warning above).
 
 ## Configure sandbox egress
 
@@ -54,10 +71,16 @@ The exact property shape (`sandboxConfiguration`/`vnetConfiguration`
 nesting, field names) was read directly from the internal control-plane
 source (`AAPT-SREAgent-ControlPlane`,
 `src/WebApi/Views/Version20261101Preview/AgentView.cs`), not from any
-public spec, and has been live-verified end-to-end: a real
-`update-network` call against a disposable test agent correctly flipped
-`provisioningState` to `InProgress` then back to `Succeeded`, and the
-applied sandbox configuration round-tripped on a subsequent `agent show`.
-Re-verify against that source if the service's shape ever changes — there
-is no codegen drift check possible for a hand-maintained, unspecced
-api-version.
+public spec. Live-verified against a disposable test agent
+(`sre-network-verify`): `update-network --sandbox-configuration
+"{egress:{mode:Unrestricted}}"` returned `201`, correctly flipped
+`provisioningState` to `InProgress`, and its own response body (read at
+`2026-11-01-preview`) showed `sandboxConfiguration.egress.mode:
+"Unrestricted"` immediately. `agent wait --updated` correctly settled back
+to `provisioningState: Succeeded`. However, a subsequent `agent show` read
+`null` for the same field — confirmed via `--debug` to be because `agent
+show` queries `api-version=2026-01-01`, not the preview version the write
+used — not a lost write. Re-verify the write path against that source if
+the service's shape ever changes; there is no codegen drift check possible
+for a hand-maintained, unspecced api-version. See the read-back gap noted
+above before trusting `agent show` for networking state.
