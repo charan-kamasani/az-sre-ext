@@ -1069,11 +1069,64 @@ def _validate_plugin_installations_shape(parsed):
             raise CLIError("--value.source.repo must be a string.")
 
 
+def _validate_incident_filters_shape(parsed):
+    """Confirmed via AAPT-SREAgent-ControlPlane's real E2E scenario fixtures
+    (PagerDutySetupFixture.cs, IcmSetupFixture.cs -- both run against a real
+    data-plane environment and asserted a successful round trip there).
+    Live create against our own test agent was rejected with a generic
+    "extension configuration is invalid" error even after adding a matching
+    Icm data connector -- consistent with needing real IcM team-identity
+    resolution our sandbox tenant doesn't have (same category as the
+    Dgrep/pluginMarketplaces environment-specific limitations), not a shape
+    problem: the same payload shape is the one PagerDuty/Icm's own E2E
+    tests use successfully."""
+    if not isinstance(parsed, dict):
+        raise CLIError("--value for --extension-type incidentFilters must be a JSON object.")
+    if "incidentPlatform" in parsed and not isinstance(parsed["incidentPlatform"], str):
+        raise CLIError("--value.incidentPlatform must be a string (e.g. \"Icm\", \"PagerDuty\").")
+    if "incidentTypes" in parsed:
+        it = parsed["incidentTypes"]
+        if not isinstance(it, list) or not all(isinstance(v, str) for v in it):
+            raise CLIError("--value.incidentTypes must be a JSON array of strings.")
+    if "titleContains" in parsed and not isinstance(parsed["titleContains"], str):
+        raise CLIError("--value.titleContains must be a string.")
+    if "agentMode" in parsed and not isinstance(parsed["agentMode"], str):
+        raise CLIError("--value.agentMode must be a string (e.g. \"autonomous\").")
+    if "isEnabled" in parsed and not isinstance(parsed["isEnabled"], bool):
+        raise CLIError("--value.isEnabled must be a boolean.")
+    for list_field in ("owningTeamIds", "handlingAgents"):
+        if list_field in parsed:
+            value = parsed[list_field]
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                raise CLIError(f"--value.{list_field} must be a JSON array of strings.")
+
+
+def _validate_incident_handlers_shape(parsed):
+    """Confirmed via AAPT-SREAgent-ControlPlane's real E2E scenario fixtures
+    (PagerDutySetupFixture.cs's handlerConfig, asserted round-trip against a
+    real environment including server-populated incidentFilterId/
+    incidentProcessingGuide/tools fields). Live create blocked in our
+    sandbox the same way incidentFilters is (see
+    _validate_incident_filters_shape) -- not a shape problem."""
+    if not isinstance(parsed, dict):
+        raise CLIError("--value for --extension-type incidentHandlers must be a JSON object.")
+    for str_field in ("id", "name", "description", "incidentFilterId", "customInstructions"):
+        if str_field in parsed and not isinstance(parsed[str_field], str):
+            raise CLIError(f"--value.{str_field} must be a string.")
+    for list_field in ("incidentProcessingGuide", "tools", "incidents"):
+        if list_field in parsed:
+            value = parsed[list_field]
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                raise CLIError(f"--value.{list_field} must be a JSON array of strings.")
+
+
 EXTENSION_VALUE_VALIDATORS = {
     "commonPrompts": _validate_common_prompts_shape,
     "globalSettings": _validate_global_settings_shape,
     "pluginMarketplaces": _validate_plugin_marketplaces_shape,
     "pluginInstallations": _validate_plugin_installations_shape,
+    "incidentFilters": _validate_incident_filters_shape,
+    "incidentHandlers": _validate_incident_handlers_shape,
 }
 
 

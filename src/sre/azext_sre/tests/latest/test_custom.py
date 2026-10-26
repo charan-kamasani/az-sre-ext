@@ -498,6 +498,106 @@ class PluginInstallationsShapeValidationTests(unittest.TestCase):
         self.assertIn("source.repo must be a string", str(raised.exception))
 
 
+class IncidentFiltersShapeValidationTests(unittest.TestCase):
+    """--extension-type incidentFilters' inner shape is confirmed via
+    AAPT-SREAgent-ControlPlane's real E2E scenario fixtures
+    (PagerDutySetupFixture.cs, IcmSetupFixture.cs), which round-trip this
+    exact shape successfully against a real environment."""
+
+    def test_accepts_the_real_confirmed_pagerduty_example_payload(self):
+        raw = json.dumps({
+            "incidentPlatform": "PagerDuty",
+            "incidentTypes": [],
+            "titleContains": "E2E test",
+            "agentMode": "autonomous",
+            "isEnabled": True,
+        })
+        encoded = _encode_extension_value(raw, "incidentFilters")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_accepts_the_real_confirmed_icm_example_payload_with_team_ids(self):
+        raw = json.dumps({
+            "incidentPlatform": "Icm",
+            "incidentTypes": ["LiveSite"],
+            "titleContains": "E2E test",
+            "agentMode": "autonomous",
+            "owningTeamIds": ["188963"],
+            "handlingAgents": ["myagent"],
+            "isEnabled": True,
+        })
+        encoded = _encode_extension_value(raw, "incidentFilters")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_non_object_value(self):
+        raw = json.dumps(["not", "an", "object"])
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "incidentFilters")
+        self.assertIn("must be a JSON object", str(raised.exception))
+
+    def test_rejects_non_bool_is_enabled(self):
+        raw = json.dumps({"isEnabled": "true"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "incidentFilters")
+        self.assertIn("isEnabled must be a boolean", str(raised.exception))
+
+    def test_rejects_non_list_incident_types(self):
+        raw = json.dumps({"incidentTypes": "LiveSite"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "incidentFilters")
+        self.assertIn("incidentTypes must be a JSON array of strings", str(raised.exception))
+
+    def test_rejects_non_list_handling_agents(self):
+        raw = json.dumps({"handlingAgents": "myagent"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "incidentFilters")
+        self.assertIn("handlingAgents must be a JSON array of strings", str(raised.exception))
+
+
+class IncidentHandlersShapeValidationTests(unittest.TestCase):
+    """--extension-type incidentHandlers' inner shape is confirmed via
+    AAPT-SREAgent-ControlPlane's real E2E scenario fixtures
+    (PagerDutySetupFixture.cs's handlerConfig), round-tripped successfully
+    against a real environment."""
+
+    def test_accepts_the_real_confirmed_example_payload(self):
+        raw = json.dumps({
+            "id": "test-handler",
+            "name": "",
+            "description": "",
+            "incidentFilterId": "test-filter",
+            "incidentProcessingGuide": ["step one", "step two"],
+            "tools": ["AcknowledgePagerDutyIncident", "ResolvePagerDutyIncident"],
+            "incidents": [],
+            "customInstructions": "",
+        })
+        encoded = _encode_extension_value(raw, "incidentHandlers")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_non_object_value(self):
+        raw = json.dumps(["not", "an", "object"])
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "incidentHandlers")
+        self.assertIn("must be a JSON object", str(raised.exception))
+
+    def test_rejects_non_string_incident_filter_id(self):
+        raw = json.dumps({"incidentFilterId": 123})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "incidentHandlers")
+        self.assertIn("incidentFilterId must be a string", str(raised.exception))
+
+    def test_rejects_non_list_tools(self):
+        raw = json.dumps({"tools": "AcknowledgePagerDutyIncident"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "incidentHandlers")
+        self.assertIn("tools must be a JSON array of strings", str(raised.exception))
+
+    def test_rejects_non_list_incident_processing_guide(self):
+        raw = json.dumps({"incidentProcessingGuide": "step one"})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "incidentHandlers")
+        self.assertIn("incidentProcessingGuide must be a JSON array of strings", str(raised.exception))
+
+
 class ExtensionTypeEnumTests(unittest.TestCase):
     """Mirrors AgentExtensionsApiService.GetExtensionTypes() exactly (the
     canonical ApiType/ExtensionType pairs) -- a drift here means the CLI's
