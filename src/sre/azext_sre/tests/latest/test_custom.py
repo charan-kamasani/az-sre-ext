@@ -97,6 +97,26 @@ class DataConnectorTypeNormalizationTests(unittest.TestCase):
         self.assertEqual(_normalize_data_connector_type("outlook"), "Outlook")
         self.assertEqual(_normalize_data_connector_type("TEAMS"), "Teams")
 
+    def test_accepts_newly_confirmed_values_case_insensitively(self):
+        # Confirmed via KnownDataConnectorTypes.cs and DataConnectorValidator.cs
+        # in the control-plane source -- these were previously missing from
+        # our enum even though the service has always accepted them.
+        self.assertEqual(_normalize_data_connector_type("icm"), "Icm")
+        self.assertEqual(_normalize_data_connector_type("ICM"), "Icm")
+        self.assertEqual(_normalize_data_connector_type("kustoclient"), "KustoClient")
+        self.assertEqual(_normalize_data_connector_type("KustoClient"), "KustoClient")
+        self.assertEqual(_normalize_data_connector_type("dgrep"), "Dgrep")
+        self.assertEqual(_normalize_data_connector_type("DGREP"), "Dgrep")
+
+    def test_accepts_knowledge_item_types_case_insensitively(self):
+        # These four are multiplexed over the same connectors route and
+        # carry their payload in --extended-properties instead of
+        # --data-source (DataConnectorValidator.KnowledgeConnectorTypeNames).
+        self.assertEqual(_normalize_data_connector_type("knowledgetext"), "KnowledgeText")
+        self.assertEqual(_normalize_data_connector_type("KnowledgeFile"), "KnowledgeFile")
+        self.assertEqual(_normalize_data_connector_type("KNOWLEDGEWEBPAGE"), "KnowledgeWebPage")
+        self.assertEqual(_normalize_data_connector_type("knowledgerepository"), "KnowledgeRepository")
+
     def test_none_passes_through_unchanged(self):
         self.assertIsNone(_normalize_data_connector_type(None))
 

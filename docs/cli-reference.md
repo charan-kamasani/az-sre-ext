@@ -349,7 +349,7 @@ Create an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Type of the data connector. Real API values are 'Kusto' (covers Azure Data Explorer, App Insights, and Log Analytics -- differentiated by --data-source, not a separate type), 'Mcp' (PagerDuty/ServiceNow/Datadog/Splunk/etc.), 'Outlook', 'Teams'. Case-insensitive. |
+| `--data-connector-type` | String | No |  |  | Type of the data connector. Real API values: 'Kusto' (covers Azure Data Explorer, App Insights, and Log Analytics -- differentiated by --data-source, not a separate type), 'Mcp' (PagerDuty/ServiceNow/Datadog/Splunk/S360/Ev2/etc. -- differentiated by endpoint, not a separate type), 'Outlook', 'Teams', 'Icm' (singleton per agent), 'KustoClient' (Kusto via the @azure/mcp server; no --data-source needed), 'Dgrep' (singleton per agent), and four knowledge-item types that need --extended-properties instead of --data-source: 'KnowledgeText', 'KnowledgeFile', 'KnowledgeWebPage', 'KnowledgeRepository'. Case-insensitive. |
 | `--data-source` | String | No |  |  | Data source connection string or endpoint |
 | `--endpoint` | String | No |  |  | Endpoint of the connector |
 | `--extended-properties` | Dictionary | No |  |  | Additional properties for the data connector which can be used to store custom key-value pairs |
@@ -448,7 +448,7 @@ Update an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Type of the data connector. Real API values are 'Kusto' (covers Azure Data Explorer, App Insights, and Log Analytics -- differentiated by --data-source, not a separate type), 'Mcp' (PagerDuty/ServiceNow/Datadog/Splunk/etc.), 'Outlook', 'Teams'. Case-insensitive. |
+| `--data-connector-type` | String | No |  |  | Type of the data connector. Real API values: 'Kusto' (covers Azure Data Explorer, App Insights, and Log Analytics -- differentiated by --data-source, not a separate type), 'Mcp' (PagerDuty/ServiceNow/Datadog/Splunk/S360/Ev2/etc. -- differentiated by endpoint, not a separate type), 'Outlook', 'Teams', 'Icm' (singleton per agent), 'KustoClient' (Kusto via the @azure/mcp server; no --data-source needed), 'Dgrep' (singleton per agent), and four knowledge-item types that need --extended-properties instead of --data-source: 'KnowledgeText', 'KnowledgeFile', 'KnowledgeWebPage', 'KnowledgeRepository'. Case-insensitive. |
 | `--data-source` | String | No |  |  | Data source connection string or endpoint |
 | `--endpoint` | String | No |  |  | Endpoint of the connector |
 | `--extended-properties` | Dictionary | No |  |  | Additional properties for the data connector which can be used to store custom key-value pairs |

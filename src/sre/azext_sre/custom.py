@@ -272,19 +272,49 @@ class Update(_ModelProviderArgMixin, _GeneratedUpdate):
     _args_schema = None
 
 
-# Real wire values confirmed live (running notes section 1a): "Kusto" covers
+# Real wire values confirmed via the control-plane source
+# (src/ApiResources/DataModels/KnownDataConnectorTypes.cs and
+# src/Services/Validators/DataConnectorValidator.cs): "Kusto" covers
 # Azure Data Explorer/App Insights/Log Analytics (differentiated by
 # --data-source endpoint, not a separate type value), "Mcp" covers generic
-# MCP-compatible connectors (PagerDuty/ServiceNow/Datadog/Splunk/etc.),
-# "Outlook", "Teams". Same friendly-name-vs-wire-value problem as
-# --model-provider: the swagger types this as a bare string, so the generated
-# arg accepts anything -- we tighten it here without touching the generated
-# file.
+# MCP-compatible connectors (PagerDuty/ServiceNow/Datadog/Splunk/S360/Ev2/
+# etc. -- these are *not* separate enum values, just Mcp connectors pointed
+# at different endpoints), "Outlook", "Teams", "Icm" (Incident Management --
+# singleton per agent, e.g. "https://prod.microsofticm.com"), "KustoClient"
+# (Kusto via the @azure/mcp server -- no DataSource/ExtendedProperties
+# needed, the runtime hardcodes the mcp server command), "Dgrep"
+# (Diagnostics Grep -- singleton per agent). Also four "knowledge item"
+# types that are multiplexed over this same connectors route and carry
+# their payload in --extended-properties (content/fileContent/url) instead
+# of --data-source, which they don't require at all: "KnowledgeText",
+# "KnowledgeFile", "KnowledgeWebPage", "KnowledgeRepository". Same
+# friendly-name-vs-wire-value problem as --model-provider: the swagger
+# types this as a bare string, so the generated arg accepts anything -- we
+# tighten it here without touching the generated file.
 DATA_CONNECTOR_TYPES = {
     "kusto": "Kusto",
     "mcp": "Mcp",
     "outlook": "Outlook",
     "teams": "Teams",
+    "icm": "Icm",
+    "kustoclient": "KustoClient",
+    "dgrep": "Dgrep",
+    "knowledgetext": "KnowledgeText",
+    "knowledgefile": "KnowledgeFile",
+    "knowledgewebpage": "KnowledgeWebPage",
+    "knowledgerepository": "KnowledgeRepository",
+}
+
+# Connector types that do not require --data-source at all (the data-plane
+# validator exempts them -- see DataConnectorValidator.cs
+# IsKnowledgeConnectorType). Used only to keep --help accurate; the CLI
+# does not enforce --data-source presence itself (that's left to the
+# service), so this is documentation, not a code path.
+KNOWLEDGE_DATA_CONNECTOR_TYPES = {
+    "KnowledgeText",
+    "KnowledgeFile",
+    "KnowledgeWebPage",
+    "KnowledgeRepository",
 }
 
 
@@ -319,11 +349,18 @@ class _DataConnectorTypeArgMixin:
         # existing ._help dict rather than replace it.
         if data_connector_type is not None and isinstance(getattr(data_connector_type, "_help", None), dict):
             data_connector_type._help["short-summary"] = (
-                "Type of the data connector. Real API values are 'Kusto' "
+                "Type of the data connector. Real API values: 'Kusto' "
                 "(covers Azure Data Explorer, App Insights, and Log "
                 "Analytics -- differentiated by --data-source, not a "
                 "separate type), 'Mcp' (PagerDuty/ServiceNow/Datadog/Splunk/"
-                "etc.), 'Outlook', 'Teams'. Case-insensitive."
+                "S360/Ev2/etc. -- differentiated by endpoint, not a "
+                "separate type), 'Outlook', 'Teams', 'Icm' (singleton per "
+                "agent), 'KustoClient' (Kusto via the @azure/mcp server; "
+                "no --data-source needed), 'Dgrep' (singleton per agent), "
+                "and four knowledge-item types that need --extended-"
+                "properties instead of --data-source: 'KnowledgeText', "
+                "'KnowledgeFile', 'KnowledgeWebPage', 'KnowledgeRepository'."
+                " Case-insensitive."
             )
         return schema
 
