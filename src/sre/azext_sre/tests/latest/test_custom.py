@@ -25,6 +25,8 @@ from azure.cli.core.mock import DummyCli
 from azext_sre import SreCommandsLoader
 from azext_sre.custom import (
     EXTENSION_TYPES,
+    Create,
+    ConnectorCreate,
     ExtensionCreate,
     ExtensionDelete,
     ExtensionList,
@@ -73,12 +75,12 @@ class ModelProviderNormalizationTests(unittest.TestCase):
         self.assertIsNone(_normalize_model_provider(None))
 
     def test_rejects_portal_friendly_label(self):
-        with self.assertRaises(ValueError) as raised:
+        with self.assertRaises(CLIError) as raised:
             _normalize_model_provider("Azure OpenAI")
         self.assertIn("--model-provider must be one of", str(raised.exception))
 
     def test_rejects_unknown_value(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(CLIError):
             _normalize_model_provider("openai")
 
 
@@ -99,7 +101,7 @@ class DataConnectorTypeNormalizationTests(unittest.TestCase):
         self.assertIsNone(_normalize_data_connector_type(None))
 
     def test_rejects_unknown_value(self):
-        with self.assertRaises(ValueError) as raised:
+        with self.assertRaises(CLIError) as raised:
             _normalize_data_connector_type("pagerduty")
         self.assertIn(
             "--data-connector-type must be one of", str(raised.exception)
@@ -289,28 +291,43 @@ class ExtensionValueCodecTests(unittest.TestCase):
 
 
 class CommonPromptsShapeValidationTests(unittest.TestCase):
-    """--extension-type commonPrompts' inner shape is confirmed via the
-    control-plane repo's own debug UI (DebugApp/Client/ModelPromptsViewer.tsx
-    prop type: Array<{ name: string; content: string }>). Other extension
-    types are intentionally NOT shape-checked yet -- their real payloads
-    are still unconfirmed (issue #18)."""
+    """--extension-type commonPrompts' inner shape, CORRECTED after live
+    verification against a real agent (2026-10-25): the per-resource wire
+    shape is a single JSON object {"prompt": "..."} -- the ARM resource
+    name (e.g. "default") is the prompt's identifier. An earlier reading
+    of DebugApp/Client/ModelPromptsViewer.tsx's TS prop type
+    (Array<{name, content}>) was wrong for this purpose -- that type
+    describes an aggregated, multi-resource UI display value, not what a
+    single PUT accepts; {"name":..., "content":...} silently round-trips
+    back as {"prompt": ""} rather than being rejected, and a bare array is
+    rejected with "invalid or unrecognized property" (confirmed the real
+    data-plane requires the root to be a JSON object for every extension
+    type, not just commonPrompts). Other extension types are intentionally
+    NOT shape-checked yet -- their real payloads are still unconfirmed
+    (issue #18)."""
 
-    def test_accepts_well_formed_common_prompts_array(self):
-        raw = json.dumps([{"name": "greeting", "content": "Hello!"}])
+    def test_accepts_well_formed_prompt_object(self):
+        raw = json.dumps({"prompt": "Hello! This is a greeting."})
         encoded = _encode_extension_value(raw, "commonPrompts")
         self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
 
-    def test_rejects_non_array_common_prompts_value(self):
+    def test_rejects_array_value(self):
+        raw = json.dumps([{"name": "greeting", "content": "Hello!"}])
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "commonPrompts")
+        self.assertIn("must be a JSON object", str(raised.exception))
+
+    def test_rejects_object_missing_prompt_field(self):
         raw = json.dumps({"name": "greeting", "content": "Hello!"})
         with self.assertRaises(CLIError) as raised:
             _encode_extension_value(raw, "commonPrompts")
-        self.assertIn("must be a JSON array", str(raised.exception))
+        self.assertIn("must include a string 'prompt' field", str(raised.exception))
 
-    def test_rejects_common_prompts_item_missing_required_fields(self):
-        raw = json.dumps([{"name": "greeting"}])
+    def test_rejects_non_string_prompt_field(self):
+        raw = json.dumps({"prompt": 123})
         with self.assertRaises(CLIError) as raised:
             _encode_extension_value(raw, "commonPrompts")
-        self.assertIn("must be an object with 'name' and 'content'", str(raised.exception))
+        self.assertIn("must include a string 'prompt' field", str(raised.exception))
 
     def test_unconfirmed_extension_types_skip_shape_validation(self):
         # "tools" has no confirmed shape yet -- any JSON document is accepted
@@ -623,6 +640,33 @@ class CliArgumentEnforcementTests(unittest.TestCase):
             ]
         )
         self.assertNotEqual(code, 0)
+
+
+class ArgSchemaHelpRegressionTests(unittest.TestCase):
+    """Regression test for a real bug found during live verification:
+    AAZBaseArg always initializes ._help as a dict (keyed by
+    'short-summary'/'long-summary'/'name'/'populator-commands'), and
+    to_cmd_arg() calls ._help.get('short-summary', None). Overwriting
+    ._help with a plain string (instead of merging into the existing
+    dict) made `az sre agent connector create -h` crash with
+    "'str' object has no attribute 'get'". _ModelProviderArgMixin had the
+    identical bug but it silently never fired (default_model.provider
+    isn't reachable at schema-build time for agent create/update), which
+    is why only the connector command surfaced it live. Both mixins are
+    exercised here via the real to_cmd_arg() path, not just help-text
+    presence, so this would have caught the crash before it reached a
+    real agent.
+    """
+
+    def test_connector_create_help_does_not_crash(self):
+        schema = ConnectorCreate._build_arguments_schema()
+        cmd_arg = schema.data_connector_type.to_cmd_arg("data_connector_type")
+        self.assertIn("Kusto", cmd_arg.type.settings.get("help"))
+
+    def test_agent_create_help_does_not_crash(self):
+        schema = Create._build_arguments_schema()
+        cmd_arg = schema.default_model.provider.to_cmd_arg("provider")
+        self.assertIn("Anthropic", cmd_arg.type.settings.get("help"))
 
 
 if __name__ == "__main__":

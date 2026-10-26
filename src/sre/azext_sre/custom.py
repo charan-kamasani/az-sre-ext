@@ -187,7 +187,7 @@ def _normalize_model_provider(value):
         return value
     normalized = MODEL_PROVIDERS.get(str(value).strip().lower())
     if normalized is None:
-        raise ValueError(
+        raise CLIError(
             "--model-provider must be one of: "
             + ", ".join(sorted(MODEL_PROVIDERS))
             + f" (got '{value}')."
@@ -211,8 +211,14 @@ class _ModelProviderArgMixin:
         default_model = getattr(schema, "default_model", None)
         if default_model is not None:
             provider = getattr(default_model, "provider", None)
-            if provider is not None:
-                provider._help = (
+            # AAZBaseArg always initializes ._help as a dict (keyed by
+            # 'short-summary'/'long-summary'/'name'/'populator-commands');
+            # to_cmd_arg() calls ._help.get(...), so overwriting it with a
+            # plain string (instead of merging into the dict) breaks `-h`
+            # with "'str' object has no attribute 'get'". Must assign into
+            # the existing dict, not replace it.
+            if provider is not None and isinstance(getattr(provider, "_help", None), dict):
+                provider._help["short-summary"] = (
                     "AI provider for the agent's default model. Real API "
                     "values are 'Anthropic' and 'MicrosoftFoundry' -- note "
                     "the Azure Portal shows 'Azure OpenAI' as a friendly "
@@ -287,7 +293,7 @@ def _normalize_data_connector_type(value):
         return value
     normalized = DATA_CONNECTOR_TYPES.get(str(value).strip().lower())
     if normalized is None:
-        raise ValueError(
+        raise CLIError(
             "--data-connector-type must be one of: "
             + ", ".join(sorted(DATA_CONNECTOR_TYPES))
             + f" (got '{value}')."
@@ -309,8 +315,10 @@ class _DataConnectorTypeArgMixin:
     def _build_arguments_schema(cls, *args, **kwargs):
         schema = super()._build_arguments_schema(*args, **kwargs)
         data_connector_type = getattr(schema, "data_connector_type", None)
-        if data_connector_type is not None:
-            data_connector_type._help = (
+        # See _ModelProviderArgMixin above for why this must merge into the
+        # existing ._help dict rather than replace it.
+        if data_connector_type is not None and isinstance(getattr(data_connector_type, "_help", None), dict):
+            data_connector_type._help["short-summary"] = (
                 "Type of the data connector. Real API values are 'Kusto' "
                 "(covers Azure Data Explorer, App Insights, and Log "
                 "Analytics -- differentiated by --data-source, not a "
@@ -895,24 +903,35 @@ def _extension_type_arg():
 # verified (see issue #18 -- confirmed: pluginMarketplaces, commonPrompts,
 # globalSettings; ~9 of 12 ready types still unconfirmed).
 #
-# commonPrompts: confirmed via
-# DebugApp/Client/ModelPromptsViewer.tsx's own TypeScript prop type
-# (`commonPrompts?: string | Array<{ name: string; content: string }>`),
-# which is how the control-plane team's own debug UI renders this exact
-# extension's value back out.
+# commonPrompts: CORRECTED after live verification against the real
+# mytestagent data-plane (2026-10-25). The earlier reading of
+# DebugApp/Client/ModelPromptsViewer.tsx's TS prop type
+# (`commonPrompts?: string | Array<{ name: string; content: string }>`) was
+# WRONG for the per-resource wire shape -- that type describes an
+# aggregated, multi-resource UI display value, not what a single PUT
+# accepts. Live testing (PUT with --debug + raw `az rest` probes against
+# mytestagent) proved: the real data-plane requires the decoded root value
+# to be a JSON OBJECT for every extension type (a bare array is always
+# rejected as "invalid or unrecognized property", confirmed to repro for
+# commonPrompts AND tools with []), and for commonPrompts specifically the
+# only recognized field is a single string "prompt" -- {"name": ...,
+# "content": ...} round-trips back as {"prompt": ""} (silently dropped,
+# not rejected), while {"prompt": "..."} round-trips byte-for-byte. The
+# ARM resource name (e.g. "default") is the prompt's identifier; "prompt"
+# is its content.
 def _validate_common_prompts_shape(parsed):
-    if not isinstance(parsed, list):
+    if not isinstance(parsed, dict):
         raise CLIError(
             "--value for --extension-type commonPrompts must be a JSON "
-            "array of {\"name\": ..., \"content\": ...} objects (confirmed "
-            "via the control-plane debug UI's ModelPromptsViewer)."
+            "object of the form {\"prompt\": \"...\"} (confirmed live "
+            "against a real agent -- the ARM resource name is the "
+            "prompt's identifier, 'prompt' holds its string content)."
         )
-    for idx, item in enumerate(parsed):
-        if not isinstance(item, dict) or "name" not in item or "content" not in item:
-            raise CLIError(
-                f"--value[{idx}] for --extension-type commonPrompts must be "
-                "an object with 'name' and 'content' string fields."
-            )
+    if "prompt" not in parsed or not isinstance(parsed["prompt"], str):
+        raise CLIError(
+            "--value for --extension-type commonPrompts must include a "
+            "string 'prompt' field."
+        )
 
 
 # globalSettings: confirmed via a REAL end-to-end round-trip integration
@@ -1076,7 +1095,8 @@ class ExtensionCreate(AAZCommand):
                 "properties.value = base64(json), confirmed via the "
                 "internal control-plane repo's Agents.http examples). For "
                 "--extension-type commonPrompts, the confirmed shape is a "
-                "JSON array of {\"name\": ..., \"content\": ...} objects. "
+                "JSON object {\"prompt\": \"...\"} (one prompt per ARM "
+                "resource name, e.g. 'default'). "
                 "For globalSettings, the confirmed shape is a JSON object "
                 "with optional toolPermissions/toolStatuses/skillStatuses/"
                 "customInstructions/approvalExpirationSetting fields. "
