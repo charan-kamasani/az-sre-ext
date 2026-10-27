@@ -100,6 +100,34 @@ def _arg_value(value):
     return AAZHttpOperation.serialize_content(value)
 
 
+def _snake_to_camel(key):
+    """Convert a single snake_case key segment to camelCase."""
+    head, *rest = key.split("_")
+    return head + "".join(part.capitalize() for part in rest)
+
+
+def _camelize_keys(value):
+    """Recursively rewrite snake_case dict keys to camelCase.
+
+    Needed for any hand-written command (e.g. UpdateNetwork below) that
+    builds its request body straight from an AAZObjectArg/AAZListArg via
+    _arg_value(): those are pure CLI-argument-parsing schemas with no
+    serialized_name/JSON mapping, so AAZHttpOperation.serialize_content()
+    returns dicts keyed by the raw Python attribute name (snake_case), e.g.
+    "allowed_hosts" instead of "allowedHosts". Confirmed live against
+    mytestagent: ARM rejects the un-camelized body with "Unknown properties
+    allowed_hosts ... are not supported" (2026-10-26). Generated aaz commands
+    never hit this because their request body comes from a real AAZObjectType
+    schema with camelCase serialized_name baked in from swagger -- only
+    hand-written raw-PUT commands need this conversion.
+    """
+    if isinstance(value, dict):
+        return {_snake_to_camel(k): _camelize_keys(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_camelize_keys(item) for item in value]
+    return value
+
+
 def _arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
     """Issue a raw ARM request against a resource ID not covered by a
     generated aaz recipe (e.g. the agent's /usages and /dailyusages child
@@ -869,9 +897,9 @@ class UpdateNetwork(AAZCommand):
             )
         properties = current.setdefault("properties", {})
         if vnet_configuration is not None:
-            properties["vnetConfiguration"] = vnet_configuration
+            properties["vnetConfiguration"] = _camelize_keys(vnet_configuration)
         if sandbox_configuration is not None:
-            properties["sandboxConfiguration"] = sandbox_configuration
+            properties["sandboxConfiguration"] = _camelize_keys(sandbox_configuration)
 
         return _arm_request(self.cli_ctx, "PUT", resource_id, NETWORK_API_VERSION, body=current)
 
