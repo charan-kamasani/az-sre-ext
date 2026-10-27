@@ -964,9 +964,9 @@ def _extension_type_arg():
 # base64 pass-through with zero shape validation -- it never tells us if
 # a payload is malformed until the data-plane cluster rejects it. We
 # tighten client-side only for shapes we've actually confirmed from real
-# source, to fail fast without inventing shapes for types we haven't
-# verified (see issue #18 -- confirmed: pluginMarketplaces, commonPrompts,
-# globalSettings; ~9 of 12 ready types still unconfirmed).
+# source (see issue #13 -- 14 of 15 extension types confirmed via
+# sreagent-runtime authoritative source + live round-trips; only
+# 'subagents' remains unconfirmed, believed server/portal-managed).
 #
 # commonPrompts: CORRECTED after live verification against the real
 # mytestagent data-plane (2026-10-25). The earlier reading of
@@ -1549,8 +1549,12 @@ class ExtensionCreate(AAZCommand):
                 "For globalSettings, the confirmed shape is a JSON object "
                 "with optional toolPermissions/toolStatuses/skillStatuses/"
                 "customInstructions/approvalExpirationSetting fields. "
-                "Other extension types' inner shapes are not yet "
-                "confirmed -- see issue #18."
+                "14 of 15 extension types now have confirmed inner shapes "
+                "(source-cited in custom.py's _validate_*_shape functions; "
+                "12 also live-round-tripped against a real agent) -- only "
+                "'subagents' remains unconfirmed (believed server/portal-"
+                "managed, not CLI-creatable). See issue #13 for the full "
+                "findings and evidence."
             ),
             required=True,
         )
