@@ -22,6 +22,7 @@ from unittest.mock import patch
 from azure.cli.core.aaz import AAZCommand
 from azure.cli.core.azclierror import CLIError, ResourceNotFoundError
 from azure.cli.core.mock import DummyCli
+from azure.core.exceptions import ResourceExistsError
 
 from azext_sre import SreCommandsLoader
 from azext_sre.custom import (
@@ -29,6 +30,7 @@ from azext_sre.custom import (
     GITHUB_COPILOT_MCP_ENDPOINT,
     Create,
     ConnectorCreate,
+    ConnectorList,
     ExtensionCreate,
     ExtensionDelete,
     ExtensionList,
@@ -37,6 +39,7 @@ from azext_sre.custom import (
     UpdateNetwork,
     RepoConnect,
     _ConnectorConvenienceArgsMixin,
+    _ConnectorExistenceGuardMixin,
     _GrantAccessToMeMixin,
     _annotate_connector_consent_status,
     _arg_value,
@@ -1072,6 +1075,7 @@ class ExtensionCommandResourceIdTests(unittest.TestCase):
             extension_type="tools",
             extension_name="mytool",
             value='{"kind": "ToolList"}',
+            overwrite=True,
         )
         _, arm_calls = self._run_with_mocks(
             command,
@@ -1090,6 +1094,41 @@ class ExtensionCommandResourceIdTests(unittest.TestCase):
             base64.b64decode(call["body"]["properties"]["value"]).decode("utf-8"),
             '{"kind": "ToolList"}',
         )
+
+    def test_create_without_overwrite_blocks_when_already_exists(self):
+        command = _bare_command(
+            ExtensionCreate,
+            agent_name="myagent", resource_group="rg",
+            extension_type="tools", extension_name="mytool",
+            value='{"kind": "ToolList"}', overwrite=None,
+        )
+        with self.assertRaises(ResourceExistsError) as raised:
+            self._run_with_mocks(
+                command,
+                cli_responses=[self._AGENT],
+                arm_response={"properties": {"value": _encode_extension_value('{"kind": "ToolList"}')}},
+            )
+        self.assertIn("--overwrite", str(raised.exception))
+
+    def test_create_without_overwrite_proceeds_when_missing(self):
+        command = _bare_command(
+            ExtensionCreate,
+            agent_name="myagent", resource_group="rg",
+            extension_type="tools", extension_name="mytool",
+            value='{"kind": "ToolList"}', overwrite=None,
+        )
+        arm_calls = []
+        responses = [None, {"properties": {"value": _encode_extension_value('{"kind": "ToolList"}')}}]
+
+        def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+            arm_calls.append(method)
+            return responses.pop(0)
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", lambda cli_ctx, *a, allow_missing=False: self._AGENT), \
+             patch("azext_sre.custom._arm_request", fake_arm_request):
+            command._handler({})
+        self.assertEqual(arm_calls, ["GET", "PUT"])
 
     def test_show_uses_missing_ok_and_raises_not_found_on_none(self):
         command = _bare_command(
@@ -1449,6 +1488,73 @@ class GrantAccessToMeTests(unittest.TestCase):
     def test_agent_create_schema_exposes_grant_access_to_me(self):
         schema = Create._build_arguments_schema()
         self.assertIsNotNone(schema.grant_access_to_me)
+
+
+class _NoOpPreOpBase2:
+    def pre_operations(self):
+        pass
+
+
+class _TestConnectorExistenceGuard(_ConnectorExistenceGuardMixin, _NoOpPreOpBase2):
+    pass
+
+
+class ConnectorExistenceGuardTests(unittest.TestCase):
+    """'connector create' must not silently overwrite an existing connector
+    of the same name (the generated PUT has no If-Match support) -- same
+    GET-before-PUT guard azext-aigateway's 'mcp create' uses, pointing the
+    caller at 'connector update' instead."""
+
+    def _run(self, show_result):
+        command = _bare_command(
+            _TestConnectorExistenceGuard,
+            agent_name="myagent", resource_group="rg", connector_name="myconn",
+        )
+        with patch(
+            "azext_sre.custom._cli_invoke",
+            lambda cli_ctx, *a, allow_missing=False: show_result,
+        ):
+            command.pre_operations()
+
+    def test_blocks_when_connector_already_exists(self):
+        with self.assertRaises(ResourceExistsError) as raised:
+            self._run(show_result={"name": "myconn"})
+        self.assertIn("connector update", str(raised.exception))
+
+    def test_proceeds_when_connector_does_not_exist(self):
+        self._run(show_result=None)  # must not raise
+
+
+class ConnectorListOutputTests(unittest.TestCase):
+    """ConnectorList._output must unpack the (value, next_link) tuple the
+    paginated generated List returns -- the earlier version compared the
+    tuple itself against dict (isinstance(result, dict)), which was always
+    False, so consent-status annotation silently never ran on 'connector
+    list' even though it worked on 'connector show'."""
+
+    def _run(self, super_output):
+        command = object.__new__(ConnectorList)
+        base_cls = ConnectorList.__mro__[1]  # the generated _GeneratedConnectorList
+        with patch.object(base_cls, "_output", lambda self, *a, **k: super_output):
+            return command._output()
+
+    def test_annotates_every_item_and_unpacks_tuple(self):
+        connector = {"properties": {"extendedProperties": {"authType": "EntraOAuth", "entraOAuth": None}}}
+        value, next_link = self._run(([connector], None))
+        self.assertEqual(value[0]["consentStatus"], "PendingConsent")
+        self.assertIsNone(next_link)
+
+    def test_warns_on_empty_final_page(self):
+        with patch("azext_sre.custom.logger") as mock_logger:
+            value, next_link = self._run(([], None))
+            mock_logger.warning.assert_called_once()
+        self.assertEqual(value, [])
+        self.assertIsNone(next_link)
+
+    def test_does_not_warn_when_more_pages_remain(self):
+        with patch("azext_sre.custom.logger") as mock_logger:
+            self._run(([], "https://next-page"))
+            mock_logger.warning.assert_not_called()
 
 
 if __name__ == "__main__":

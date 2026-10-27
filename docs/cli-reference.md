@@ -479,7 +479,7 @@ Place the CLI in a waiting state until a condition is met.
 
 | Verb | Exact syntax |
 | --- | --- |
-| `create` | `az sre agent extension create --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value> --value <value>` |
+| `create` | `az sre agent extension create --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value> --value <value> [--overwrite {false,true}]` |
 | `delete` | `az sre agent extension delete --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value>` |
 | `list` | `az sre agent extension list --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings}` |
 | `show` | `az sre agent extension show --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value>` |
@@ -488,9 +488,11 @@ Place the CLI in a waiting state until a condition is met.
 
 Create or update an SRE Agent extension (subagent/tool/skill/etc.).
 
+By default, refuses to silently overwrite an existing extension of the same --extension-type/--extension-name (there is no separate 'extension update' command, so an unguarded PUT here would clobber an existing repo/auth/tool registration with no warning). Pass --overwrite to update an existing one intentionally.
+
 **Syntax**
 
-`az sre agent extension create --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value> --value <value>`
+`az sre agent extension create --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value> --value <value> [--overwrite {false,true}]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -499,6 +501,7 @@ Create or update an SRE Agent extension (subagent/tool/skill/etc.).
 | `--extension-type`, `--type` | String | Yes |  | `subagents`, `tools`, `skills`, `scheduledTasks`, `incidentFilters`, `commonPrompts`, `hooks`, `incidentHandlers`, `httpTriggers`, `repositories`, `pluginMarketplaces`, `pluginInstallations`, `githubAuths`, `azureDevOpsAuths`, `globalSettings` | Kind of agent extension. One of: subagents, tools, skills, scheduledTasks, incidentFilters, commonPrompts, hooks, incidentHandlers, httpTriggers, repositories, pluginMarketplaces, pluginInstallations, githubAuths, azureDevOpsAuths, globalSettings. |
 | `--extension-name`, `--name`, `-n` | String | Yes |  |  | Name of the extension instance. |
 | `--value` | String | Yes |  |  | Extension configuration as a JSON document (the CLI base64-encodes it for you -- the wire format is properties.value = base64(json), confirmed via the internal control-plane repo's Agents.http examples). For --extension-type commonPrompts, the confirmed shape is a JSON object {"prompt": "..."} (one prompt per ARM resource name, e.g. 'default'). For globalSettings, the confirmed shape is a JSON object with optional toolPermissions/toolStatuses/skillStatuses/customInstructions/approvalExpirationSetting fields. 14 of 15 extension types now have confirmed inner shapes (source-cited in custom.py's _validate_*_shape functions; 12 also live-round-tripped against a real agent) -- only 'subagents' remains unconfirmed (believed server/portal-managed, not CLI-creatable). See issue #13 for the full findings and evidence. |
+| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing extension of the same --extension-type/--extension-name. Without this flag, 'extension create' refuses to overwrite an existing extension. |
 
 ### `az sre agent extension delete`
 

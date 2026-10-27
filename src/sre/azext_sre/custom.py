@@ -48,6 +48,7 @@ from azure.cli.core.aaz import (
 )
 from azure.cli.core.aaz._operation import AAZHttpOperation
 from azure.cli.core.azclierror import CLIError, ResourceNotFoundError
+from azure.core.exceptions import ResourceExistsError
 from azure.cli.core.util import send_raw_request
 from knack.log import get_logger
 
@@ -541,8 +542,41 @@ class _ConnectorConvenienceArgsMixin:
         super().pre_operations()
 
 
+class _ConnectorExistenceGuardMixin:
+    """Guards 'connector create' against silently overwriting an existing
+    connector of the same name. The generated PUT has no If-Match/If-None-
+    Match support here, so a second 'create' with the same --name would
+    otherwise replace the first one's configuration without any warning --
+    same risk (and same GET-before-PUT guard) as azext-aigateway's
+    'mcp create' ResourceExistsError check. Use 'connector update' to
+    intentionally change an existing connector.
+    """
+
+    def pre_operations(self):
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        connector_name = _arg_value(self.ctx.args.connector_name)
+        existing = _cli_invoke(
+            self.cli_ctx, "sre", "agent", "connector", "show",
+            "--agent-name", agent_name, "--resource-group", resource_group,
+            "--name", connector_name, allow_missing=True,
+        )
+        if existing is not None:
+            raise ResourceExistsError(
+                f"A connector named '{connector_name}' already exists on agent "
+                f"'{agent_name}'. Use 'az sre agent connector update' to change "
+                "it, or choose another --name."
+            )
+        super().pre_operations()
+
+
 @register_command("sre agent connector create")
-class ConnectorCreate(_DataConnectorTypeArgMixin, _ConnectorConvenienceArgsMixin, _GeneratedConnectorCreate):
+class ConnectorCreate(
+    _DataConnectorTypeArgMixin,
+    _ConnectorConvenienceArgsMixin,
+    _ConnectorExistenceGuardMixin,
+    _GeneratedConnectorCreate,
+):
     """Create an Agent Connector."""
 
     _args_schema = None
@@ -619,13 +653,24 @@ class ConnectorList(_GeneratedConnectorList):
 
     _args_schema = None
 
+    EMPTY_GUIDANCE = (
+        "No connectors found. Add one with 'az sre agent connector create "
+        "--data-connector-type Mcp --github true' (or --mcp-endpoint/"
+        "--file-path for other connector types)."
+    )
+
     def _output(self, *args, **kwargs):
-        result = super()._output(*args, **kwargs)
-        if isinstance(result, dict) and isinstance(result.get("value"), list):
-            result["value"] = [
-                _annotate_connector_consent_status(item) for item in result["value"]
-            ]
-        return result
+        # The generated List is paginated (AZ_SUPPORT_PAGINATION), so
+        # _output() returns a (value_list, next_link) tuple here, not a
+        # plain dict -- treating it as a dict (the previous version of this
+        # method did `result.get("value")`) silently always skipped the
+        # annotation step, since isinstance(tuple, dict) is False.
+        value, next_link = super()._output(*args, **kwargs)
+        if isinstance(value, list):
+            value = [_annotate_connector_consent_status(item) for item in value]
+        if not value and not next_link:
+            logger.warning(self.EMPTY_GUIDANCE)
+        return value, next_link
 
 
 @register_command("sre agent show")
@@ -1654,7 +1699,14 @@ class _ExtensionGroup(AAZCommandGroup):
 
 @register_command("sre agent extension create")
 class ExtensionCreate(AAZCommand):
-    """Create or update an SRE Agent extension (subagent/tool/skill/etc.)."""
+    """Create or update an SRE Agent extension (subagent/tool/skill/etc.).
+
+    By default, refuses to silently overwrite an existing extension of the
+    same --extension-type/--extension-name (there is no separate 'extension
+    update' command, so an unguarded PUT here would clobber an existing
+    repo/auth/tool registration with no warning). Pass --overwrite to update
+    an existing one intentionally.
+    """
 
     _args_schema = None
 
@@ -1697,6 +1749,12 @@ class ExtensionCreate(AAZCommand):
             ),
             required=True,
         )
+        schema.overwrite = AAZBoolArg(
+            options=["--overwrite"],
+            help="Allow replacing an existing extension of the same "
+            "--extension-type/--extension-name. Without this flag, "
+            "'extension create' refuses to overwrite an existing extension.",
+        )
         cls._args_schema = schema
         return schema
 
@@ -1707,6 +1765,7 @@ class ExtensionCreate(AAZCommand):
         extension_type = _arg_value(self.ctx.args.extension_type)
         extension_name = _arg_value(self.ctx.args.extension_name)
         raw_value = _arg_value(self.ctx.args.value)
+        overwrite = _arg_value(getattr(self.ctx.args, "overwrite", None))
 
         invoke = partial(_cli_invoke, self.cli_ctx)
         agent = invoke(
@@ -1721,6 +1780,17 @@ class ExtensionCreate(AAZCommand):
             raise CLIError(f"Could not resolve the resource ID of agent '{agent_name}'.")
 
         resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+        if not overwrite:
+            existing = _arm_request(
+                self.cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True
+            )
+            if existing is not None:
+                raise ResourceExistsError(
+                    f"An extension named '{extension_name}' of type "
+                    f"'{extension_type}' already exists on agent '{agent_name}'. "
+                    "Pass --overwrite to replace it intentionally, or choose "
+                    "another --extension-name."
+                )
         body = {
             "type": f"microsoft.app/agents/{extension_type}",
             "properties": {"value": _encode_extension_value(raw_value, extension_type)},
@@ -1828,6 +1898,15 @@ class ExtensionList(AAZCommand):
         result = _arm_request(self.cli_ctx, "GET", resource_id, EXTENSION_API_VERSION)
         if isinstance(result, dict) and isinstance(result.get("value"), list):
             result["value"] = [_decode_extension_envelope(item) for item in result["value"]]
+            if not result["value"]:
+                logger.warning(
+                    "No '%s' extensions found on agent '%s'. Add one with "
+                    "'az sre agent extension create --extension-type %s "
+                    "--extension-name <name> --value <json>' (or "
+                    "'az sre agent repo connect' for repositories/"
+                    "githubAuths/azureDevOpsAuths).",
+                    extension_type, agent_name, extension_type,
+                )
         return result
 
 
@@ -2113,7 +2192,7 @@ class RepoConnect(AAZCommand):
                 "sre", "agent", "extension", "create",
                 "--agent-name", agent_name, "--resource-group", resource_group,
                 "--extension-type", "githubAuths", "--extension-name", "github_com",
-                "--value", auth_value,
+                "--value", auth_value, "--overwrite", "true",
             )
             repo_type = "GitHub"
         else:
@@ -2162,7 +2241,7 @@ class RepoConnect(AAZCommand):
                 "sre", "agent", "extension", "create",
                 "--agent-name", agent_name, "--resource-group", resource_group,
                 "--extension-type", "azureDevOpsAuths", "--extension-name", organization,
-                "--value", auth_value,
+                "--value", auth_value, "--overwrite", "true",
             )
             repo_type = "AzureDevOps"
 
@@ -2173,6 +2252,6 @@ class RepoConnect(AAZCommand):
             "sre", "agent", "extension", "create",
             "--agent-name", agent_name, "--resource-group", resource_group,
             "--extension-type", "repositories", "--extension-name", display_name,
-            "--value", json.dumps(repo_body),
+            "--value", json.dumps(repo_body), "--overwrite", "true",
         )
         return {"auth": auth_result, "repository": repo_result}
