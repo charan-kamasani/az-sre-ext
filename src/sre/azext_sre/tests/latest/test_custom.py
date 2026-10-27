@@ -36,6 +36,7 @@ from azext_sre.custom import (
     ExtensionList,
     ExtensionShow,
     GrantAccess,
+    RevokeAccess,
     UpdateNetwork,
     RepoConnect,
     _ConnectorConvenienceArgsMixin,
@@ -50,6 +51,7 @@ from azext_sre.custom import (
     _extension_type_arg,
     _normalize_data_connector_type,
     _normalize_model_provider,
+    _resolve_signed_in_user_object_id,
 )
 
 
@@ -274,6 +276,98 @@ class GrantAccessRoleMappingTests(unittest.TestCase):
              patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
             with self.assertRaises(ResourceNotFoundError):
                 command._handler({})
+
+
+class AssigneeMeTests(unittest.TestCase):
+    """--assignee-me on grant-access/revoke-access: resolves the signed-in
+    user's object ID via 'az ad signed-in-user show' instead of requiring
+    --assignee, mirroring --grant-access-to-me's resolution logic (shared
+    via _resolve_signed_in_user_object_id so both paths agree on what "me"
+    means).
+    """
+
+    def test_grant_access_assignee_me_resolves_signed_in_user(self):
+        command = _bare_command(
+            GrantAccess, name="myagent", resource_group="myrg", role="reader",
+            assignee=None, assignee_me=True,
+        )
+        calls = []
+
+        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
+            calls.append(args)
+            if args[:3] == ("ad", "signed-in-user", "show"):
+                return {"id": "signed-in-object-id"}
+            if args[:3] == ("sre", "agent", "show"):
+                return {"id": "/subscriptions/x/resourceGroups/myrg/providers/Microsoft.App/agents/myagent"}
+            return {"result": "assigned"}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            result = command._handler({})
+
+        self.assertEqual(result, {"result": "assigned"})
+        self.assertEqual(
+            calls[-1],
+            (
+                "role", "assignment", "create",
+                "--role", "SRE Agent Reader",
+                "--assignee", "signed-in-object-id",
+                "--scope", "/subscriptions/x/resourceGroups/myrg/providers/Microsoft.App/agents/myagent",
+            ),
+        )
+
+    def test_revoke_access_assignee_me_resolves_signed_in_user(self):
+        command = _bare_command(
+            RevokeAccess, name="myagent", resource_group="myrg", role="author",
+            assignee=None, assignee_me=True,
+        )
+        calls = []
+
+        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
+            calls.append(args)
+            if args[:3] == ("ad", "signed-in-user", "show"):
+                return {"id": "signed-in-object-id"}
+            if args[:3] == ("sre", "agent", "show"):
+                return {"id": "/subscriptions/x/resourceGroups/myrg/providers/Microsoft.App/agents/myagent"}
+            return {"result": "revoked"}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            result = command._handler({})
+
+        self.assertEqual(result, {"result": "revoked"})
+        self.assertEqual(
+            calls[-1],
+            (
+                "role", "assignment", "delete",
+                "--role", "SRE Agent Author",
+                "--assignee", "signed-in-object-id",
+                "--scope", "/subscriptions/x/resourceGroups/myrg/providers/Microsoft.App/agents/myagent",
+            ),
+        )
+
+    def test_both_assignee_and_assignee_me_rejected(self):
+        command = _bare_command(
+            GrantAccess, name="myagent", resource_group="myrg", role="reader",
+            assignee="someone@example.com", assignee_me=True,
+        )
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None):
+            with self.assertRaises(CLIError):
+                command._handler({})
+
+    def test_neither_assignee_nor_assignee_me_rejected(self):
+        command = _bare_command(
+            GrantAccess, name="myagent", resource_group="myrg", role="reader",
+            assignee=None, assignee_me=False,
+        )
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None):
+            with self.assertRaises(CLIError):
+                command._handler({})
+
+    def test_resolve_signed_in_user_object_id_raises_when_missing(self):
+        with patch("azext_sre.custom._cli_invoke", lambda cli_ctx, *args, **kwargs: {}):
+            with self.assertRaises(CLIError):
+                _resolve_signed_in_user_object_id(SimpleNamespace())
 
 
 class ExtensionValueCodecTests(unittest.TestCase):
@@ -1240,7 +1334,7 @@ class CommandRegistrationTests(unittest.TestCase):
             "sre agent create", "sre agent update", "sre agent show",
             "sre agent list", "sre agent delete", "sre agent start",
             "sre agent stop", "sre agent get-connection", "sre agent list-usage",
-            "sre agent grant-access", "sre agent update-network",
+            "sre agent grant-access", "sre agent revoke-access", "sre agent update-network",
             "sre agent extension create", "sre agent extension show",
             "sre agent extension list", "sre agent extension delete",
             "sre agent repo connect",

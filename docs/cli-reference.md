@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **7 groups** and **30 commands**.
+Public surface: **7 groups** and **31 commands**.
 
 ## Important caveats
 
@@ -58,10 +58,11 @@ Manage Agent
 | `create` | `az sre agent create [--no-wait] --name <value> --resource-group <value> [--system-assigned <value>] [--user-assigned <json-or-@file>] [--action-configuration <json-or-@file>] [--agent-identity <json-or-@file>] [--default-model <json-or-@file>] [--incident-management-configuration <json-or-@file>] [--knowledge-graph-configuration <json-or-@file>] [--log-configuration <json-or-@file>] [--upgrade-channel {Preview,Stable}] --location <value> [--tags <json-or-@file>] [--grant-access-to-me {admin,user,author,reader}]` |
 | `delete` | `az sre agent delete [--no-wait] --name <value> --resource-group <value> [--yes]` |
 | `get-connection` | `az sre agent get-connection --name <value> --resource-group <value> [--data-plane-audience <value>]` |
-| `grant-access` | `az sre agent grant-access --name <value> --resource-group <value> --role {admin,user,author,reader} --assignee <value>` |
+| `grant-access` | `az sre agent grant-access --name <value> --resource-group <value> --role {admin,user,author,reader} [--assignee <value>] [--assignee-me {false,true}]` |
 | `list` | `az sre agent list [--next-token <value>] [--max-items <value>] [--resource-group <value>]` |
 | `list-connectors-with-secret` | `az sre agent list-connectors-with-secret --agent-name <value> --resource-group <value>` |
 | `list-usage` | `az sre agent list-usage --name <value> --resource-group <value> [--daily {false,true}]` |
+| `revoke-access` | `az sre agent revoke-access --name <value> --resource-group <value> --role {admin,user,author,reader} [--assignee <value>] [--assignee-me {false,true}]` |
 | `show` | `az sre agent show --name <value> --resource-group <value>` |
 | `start` | `az sre agent start [--no-wait] --agent-name <value> --resource-group <value>` |
 | `stop` | `az sre agent stop [--no-wait] --agent-name <value> --resource-group <value>` |
@@ -136,18 +137,19 @@ Reads the agent's control-plane resource (ARM), extracts the 'agentEndpoint' pro
 
 Grant a built-in SRE Agent RBAC role to a user, group, or principal.
 
-Thin convenience wrapper over 'az role assignment create' that builds the agent's full resource-ID scope for you (see running notes section 0's "Role assignment" row) -- not a new ARM operation, just a shortcut so callers do not need to construct the scope string by hand.
+Thin convenience wrapper over 'az role assignment create' that builds the agent's full resource-ID scope for you (see running notes section 0's "Role assignment" row) -- not a new ARM operation, just a shortcut so callers do not need to construct the scope string by hand. Pass --assignee-me to grant yourself access without looking up your own object ID first.
 
 **Syntax**
 
-`az sre agent grant-access --name <value> --resource-group <value> --role {admin,user,author,reader} --assignee <value>`
+`az sre agent grant-access --name <value> --resource-group <value> --role {admin,user,author,reader} [--assignee <value>] [--assignee-me {false,true}]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent to grant access to. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent to grant access on. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--role` | String | Yes |  | `admin`, `user`, `author`, `reader` | Built-in role to grant: 'admin', 'user', 'author', or 'reader'. |
-| `--assignee` | String | Yes |  |  | User, group, or service principal object ID/UPN to grant the role to. |
+| `--assignee` | String | No |  |  | User, group, or service principal object ID/UPN to grant the role for. Required unless --assignee-me is passed instead. |
+| `--assignee-me` | Boolean | No |  | `false`, `true` | Use the signed-in user as the assignee, resolved via 'az ad signed-in-user show'. Alternative to --assignee. |
 
 ### `az sre agent list`
 
@@ -197,6 +199,24 @@ Wraps the dedicated 'usages'/'dailyusages' read-only ARM child collections (conf
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent to report usage for. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--daily` | Boolean | No | false | `false`, `true` | Report daily usage (dailyusages) instead of monthly (usages). |
+
+### `az sre agent revoke-access`
+
+Revoke a built-in SRE Agent RBAC role from a user, group, or principal.
+
+Mirrors 'grant-access': thin convenience wrapper over 'az role assignment delete' that builds the agent's full resource-ID scope for you, so callers do not need to construct the scope string (or look up their own object ID, via --assignee-me) by hand.
+
+**Syntax**
+
+`az sre agent revoke-access --name <value> --resource-group <value> --role {admin,user,author,reader} [--assignee <value>] [--assignee-me {false,true}]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent to revoke access on. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--role` | String | Yes |  | `admin`, `user`, `author`, `reader` | Built-in role to revoke: 'admin', 'user', 'author', or 'reader'. |
+| `--assignee` | String | No |  |  | User, group, or service principal object ID/UPN to revoke the role for. Required unless --assignee-me is passed instead. |
+| `--assignee-me` | Boolean | No |  | `false`, `true` | Use the signed-in user as the assignee, resolved via 'az ad signed-in-user show'. Alternative to --assignee. |
 
 ### `az sre agent show`
 

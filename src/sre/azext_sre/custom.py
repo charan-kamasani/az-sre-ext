@@ -267,6 +267,21 @@ class _ModelProviderArgMixin:
         super().pre_operations()
 
 
+def _resolve_signed_in_user_object_id(cli_ctx):
+    """Resolve the signed-in user's AAD object ID via 'az ad signed-in-user show'.
+
+    Shared by --grant-access-to-me (agent create), --assignee-me (grant-access
+    and revoke-access) so "me" always means the same thing and is resolved the
+    same way in exactly one place.
+    """
+    invoke = partial(_cli_invoke, cli_ctx)
+    signed_in_user = invoke("ad", "signed-in-user", "show")
+    object_id = (signed_in_user or {}).get("id") if isinstance(signed_in_user, dict) else None
+    if not object_id:
+        raise CLIError("Could not resolve the signed-in user's object ID via 'az ad signed-in-user show'.")
+    return object_id
+
+
 class _GrantAccessToMeMixin:
     """Adds --grant-access-to-me to 'agent create', collapsing the
     create -> `az ad signed-in-user show` -> grant-access dance into one
@@ -298,11 +313,8 @@ class _GrantAccessToMeMixin:
             return
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
+        object_id = _resolve_signed_in_user_object_id(self.cli_ctx)
         invoke = partial(_cli_invoke, self.cli_ctx)
-        signed_in_user = invoke("ad", "signed-in-user", "show")
-        object_id = (signed_in_user or {}).get("id") if isinstance(signed_in_user, dict) else None
-        if not object_id:
-            raise CLIError("Could not resolve the signed-in user's object ID via 'az ad signed-in-user show'.")
         invoke(
             "sre", "agent", "grant-access",
             "--agent-name", agent_name, "--resource-group", resource_group,
@@ -853,14 +865,11 @@ class _AgentGroup(AAZCommandGroup):
     """Commands for managing SRE Agent resources (control plane)."""
 
 
-@register_command("sre agent grant-access")
-class GrantAccess(AAZCommand):
-    """Grant a built-in SRE Agent RBAC role to a user, group, or principal.
-
-    Thin convenience wrapper over 'az role assignment create' that builds
-    the agent's full resource-ID scope for you (see running notes section
-    0's "Role assignment" row) -- not a new ARM operation, just a shortcut
-    so callers do not need to construct the scope string by hand.
+class _RoleAssignmentScopeCommand(AAZCommand):
+    """Shared base for 'grant-access'/'revoke-access': builds the agent's
+    full resource-ID scope and resolves --assignee/--assignee-me to a single
+    object ID, so each subclass only has to call 'role assignment
+    create'/'delete' with (role_name, assignee, scope) already in hand.
     """
 
     _args_schema = None
@@ -878,6 +887,7 @@ class GrantAccess(AAZCommand):
         "author": "SRE Agent Author",
         "reader": "SRE Agent Reader",
     }
+    _VERB = None  # set by subclasses: "grant" or "revoke"
 
     @classmethod
     def _build_arguments_schema(cls, *args, **kwargs):
@@ -886,32 +896,41 @@ class GrantAccess(AAZCommand):
         schema = super()._build_arguments_schema(*args, **kwargs)
         schema.name = AAZStrArg(
             options=["-n", "--name", "--agent-name"],
-            help="Name of the SRE Agent to grant access to.",
+            help=f"Name of the SRE Agent to {cls._VERB} access on.",
             required=True,
         )
         schema.resource_group = AAZResourceGroupNameArg(required=True)
         schema.role = AAZStrArg(
             options=["--role"],
-            help="Built-in role to grant: 'admin', 'user', 'author', or 'reader'.",
+            help=f"Built-in role to {cls._VERB}: 'admin', 'user', 'author', or 'reader'.",
             required=True,
             enum={key: key for key in cls._ROLES},
         )
         schema.assignee = AAZStrArg(
             options=["--assignee"],
-            help="User, group, or service principal object ID/UPN to grant the role to.",
-            required=True,
+            help=f"User, group, or service principal object ID/UPN to {cls._VERB} the role "
+            "for. Required unless --assignee-me is passed instead.",
+        )
+        schema.assignee_me = AAZBoolArg(
+            options=["--assignee-me"],
+            help="Use the signed-in user as the assignee, resolved via "
+            "'az ad signed-in-user show'. Alternative to --assignee.",
         )
         cls._args_schema = schema
         return schema
 
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        name = _arg_value(self.ctx.args.name)
-        resource_group = _arg_value(self.ctx.args.resource_group)
-        role_key = _arg_value(self.ctx.args.role)
-        assignee = _arg_value(self.ctx.args.assignee)
-        role_name = self._ROLES[role_key]
+    def _resolve_assignee(self):
+        assignee = _arg_value(getattr(self.ctx.args, "assignee", None))
+        assignee_me = bool(_arg_value(getattr(self.ctx.args, "assignee_me", None)))
+        if assignee and assignee_me:
+            raise CLIError("Specify either --assignee or --assignee-me, not both.")
+        if assignee_me:
+            return _resolve_signed_in_user_object_id(self.cli_ctx)
+        if not assignee:
+            raise CLIError("Specify --assignee <object-id/UPN> or --assignee-me.")
+        return assignee
 
+    def _resolve_resource_id(self, name, resource_group):
         invoke = partial(_cli_invoke, self.cli_ctx)
         agent = invoke(
             "sre", "agent", "show", "--name", name, "--resource-group", resource_group,
@@ -923,9 +942,67 @@ class GrantAccess(AAZCommand):
         resource_id = agent.get("id")
         if not resource_id:
             raise CLIError(f"Could not resolve the resource ID of agent '{name}'.")
+        return resource_id
 
+
+@register_command("sre agent grant-access")
+class GrantAccess(_RoleAssignmentScopeCommand):
+    """Grant a built-in SRE Agent RBAC role to a user, group, or principal.
+
+    Thin convenience wrapper over 'az role assignment create' that builds
+    the agent's full resource-ID scope for you (see running notes section
+    0's "Role assignment" row) -- not a new ARM operation, just a shortcut
+    so callers do not need to construct the scope string by hand. Pass
+    --assignee-me to grant yourself access without looking up your own
+    object ID first.
+    """
+
+    _args_schema = None
+    _VERB = "grant"
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        name = _arg_value(self.ctx.args.name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        role_key = _arg_value(self.ctx.args.role)
+        role_name = self._ROLES[role_key]
+        assignee = self._resolve_assignee()
+        resource_id = self._resolve_resource_id(name, resource_group)
+
+        invoke = partial(_cli_invoke, self.cli_ctx)
         return invoke(
             "role", "assignment", "create",
+            "--role", role_name,
+            "--assignee", assignee,
+            "--scope", resource_id,
+        )
+
+
+@register_command("sre agent revoke-access")
+class RevokeAccess(_RoleAssignmentScopeCommand):
+    """Revoke a built-in SRE Agent RBAC role from a user, group, or principal.
+
+    Mirrors 'grant-access': thin convenience wrapper over 'az role
+    assignment delete' that builds the agent's full resource-ID scope for
+    you, so callers do not need to construct the scope string (or look up
+    their own object ID, via --assignee-me) by hand.
+    """
+
+    _args_schema = None
+    _VERB = "revoke"
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        name = _arg_value(self.ctx.args.name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        role_key = _arg_value(self.ctx.args.role)
+        role_name = self._ROLES[role_key]
+        assignee = self._resolve_assignee()
+        resource_id = self._resolve_resource_id(name, resource_group)
+
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        return invoke(
+            "role", "assignment", "delete",
             "--role", role_name,
             "--assignee", assignee,
             "--scope", resource_id,
