@@ -14,6 +14,7 @@ rebuilt one.
 
 import base64
 import json
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -25,6 +26,7 @@ from azure.cli.core.mock import DummyCli
 from azext_sre import SreCommandsLoader
 from azext_sre.custom import (
     EXTENSION_TYPES,
+    GITHUB_COPILOT_MCP_ENDPOINT,
     Create,
     ConnectorCreate,
     ExtensionCreate,
@@ -33,10 +35,14 @@ from azext_sre.custom import (
     ExtensionShow,
     GrantAccess,
     UpdateNetwork,
+    RepoConnect,
+    _ConnectorConvenienceArgsMixin,
+    _GrantAccessToMeMixin,
     _annotate_connector_consent_status,
     _arg_value,
     _connector_consent_status,
     _decode_extension_envelope,
+    _detect_repo_provider,
     _encode_extension_value,
     _extension_type_arg,
     _normalize_data_connector_type,
@@ -818,6 +824,171 @@ class AzureDevOpsAuthsShapeValidationTests(unittest.TestCase):
         self.assertIn("must both be provided or both be omitted", str(raised.exception))
 
 
+class RepoProviderDetectionTests(unittest.TestCase):
+    """_detect_repo_provider maps a repo's URL host to the provider enum
+    'sre agent extension create --extension-type repositories' expects."""
+
+    def test_detects_github(self):
+        self.assertEqual(_detect_repo_provider("https://github.com/org/repo"), "GitHub")
+
+    def test_detects_azure_devops_dev_azure_com(self):
+        self.assertEqual(
+            _detect_repo_provider("https://dev.azure.com/org/project/_git/repo"), "AzureDevOps",
+        )
+
+    def test_detects_azure_devops_visualstudio_com(self):
+        self.assertEqual(
+            _detect_repo_provider("https://org.visualstudio.com/project/_git/repo"), "AzureDevOps",
+        )
+
+    def test_rejects_unknown_host(self):
+        with self.assertRaises(CLIError) as raised:
+            _detect_repo_provider("https://gitlab.com/org/repo")
+        self.assertIn("--provider", str(raised.exception))
+
+
+class RepoConnectTests(unittest.TestCase):
+    """RepoConnect is the one-command golden path mirroring azext-aigateway's
+    'az aigateway mcp create --github true': it must fetch a token itself
+    (never ask the user to paste one) and issue exactly the same two
+    'sre agent extension create' calls a user would otherwise build by hand.
+    """
+
+    def _run_github(self, repo_url="https://github.com/org/repo", **extra_args):
+        args = {
+            "agent_name": "myagent", "resource_group": "rg", "repo_url": repo_url,
+            "provider": None, "display_name": None, "branch": None,
+            "github_account": None, "devops_organization": None,
+            "devops_auth_type": "pat", "devops_identity": None,
+            "devops_federated_client_id": None, "devops_federated_tenant_id": None,
+        }
+        args.update(extra_args)
+        command = _bare_command(RepoConnect, **args)
+        calls = []
+
+        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
+            calls.append(args)
+            return {"properties": {"value": "stub"}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+             patch("azext_sre.custom._github_cli_token", lambda account=None: "gh-token-123"):
+            result = command._handler({})
+        return result, calls
+
+    def test_github_flow_never_asks_for_a_pat_and_wires_both_extensions(self):
+        _, calls = self._run_github()
+        self.assertEqual(len(calls), 2)
+
+        auth_call = calls[0]
+        self.assertIn("githubAuths", auth_call)
+        self.assertIn("github_com", auth_call)
+        auth_value = json.loads(auth_call[auth_call.index("--value") + 1])
+        self.assertEqual(auth_value, {"authType": "Pat", "pat": "gh-token-123"})
+
+        repo_call = calls[1]
+        self.assertIn("repositories", repo_call)
+        self.assertIn("repo", repo_call)  # default display name from URL tail
+        repo_value = json.loads(repo_call[repo_call.index("--value") + 1])
+        self.assertEqual(repo_value["url"], "https://github.com/org/repo")
+        self.assertEqual(repo_value["type"], "GitHub")
+        self.assertEqual(repo_value["description"], "repo")
+
+    def test_display_name_and_branch_are_passed_through(self):
+        _, calls = self._run_github(display_name="my-repo", branch="main")
+        repo_value = json.loads(calls[1][calls[1].index("--value") + 1])
+        self.assertEqual(repo_value["description"], "my-repo")
+        self.assertEqual(repo_value["branch"], "main")
+
+    def _run_devops(self, **extra_args):
+        args = {
+            "agent_name": "myagent", "resource_group": "rg",
+            "repo_url": "https://dev.azure.com/contoso/project/_git/repo",
+            "provider": None, "display_name": None, "branch": None,
+            "github_account": None, "devops_organization": None,
+            "devops_auth_type": "pat", "devops_identity": None,
+            "devops_federated_client_id": None, "devops_federated_tenant_id": None,
+        }
+        args.update(extra_args)
+        command = _bare_command(RepoConnect, **args)
+        calls = []
+
+        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
+            calls.append(args)
+            return {"properties": {"value": "stub"}}
+
+        return command, calls, fake_cli_invoke
+
+    def test_azure_devops_flow_mints_its_own_pat(self):
+        command, calls, fake_cli_invoke = self._run_devops()
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+             patch("azext_sre.custom._devops_pat_token", lambda cli_ctx, org, name: "ado-pat-xyz"):
+            command._handler({})
+
+        auth_value = json.loads(calls[0][calls[0].index("--value") + 1])
+        self.assertEqual(auth_value, {"authType": "Pat", "pat": "ado-pat-xyz"})
+        self.assertIn("contoso", calls[0])  # auth extension-name is the org, not a fixed string
+        repo_value = json.loads(calls[1][calls[1].index("--value") + 1])
+        self.assertEqual(repo_value["type"], "AzureDevOps")
+
+    def test_azure_devops_managed_identity_skips_pat_minting_entirely(self):
+        command, calls, fake_cli_invoke = self._run_devops(
+            devops_auth_type="managed-identity",
+            devops_identity="/subscriptions/x/.../userAssignedIdentities/mi",
+        )
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("_devops_pat_token must not be called for managed-identity auth")
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+             patch("azext_sre.custom._devops_pat_token", fail_if_called):
+            command._handler({})
+
+        auth_value = json.loads(calls[0][calls[0].index("--value") + 1])
+        self.assertEqual(
+            auth_value,
+            {"authType": "ManagedIdentity", "identity": "/subscriptions/x/.../userAssignedIdentities/mi"},
+        )
+
+    def test_azure_devops_managed_identity_requires_identity(self):
+        command, _calls, fake_cli_invoke = self._run_devops(devops_auth_type="managed-identity")
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            with self.assertRaises(CLIError) as raised:
+                command._handler({})
+        self.assertIn("--devops-identity is required", str(raised.exception))
+
+    def test_azure_devops_managed_identity_federated_fields_both_or_neither(self):
+        command, _calls, fake_cli_invoke = self._run_devops(
+            devops_auth_type="managed-identity",
+            devops_identity="/subscriptions/x/.../mi",
+            devops_federated_client_id="client-id-only",
+        )
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            with self.assertRaises(CLIError) as raised:
+                command._handler({})
+        self.assertIn("must both be provided or both be omitted", str(raised.exception))
+
+    def test_pat_policy_violation_suggests_managed_identity(self):
+        command, _calls, fake_cli_invoke = self._run_devops()
+
+        def fake_pat_token(cli_ctx, org, name):
+            raise CLIError(
+                '\'sre agent extension create ...\' failed: Bad Request('
+                '{"message":"DisablePatCreationPolicyViolation"})'
+            )
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+             patch("azext_sre.custom._devops_pat_token", fake_pat_token):
+            with self.assertRaises(CLIError) as raised:
+                command._handler({})
+        self.assertIn("--devops-auth-type managed-identity", str(raised.exception))
+
+
 class HttpTriggersShapeValidationTests(unittest.TestCase):
     """--extension-type httpTriggers' inner shape is confirmed via
     sreagent-runtime Agent.Web/Controllers/v1/HttpTriggersController.cs's
@@ -1033,6 +1204,7 @@ class CommandRegistrationTests(unittest.TestCase):
             "sre agent grant-access", "sre agent update-network",
             "sre agent extension create", "sre agent extension show",
             "sre agent extension list", "sre agent extension delete",
+            "sre agent repo connect",
         ]
         missing = [name for name in expected if name not in self.command_table]
         self.assertEqual(missing, [], f"Missing registered commands: {missing}")
@@ -1109,6 +1281,174 @@ class ArgSchemaHelpRegressionTests(unittest.TestCase):
         schema = Create._build_arguments_schema()
         cmd_arg = schema.default_model.provider.to_cmd_arg("provider")
         self.assertIn("Anthropic", cmd_arg.type.settings.get("help"))
+
+
+class _NoOpPreOperationsBase:
+    """Stand-in base class for isolating _ConnectorConvenienceArgsMixin.
+    _DataConnectorTypeArgMixin.pre_operations() calls .to_serialized_data()
+    on data_connector_type, which only exists on a real AAZ value -- not on
+    the plain Python strings these tests use. Chaining onto this no-op base
+    instead of the full ConnectorCreate MRO lets the mixin's own logic be
+    tested directly without needing a fully-built AAZ schema/ctx.
+    """
+
+    def pre_operations(self):
+        pass
+
+
+class _TestConnectorConvenience(_ConnectorConvenienceArgsMixin, _NoOpPreOperationsBase):
+    pass
+
+
+class ConnectorConvenienceArgsTests(unittest.TestCase):
+    """--file-path/--mcp-endpoint/--github on 'connector create' build the
+    real nested extended-properties/data-source shapes confirmed live this
+    session, instead of requiring callers to hand-base64-encode files or
+    discover the dual data-source+extended-properties requirement for Mcp
+    connectors the hard way."""
+
+    def _run(self, **extra_args):
+        args = {
+            "data_connector_type": None, "file_path": None,
+            "mcp_endpoint": None, "github": None,
+            "data_source": None, "extended_properties": None,
+        }
+        args.update(extra_args)
+        command = _bare_command(_TestConnectorConvenience, **args)
+        command.pre_operations()
+        return command.ctx.args
+
+    def test_github_flag_fills_canonical_endpoint(self):
+        args = self._run(data_connector_type="Mcp", github=True)
+        self.assertEqual(args.data_source, GITHUB_COPILOT_MCP_ENDPOINT)
+        self.assertEqual(
+            args.extended_properties,
+            {"transport": "Http", "endpoint": GITHUB_COPILOT_MCP_ENDPOINT},
+        )
+
+    def test_mcp_endpoint_builds_both_data_source_and_extended_properties(self):
+        args = self._run(data_connector_type="Mcp", mcp_endpoint="https://example.com/mcp")
+        self.assertEqual(args.data_source, "https://example.com/mcp")
+        self.assertEqual(
+            args.extended_properties,
+            {"transport": "Http", "endpoint": "https://example.com/mcp"},
+        )
+
+    def test_github_flag_rejects_non_mcp_type(self):
+        with self.assertRaises(CLIError) as raised:
+            self._run(data_connector_type="Kusto", github=True)
+        self.assertIn("Mcp", str(raised.exception))
+
+    def test_file_path_base64_encodes_knowledge_file(self):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as handle:
+            handle.write(b"hello world")
+            path = handle.name
+        try:
+            args = self._run(data_connector_type="KnowledgeFile", file_path=path)
+            self.assertEqual(
+                args.extended_properties,
+                {"fileContent": base64.b64encode(b"hello world").decode("ascii"),
+                 "fileName": os.path.basename(path)},
+            )
+        finally:
+            os.remove(path)
+
+    def test_file_path_reads_knowledge_text_as_utf8(self):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as handle:
+            handle.write("some knowledge text")
+            path = handle.name
+        try:
+            args = self._run(data_connector_type="KnowledgeText", file_path=path)
+            self.assertEqual(args.extended_properties, {"content": "some knowledge text"})
+        finally:
+            os.remove(path)
+
+    def test_file_path_rejects_unsupported_connector_type(self):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(delete=False) as handle:
+            path = handle.name
+        try:
+            with self.assertRaises(CLIError) as raised:
+                self._run(data_connector_type="Kusto", file_path=path)
+            self.assertIn("--file-path", str(raised.exception))
+        finally:
+            os.remove(path)
+
+    def test_file_path_rejects_missing_file(self):
+        with self.assertRaises(CLIError) as raised:
+            self._run(data_connector_type="KnowledgeFile", file_path="C:\\does\\not\\exist.bin")
+        self.assertIn("does not exist", str(raised.exception))
+
+    def test_connector_create_schema_exposes_new_args(self):
+        schema = ConnectorCreate._build_arguments_schema()
+        self.assertIsNotNone(schema.file_path)
+        self.assertIsNotNone(schema.mcp_endpoint)
+        self.assertIsNotNone(schema.github)
+
+
+class _NoOpPostOperationsBase:
+    """Stand-in base for isolating _GrantAccessToMeMixin the same way
+    _NoOpPreOperationsBase isolates the connector mixin above."""
+
+    def post_operations(self):
+        pass
+
+
+class _TestGrantAccessToMe(_GrantAccessToMeMixin, _NoOpPostOperationsBase):
+    pass
+
+
+class GrantAccessToMeTests(unittest.TestCase):
+    """--grant-access-to-me on 'agent create' collapses the
+    create -> `az ad signed-in-user show` -> grant-access dance the user
+    found confusing into a single flag."""
+
+    def _run(self, calls, signed_in_user=None, **extra_args):
+        args = {
+            "agent_name": "myagent", "resource_group": "rg",
+            "grant_access_to_me": None,
+        }
+        args.update(extra_args)
+        command = _bare_command(_TestGrantAccessToMe, **args)
+
+        def fake_cli_invoke(cli_ctx, *cmd_args, allow_missing=False):
+            calls.append(cmd_args)
+            if cmd_args[:3] == ("ad", "signed-in-user", "show"):
+                return signed_in_user if signed_in_user is not None else {"id": "user-object-id"}
+            return {"properties": {"value": "stub"}}
+
+        with patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            command.post_operations()
+        return calls
+
+    def test_no_flag_does_nothing(self):
+        calls = self._run([])
+        self.assertEqual(calls, [])
+
+    def test_resolves_signed_in_user_and_calls_grant_access(self):
+        calls = self._run([], grant_access_to_me="admin")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][:3], ("ad", "signed-in-user", "show"))
+        grant_call = calls[1]
+        self.assertEqual(grant_call[:3], ("sre", "agent", "grant-access"))
+        self.assertIn("myagent", grant_call)
+        self.assertIn("rg", grant_call)
+        self.assertIn("admin", grant_call)
+        self.assertIn("user-object-id", grant_call)
+
+    def test_raises_if_signed_in_user_cannot_be_resolved(self):
+        with self.assertRaises(CLIError) as raised:
+            self._run([], grant_access_to_me="reader", signed_in_user={})
+        self.assertIn("signed-in user", str(raised.exception))
+
+    def test_agent_create_schema_exposes_grant_access_to_me(self):
+        schema = Create._build_arguments_schema()
+        self.assertIsNotNone(schema.grant_access_to_me)
 
 
 if __name__ == "__main__":

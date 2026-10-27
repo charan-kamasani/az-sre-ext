@@ -27,6 +27,7 @@
 # pylint: disable=too-many-statements
 # pylint: disable=protected-access
 
+import base64
 import json
 import os
 from functools import partial
@@ -265,8 +266,55 @@ class _ModelProviderArgMixin:
         super().pre_operations()
 
 
+class _GrantAccessToMeMixin:
+    """Adds --grant-access-to-me to 'agent create', collapsing the
+    create -> `az ad signed-in-user show` -> grant-access dance into one
+    flag. GrantAccess (defined further below in this module) already
+    builds the agent's resource-ID scope and issues 'role assignment
+    create' for you; this just auto-resolves "me" and calls it right
+    after the agent finishes provisioning.
+    """
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.grant_access_to_me = AAZStrArg(
+            options=["--grant-access-to-me"],
+            help="Grant the signed-in user a built-in SRE Agent role "
+            "immediately after creating the agent: 'admin', 'user', "
+            "'author', or 'reader'. Resolves your object ID via "
+            "'az ad signed-in-user show' automatically -- equivalent to "
+            "running 'sre agent grant-access --assignee <your-object-id>' "
+            "as a separate, manual follow-up command.",
+            enum={key: key for key in GrantAccess._ROLES},
+        )
+        return schema
+
+    def post_operations(self):
+        super().post_operations()
+        role_key = _arg_value(getattr(self.ctx.args, "grant_access_to_me", None))
+        if not role_key:
+            return
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        signed_in_user = invoke("ad", "signed-in-user", "show")
+        object_id = (signed_in_user or {}).get("id") if isinstance(signed_in_user, dict) else None
+        if not object_id:
+            raise CLIError("Could not resolve the signed-in user's object ID via 'az ad signed-in-user show'.")
+        invoke(
+            "sre", "agent", "grant-access",
+            "--agent-name", agent_name, "--resource-group", resource_group,
+            "--role", role_key, "--assignee", object_id,
+        )
+        logger.warning(
+            "Granted '%s' role to signed-in user (%s) on agent '%s'.",
+            GrantAccess._ROLES[role_key], object_id, agent_name,
+        )
+
+
 @register_command("sre agent create")
-class Create(_ModelProviderArgMixin, _GeneratedCreate):
+class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
     :example: Create an agent with an Anthropic default model
@@ -402,8 +450,99 @@ class _DataConnectorTypeArgMixin:
         super().pre_operations()
 
 
+# Real public GitHub Copilot MCP endpoint, confirmed live this session
+# (provisioningState: Succeeded against a real agent). Same constant
+# azext-aigateway's _onboarding.py uses for its own "--github true" shortcut
+# -- this is the SRE-Agent-side equivalent for 'connector create --type Mcp'.
+GITHUB_COPILOT_MCP_ENDPOINT = "https://api.githubcopilot.com/mcp/"
+
+
+class _ConnectorConvenienceArgsMixin:
+    """Adds --file-path/--mcp-endpoint/--github to 'connector create', so
+    KnowledgeFile/KnowledgeText/Mcp connectors don't require a hand-built
+    base64 payload or the (confirmed live, easy to get wrong) nested
+    --extended-properties JSON shape Mcp actually needs. The service's real
+    wire shape is unchanged -- this only builds it for the caller, the same
+    spirit as 'sre agent repo connect' and azext-aigateway's
+    'mcp create --github true'.
+    """
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        if hasattr(schema, "file_path"):
+            # Already added -- _build_arguments_schema can be invoked more
+            # than once against the same cached schema instance (e.g. by
+            # repeated test calls), and AAZArgumentsSchema forbids
+            # redefining a key.
+            return schema
+        schema.file_path = AAZStrArg(
+            options=["--file-path"],
+            arg_group="Properties",
+            help="Local file to ingest, instead of hand-building "
+            "--extended-properties yourself. For --data-connector-type "
+            "KnowledgeFile, the CLI reads and base64-encodes the file into "
+            "extended-properties.fileContent/fileName. For KnowledgeText, "
+            "the CLI reads the file as UTF-8 text into "
+            "extended-properties.content.",
+        )
+        schema.mcp_endpoint = AAZStrArg(
+            options=["--mcp-endpoint"],
+            arg_group="Properties",
+            help="For --data-connector-type Mcp: the MCP server's HTTP "
+            "endpoint URL. Builds both --data-source and the nested "
+            "extended-properties.transport/endpoint the service actually "
+            "requires (confirmed live: a bare --data-source alone is "
+            "rejected with 'Endpoint value is required for MCP connector "
+            "with HTTP transport.').",
+        )
+        schema.github = AAZBoolArg(
+            options=["--github"],
+            arg_group="Properties",
+            help="For --data-connector-type Mcp: shortcut for "
+            "--mcp-endpoint pointed at the real public GitHub Copilot MCP "
+            "server (https://api.githubcopilot.com/mcp/).",
+        )
+        return schema
+
+    def pre_operations(self):
+        args = self.ctx.args
+        connector_type = _arg_value(getattr(args, "data_connector_type", None))
+        file_path = _arg_value(getattr(args, "file_path", None))
+        mcp_endpoint = _arg_value(getattr(args, "mcp_endpoint", None))
+        github = _arg_value(getattr(args, "github", None))
+
+        if github or mcp_endpoint:
+            if connector_type != "Mcp":
+                raise CLIError("--github/--mcp-endpoint require --data-connector-type Mcp.")
+            endpoint = GITHUB_COPILOT_MCP_ENDPOINT if github else mcp_endpoint
+            args.data_source = endpoint
+            args.extended_properties = {"transport": "Http", "endpoint": endpoint}
+        elif file_path:
+            if connector_type not in ("KnowledgeFile", "KnowledgeText"):
+                raise CLIError(
+                    "--file-path is only supported for --data-connector-type "
+                    "KnowledgeFile or KnowledgeText."
+                )
+            if not os.path.isfile(file_path):
+                raise CLIError(f"--file-path '{file_path}' does not exist.")
+            if connector_type == "KnowledgeFile":
+                with open(file_path, "rb") as handle:
+                    content = base64.b64encode(handle.read()).decode("ascii")
+                args.extended_properties = {
+                    "fileContent": content,
+                    "fileName": os.path.basename(file_path),
+                }
+            else:
+                with open(file_path, "r", encoding="utf-8") as handle:
+                    text = handle.read()
+                args.extended_properties = {"content": text}
+
+        super().pre_operations()
+
+
 @register_command("sre agent connector create")
-class ConnectorCreate(_DataConnectorTypeArgMixin, _GeneratedConnectorCreate):
+class ConnectorCreate(_DataConnectorTypeArgMixin, _ConnectorConvenienceArgsMixin, _GeneratedConnectorCreate):
     """Create an Agent Connector."""
 
     _args_schema = None
@@ -1739,3 +1878,301 @@ class ExtensionDelete(AAZCommand):
 
         resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
         return _arm_request(self.cli_ctx, "DELETE", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+
+
+# --------------------------------------------------------------------------------------------
+# "sre agent repo connect" -- a one-command golden path for the GitHub/Azure
+# DevOps repo-connection flow, modeled directly on azext-aigateway's
+# "az aigateway mcp create --github true" (custom.py's McpCreate.pre_operations
+# + _onboarding.py's github_mcp_endpoints/_github_cli_token). That command
+# collapses what would otherwise be a manual PAT-copy-paste + hand-built JSON
+# payload into one flag because it already has a locally authenticated
+# credential available (gh auth token) and a canonical payload shape it can
+# build for the user.
+#
+# Before this command, connecting one repo required two raw
+# "sre agent extension create" calls the user had to build by hand:
+#   1. githubAuths/azureDevOpsAuths, with a manually-pasted PAT
+#   2. repositories, with a hand-written JSON --value
+# This command does both, using a token it fetches itself -- `gh auth token`
+# for GitHub (identical helper to aigateway's), or a freshly minted
+# Azure DevOps PAT via the vssps.dev.azure.com REST API for Azure DevOps
+# (ADO PAT creation has no `az devops` command; see running notes section on
+# ADO PAT generation). Nothing here bypasses the real extension model --
+# it is sugar that calls "sre agent extension create" twice with payloads it
+# builds instead of asking the user to build them.
+# --------------------------------------------------------------------------------------------
+
+ADO_PAT_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
+
+
+def _github_cli_token(account=None):
+    """Fetch the already-authenticated GitHub token from the GitHub CLI.
+
+    Copied from azext-aigateway's custom.py._github_cli_token verbatim (same
+    helper name/signature) so both extensions share one well-understood
+    pattern for "borrow the user's existing `gh auth login` session instead
+    of asking them to mint and paste a PAT."
+    """
+    import subprocess
+
+    command = ["gh", "auth", "token", "--hostname", "github.com"]
+    if account:
+        command.extend(("--user", account))
+    environment = os.environ.copy()
+    environment.pop("GITHUB_TOKEN", None)
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError) as ex:
+        raise CLIError(
+            "GitHub authentication is required. Run "
+            "'gh auth login --hostname github.com', or pass --pat yourself."
+        ) from ex
+    token = result.stdout.strip()
+    if not token:
+        raise CLIError("GitHub CLI returned an empty credential.")
+    return token
+
+
+def _devops_pat_token(cli_ctx, organization, display_name):
+    """Mint a short-lived Azure DevOps PAT via the vssps REST API.
+
+    `az devops` has no PAT-creation command, so this calls the same
+    vssps.dev.azure.com/_apis/tokens/pats endpoint the Portal's "New token"
+    button uses, authenticated with an AAD token scoped to Azure DevOps's own
+    resource ID (499b84ac-1321-427f-aa17-267ca6975798). Confirmed live this
+    session against a real Azure DevOps org.
+    """
+    import datetime
+
+    # Reuses the public `az account get-access-token` command (via
+    # _cli_invoke, same pattern as every other cross-command call in this
+    # file) instead of touching azure.cli.core internals directly -- the
+    # resource is the bare Azure DevOps application ID GUID, NOT an
+    # "https://<guid>" URI (that form was tried first and fails tenant-wide
+    # with AADSTS500011, confirmed live 2026-10-27).
+    token_response = _cli_invoke(
+        cli_ctx, "account", "get-access-token", "--resource", ADO_PAT_RESOURCE_ID,
+    )
+    token = (token_response or {}).get("accessToken")
+    if not token:
+        raise CLIError("Could not acquire an Azure DevOps access token.")
+    valid_to = (datetime.datetime.utcnow() + datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    body = {
+        "displayName": display_name,
+        "scope": "vso.code",
+        "validTo": valid_to,
+        "allOrgs": False,
+    }
+    url = f"https://vssps.dev.azure.com/{organization}/_apis/tokens/pats?api-version=7.1-preview.1"
+    response = send_raw_request(
+        cli_ctx,
+        "POST",
+        url,
+        headers=[f"Authorization=Bearer {token}", "Content-Type=application/json"],
+        body=json.dumps(body),
+    )
+    pat = response.json().get("patToken", {}).get("token")
+    if not pat:
+        raise CLIError("Azure DevOps did not return a PAT token.")
+    return pat
+
+
+def _detect_repo_provider(repo_url):
+    from urllib.parse import urlparse
+
+    host = (urlparse(repo_url).hostname or "").lower()
+    if host == "github.com":
+        return "GitHub"
+    if host.endswith("dev.azure.com") or host.endswith("visualstudio.com"):
+        return "AzureDevOps"
+    raise CLIError(
+        f"Could not detect the repo provider from '{repo_url}'. Pass "
+        "--provider GitHub or --provider AzureDevOps explicitly."
+    )
+
+
+@register_command("sre agent repo connect")
+class RepoConnect(AAZCommand):
+    """Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
+
+    Mirrors 'az aigateway mcp create --github true': fetches your existing
+    'gh auth login' credential (GitHub) or mints a fresh PAT via the Azure
+    DevOps REST API (Azure DevOps) and wires up both the auth extension and
+    the repositories extension for you, instead of requiring two manual
+    'sre agent extension create' calls with hand-built JSON --value payloads.
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.agent_name = AAZStrArg(
+            options=["--agent-name"],
+            help="Name of the SRE Agent.",
+            required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        schema.repo_url = AAZStrArg(
+            options=["--repo-url"],
+            help="HTTPS clone URL of the repo, e.g. https://github.com/org/repo "
+            "or https://dev.azure.com/org/project/_git/repo.",
+            required=True,
+        )
+        schema.provider = AAZStrArg(
+            options=["--provider"],
+            help="Repo provider. Auto-detected from --repo-url's host when omitted.",
+            enum={"GitHub": "GitHub", "AzureDevOps": "AzureDevOps"},
+        )
+        schema.display_name = AAZStrArg(
+            options=["--display-name", "--name", "-n"],
+            help="Display name for the repo. Defaults to the last path segment of --repo-url.",
+        )
+        schema.branch = AAZStrArg(
+            options=["--branch"],
+            help="Branch to check out. Defaults to the repo's default branch.",
+        )
+        schema.github_account = AAZStrArg(
+            options=["--github-account"],
+            help="GitHub account to use when 'gh' is logged into more than one "
+            "(GitHub repos only; passed to 'gh auth token --user').",
+        )
+        schema.devops_organization = AAZStrArg(
+            options=["--devops-organization"],
+            help="Azure DevOps organization name, e.g. 'contoso' for "
+            "dev.azure.com/contoso (Azure DevOps repos only; auto-detected "
+            "from --repo-url when it is a dev.azure.com URL).",
+        )
+        schema.devops_auth_type = AAZStrArg(
+            options=["--devops-auth-type"],
+            help="Azure DevOps auth mechanism. 'pat' (default) mints a PAT via "
+            "the vssps REST API -- some orgs block this with a "
+            "'DisablePatCreationPolicyViolation' org policy, in which case use "
+            "'managed-identity' with --devops-identity instead (the identity "
+            "must already be added as a user/group member of the Azure DevOps "
+            "org -- this command does not grant that membership).",
+            enum={"pat": "pat", "managed-identity": "managed-identity"},
+            default="pat",
+        )
+        schema.devops_identity = AAZStrArg(
+            options=["--devops-identity"],
+            help="Resource ID of the user- or system-assigned managed identity "
+            "to authenticate with Azure DevOps as (required when "
+            "--devops-auth-type managed-identity). Typically the SRE Agent's "
+            "own identity -- see 'az sre agent show --query identity'.",
+        )
+        schema.devops_federated_client_id = AAZStrArg(
+            options=["--devops-federated-client-id"],
+            help="Federated client ID, only needed alongside "
+            "--devops-federated-tenant-id for a user-assigned identity in a "
+            "different tenant than the Azure DevOps org (managed-identity auth "
+            "only; both or neither must be set).",
+        )
+        schema.devops_federated_tenant_id = AAZStrArg(
+            options=["--devops-federated-tenant-id"],
+            help="Federated tenant ID, only needed alongside "
+            "--devops-federated-client-id (managed-identity auth only; both or "
+            "neither must be set).",
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        repo_url = _arg_value(self.ctx.args.repo_url)
+        provider = _arg_value(self.ctx.args.provider) or _detect_repo_provider(repo_url)
+        display_name = _arg_value(self.ctx.args.display_name) or repo_url.rstrip("/").rsplit("/", 1)[-1]
+        branch = _arg_value(self.ctx.args.branch)
+        github_account = _arg_value(self.ctx.args.github_account)
+        devops_organization = _arg_value(self.ctx.args.devops_organization)
+        devops_auth_type = _arg_value(self.ctx.args.devops_auth_type) or "pat"
+        devops_identity = _arg_value(self.ctx.args.devops_identity)
+        devops_federated_client_id = _arg_value(self.ctx.args.devops_federated_client_id)
+        devops_federated_tenant_id = _arg_value(self.ctx.args.devops_federated_tenant_id)
+
+        invoke = partial(_cli_invoke, self.cli_ctx)
+
+        if provider == "GitHub":
+            token = _github_cli_token(github_account)
+            try:
+                auth_value = json.dumps({"authType": "Pat", "pat": token})
+            finally:
+                token = None
+            auth_result = invoke(
+                "sre", "agent", "extension", "create",
+                "--agent-name", agent_name, "--resource-group", resource_group,
+                "--extension-type", "githubAuths", "--extension-name", "github_com",
+                "--value", auth_value,
+            )
+            repo_type = "GitHub"
+        else:
+            from urllib.parse import urlparse
+
+            organization = devops_organization or urlparse(repo_url).path.strip("/").split("/", 1)[0]
+            if not organization:
+                raise CLIError(
+                    "Could not detect the Azure DevOps organization from --repo-url. "
+                    "Pass --devops-organization explicitly."
+                )
+
+            if devops_auth_type == "managed-identity":
+                if not devops_identity:
+                    raise CLIError(
+                        "--devops-identity is required when --devops-auth-type "
+                        "managed-identity is set."
+                    )
+                if bool(devops_federated_client_id) != bool(devops_federated_tenant_id):
+                    raise CLIError(
+                        "--devops-federated-client-id and --devops-federated-tenant-id "
+                        "must both be provided or both be omitted."
+                    )
+                auth_dict = {"authType": "ManagedIdentity", "identity": devops_identity}
+                if devops_federated_client_id:
+                    auth_dict["federatedClientId"] = devops_federated_client_id
+                    auth_dict["federatedTenantId"] = devops_federated_tenant_id
+                auth_value = json.dumps(auth_dict)
+            else:
+                try:
+                    pat = _devops_pat_token(self.cli_ctx, organization, f"sre-agent-{agent_name}")
+                except Exception as ex:
+                    if "DisablePatCreationPolicyViolation" in str(ex):
+                        raise CLIError(
+                            f"Azure DevOps org '{organization}' has a policy blocking PAT "
+                            "creation. Retry with --devops-auth-type managed-identity "
+                            "--devops-identity <resource-id-of-an-identity-already-added-to-"
+                            f"the-'{organization}'-org> instead."
+                        ) from ex
+                    raise
+                try:
+                    auth_value = json.dumps({"authType": "Pat", "pat": pat})
+                finally:
+                    pat = None
+            auth_result = invoke(
+                "sre", "agent", "extension", "create",
+                "--agent-name", agent_name, "--resource-group", resource_group,
+                "--extension-type", "azureDevOpsAuths", "--extension-name", organization,
+                "--value", auth_value,
+            )
+            repo_type = "AzureDevOps"
+
+        repo_body = {"url": repo_url, "type": repo_type, "description": display_name}
+        if branch:
+            repo_body["branch"] = branch
+        repo_result = invoke(
+            "sre", "agent", "extension", "create",
+            "--agent-name", agent_name, "--resource-group", resource_group,
+            "--extension-type", "repositories", "--extension-name", display_name,
+            "--value", json.dumps(repo_body),
+        )
+        return {"auth": auth_result, "repository": repo_result}
