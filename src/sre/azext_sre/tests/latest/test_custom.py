@@ -45,6 +45,7 @@ from azext_sre.custom import (
     ManagedResourceList,
     UpdateNetwork,
     RepoConnect,
+    GetConnection,
     KnowledgeCreate,
     KnowledgeShow,
     KnowledgeList,
@@ -2322,6 +2323,53 @@ class DefaultSystemIdentityTests(unittest.TestCase):
 
     def test_agent_create_includes_the_default_identity_mixin(self):
         self.assertTrue(issubclass(Create, _DefaultSystemIdentityMixin))
+
+
+class ConnectionShowDefaultAudienceTests(unittest.TestCase):
+    """Real bug found live: 'az sre connection show' (no --data-plane-audience
+    override) rendered 'dataPlaneAudience' in its JSON output as
+    '{"isDefault": true}' instead of the actual URL string. Root cause: an
+    unset AAZStrArg with a declared `default=` resolves through
+    `_arg_value()` to a `knack.validators.DefaultStr` (a str subclass used
+    internally to flag "still at its default value"); az's own command
+    output formatter introspects that subclass via vars() instead of
+    treating it as a plain string, because it isn't an *exact* `str`.
+    `GetConnection._handler` now coerces it with `str(...)` before putting
+    it in the output dict (the on-disk connections file was never affected,
+    since stdlib json.dump() already handles str subclasses correctly)."""
+
+    def _run(self, **extra_args):
+        args = {
+            "name": "myagent", "resource_group": "rg",
+            "data_plane_audience": "https://azuresre.dev",
+        }
+        args.update(extra_args)
+        command = _bare_command(GetConnection, **args)
+
+        def fake_cli_invoke(cli_ctx, *cmd_args, allow_missing=False):
+            return {"properties": {"agentEndpoint": "https://myagent--abc.def.eastus2.azuresre.ai"}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+             tempfile.TemporaryDirectory() as tmp_dir, \
+             patch("azext_sre.custom._CONNECTIONS_FILE", os.path.join(tmp_dir, "sreAgentConnections.json")):
+            result = command._handler({})
+        return result
+
+    def test_default_audience_is_a_plain_str_not_a_default_str_subclass(self):
+        from knack.validators import DefaultStr
+
+        default_audience = DefaultStr("https://azuresre.dev")
+        self.assertIsInstance(default_audience, str)
+        result = self._run(data_plane_audience=default_audience)
+        self.assertEqual(result["dataPlaneAudience"], "https://azuresre.dev")
+        # pylint: disable=unidiomatic-typecheck
+        self.assertEqual(type(result["dataPlaneAudience"]), str)
+        self.assertNotIsInstance(result["dataPlaneAudience"], DefaultStr)
+
+    def test_explicit_audience_passes_through_unchanged(self):
+        result = self._run(data_plane_audience="https://custom.audience.example")
+        self.assertEqual(result["dataPlaneAudience"], "https://custom.audience.example")
 
 
 class _NoOpPreOpBase2:

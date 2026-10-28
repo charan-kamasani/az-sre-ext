@@ -199,6 +199,15 @@ az sre usage list -g myrg -n myagent
 az sre supported-agent-model list -l eastus2
 ```
 
+`connection show`/`access grant`/`access revoke`/`agent delete --no-wait`
+live-verification (all pass):
+
+| Command | Status | Notes |
+|---|---|---|
+| `connection show` | Fixed real bug | Was rendering `dataPlaneAudience` as `{"isDefault": true}` instead of the actual URL string whenever `--data-plane-audience` was left at its default. Root cause: an unset `AAZStrArg` with a declared `default=` resolves to a `knack.validators.DefaultStr` (a `str` subclass used to flag "still at default"); az's own output formatter introspects that subclass via `vars()` instead of treating it as a plain string. Fixed by coercing with `str(...)` before returning. The on-disk `~/.azure/sreAgentConnections.json` file was never affected (stdlib `json.dump()` already handles `str` subclasses correctly) — only the console JSON output was wrong. |
+| `access grant`/`revoke --assignee-me` | Works | Live-verified: granting `reader` while already holding `admin` correctly adds a second role assignment; revoking removes only the targeted one, leaving `admin` intact. |
+| `agent delete --no-wait` | Works | Live-verified: returns in ~2.6s, agent transitions through `Deleting` provisioningState, and is confirmed gone (`ResourceNotFound`) ~20-40s later. |
+
 ## Cleanup ownership
 
 Live-tested resources (throwaway agents, test connectors, test extension

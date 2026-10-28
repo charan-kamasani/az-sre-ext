@@ -1546,7 +1546,17 @@ class GetConnection(AAZCommand):
         super()._handler(command_args)
         name = _arg_value(self.ctx.args.name)
         resource_group = _arg_value(self.ctx.args.resource_group)
-        audience = _arg_value(self.ctx.args.data_plane_audience)
+        # str(...) here is required, not cosmetic: when --data-plane-audience
+        # is left at its declared default, AAZ resolves it to a
+        # knack.validators.DefaultStr (a str subclass carrying an
+        # `is_default` flag for CLI recommendation messages). That subclass
+        # round-trips fine through json.dump() (used below for the on-disk
+        # connections file) but az's own command-output formatter does NOT
+        # treat it as a plain string -- it gets introspected via vars() and
+        # rendered as "{\"isDefault\": true}" in the command's JSON output.
+        # Coercing to a real str here avoids that misrender without
+        # affecting the on-disk file, which already worked correctly.
+        audience = str(_arg_value(self.ctx.args.data_plane_audience))
 
         invoke = partial(_cli_invoke, self.cli_ctx)
         agent = invoke(
