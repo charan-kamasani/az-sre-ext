@@ -63,6 +63,12 @@ from .aaz.latest.app.agent.connector import Create as _GeneratedConnectorCreate
 from .aaz.latest.app.agent.connector import Update as _GeneratedConnectorUpdate
 from .aaz.latest.app.agent.connector import Show as _GeneratedConnectorShow
 from .aaz.latest.app.agent.connector import List as _GeneratedConnectorList
+from .aaz.latest.app.agent.connector import Delete as _GeneratedConnectorDelete
+from .aaz.latest.app.agent.connector import ListSecret as _GeneratedConnectorListSecret
+from .aaz.latest.app.agent.identity import Assign as _GeneratedIdentityAssign
+from .aaz.latest.app.agent.identity import Remove as _GeneratedIdentityRemove
+from .aaz.latest.app.agent.identity import Show as _GeneratedIdentityShow
+from .aaz.latest.app.supported_agent_model import List as _GeneratedSupportedAgentModelList
 
 logger = get_logger(__name__)
 
@@ -300,7 +306,7 @@ class _GrantAccessToMeMixin:
             "immediately after creating the agent: 'admin', 'user', "
             "'author', or 'reader'. Resolves your object ID via "
             "'az ad signed-in-user show' automatically -- equivalent to "
-            "running 'sre agent grant-access --assignee <your-object-id>' "
+            "running 'sre access grant --assignee <your-object-id>' "
             "as a separate, manual follow-up command.",
             enum={key: key for key in GrantAccess._ROLES},
         )
@@ -316,7 +322,7 @@ class _GrantAccessToMeMixin:
         object_id = _resolve_signed_in_user_object_id(self.cli_ctx)
         invoke = partial(_cli_invoke, self.cli_ctx)
         invoke(
-            "sre", "agent", "grant-access",
+            "sre", "access", "grant",
             "--agent-name", agent_name, "--resource-group", resource_group,
             "--role", role_key, "--assignee", object_id,
         )
@@ -420,6 +426,19 @@ def _normalize_data_connector_type(value):
     return normalized
 
 
+@register_command_group("sre connector")
+class _ConnectorGroup(AAZCommandGroup):
+    """Connect an SRE Agent to an external data source it can query or act on.
+
+    Supports Kusto/Azure Data Explorer, MCP servers (GitHub, PagerDuty,
+    ServiceNow, Datadog, Splunk, and other custom MCP servers), Outlook,
+    Teams, ICM (incident management), Dgrep, and knowledge sources
+    (text/file/web page/repository). Use 'sre connector create' to add one,
+    'sre connector list'/'sre connector show' to see what's connected
+    (including OAuth consent status for connectors that need a sign-in).
+    """
+
+
 class _DataConnectorTypeArgMixin:
     """Shared --data-connector-type help/validation for connector create and update.
 
@@ -476,7 +495,7 @@ class _ConnectorConvenienceArgsMixin:
     base64 payload or the (confirmed live, easy to get wrong) nested
     --extended-properties JSON shape Mcp actually needs. The service's real
     wire shape is unchanged -- this only builds it for the caller, the same
-    spirit as 'sre agent repo connect' and azext-aigateway's
+    spirit as 'sre repo connect' and azext-aigateway's
     'mcp create --github true'.
     """
 
@@ -518,6 +537,19 @@ class _ConnectorConvenienceArgsMixin:
         )
         return schema
 
+    # Set by pre_operations() when --file-path was used, so _output() (see
+    # ConnectorCreate below) can warn if the service echoes back an empty
+    # extendedProperties despite the PUT request body containing the real
+    # fileContent/fileName -- confirmed live via --debug on 2026-01-01
+    # api-version: the request correctly includes
+    # {"fileContent": "...", "fileName": "..."}, but the 200 response (and
+    # a subsequent 'connector show') comes back with
+    # extendedProperties: {"fileContent": null, "fileName": null}. This is
+    # a service-side bug (the CLI sends the right payload), not something
+    # fixable client-side -- the warning just stops users from assuming
+    # the file silently never got sent.
+    _file_path_used = False
+
     def pre_operations(self):
         args = self.ctx.args
         connector_type = _arg_value(getattr(args, "data_connector_type", None))
@@ -550,8 +582,26 @@ class _ConnectorConvenienceArgsMixin:
                 with open(file_path, "r", encoding="utf-8") as handle:
                     text = handle.read()
                 args.extended_properties = {"content": text}
+            self._file_path_used = True
 
         super().pre_operations()
+
+    def _output(self, *args, **kwargs):
+        result = super()._output(*args, **kwargs)
+        if self._file_path_used:
+            properties = (result or {}).get("properties", {}) or {}
+            extended = properties.get("extendedProperties") or {}
+            if not any(extended.values()):
+                logger.warning(
+                    "The connector was created, but the service returned an "
+                    "empty 'extendedProperties' (fileContent/fileName not "
+                    "echoed back) -- this is a known service-side gap, "
+                    "confirmed via the request body actually sent, not a "
+                    "sign the CLI failed to send your file. Run 'az sre "
+                    "connector show' in a bit to double-check whether the "
+                    "content eventually shows up."
+                )
+        return result
 
 
 class _ConnectorExistenceGuardMixin:
@@ -569,36 +619,53 @@ class _ConnectorExistenceGuardMixin:
         resource_group = _arg_value(self.ctx.args.resource_group)
         connector_name = _arg_value(self.ctx.args.connector_name)
         existing = _cli_invoke(
-            self.cli_ctx, "sre", "agent", "connector", "show",
+            self.cli_ctx, "sre", "connector", "show",
             "--agent-name", agent_name, "--resource-group", resource_group,
             "--name", connector_name, allow_missing=True,
         )
         if existing is not None:
             raise ResourceExistsError(
                 f"A connector named '{connector_name}' already exists on agent "
-                f"'{agent_name}'. Use 'az sre agent connector update' to change "
+                f"'{agent_name}'. Use 'az sre connector update' to change "
                 "it, or choose another --name."
             )
         super().pre_operations()
 
 
-@register_command("sre agent connector create")
+@register_command("sre connector create")
 class ConnectorCreate(
     _DataConnectorTypeArgMixin,
     _ConnectorConvenienceArgsMixin,
     _ConnectorExistenceGuardMixin,
     _GeneratedConnectorCreate,
 ):
-    """Create an Agent Connector."""
+    """Create an Agent Connector.
+
+    :example: Connect an agent to Azure Data Explorer (Kusto) via MCP
+        az sre connector create --agent-name myagent --resource-group myrg \\
+            --name conn-kusto --data-connector-type Kusto --mcp-endpoint "https://help.kusto.windows.net/v1/rest"
+
+    :example: Connect an agent's GitHub MCP connector using your own gh auth
+        az sre connector create --agent-name myagent --resource-group myrg \\
+            --name conn-mcp --data-connector-type Mcp --github true
+    """
 
     _args_schema = None
 
+    def _output(self, *args, **kwargs):
+        result = super()._output(*args, **kwargs)
+        return _annotate_connector_consent_status(result)
 
-@register_command("sre agent connector update")
+
+@register_command("sre connector update")
 class ConnectorUpdate(_DataConnectorTypeArgMixin, _GeneratedConnectorUpdate):
     """Update an Agent Connector."""
 
     _args_schema = None
+
+    def _output(self, *args, **kwargs):
+        result = super()._output(*args, **kwargs)
+        return _annotate_connector_consent_status(result)
 
 
 # Consent-flow surfacing (issue #10). Confirmed via direct inspection of
@@ -624,12 +691,49 @@ def _connector_consent_status(extended_properties):
     return "Consented" if extended_properties.get("entraOAuth") else "PendingConsent"
 
 
+def _connector_consent_guidance(connector):
+    """Build an actionable message for a connector stuck in PendingConsent.
+
+    The SRE Agent control plane has no public ARM action to start or
+    complete OAuth consent from the CLI -- confirmed by inspecting
+    AAPT-SREAgent-ControlPlane src/WebApi (the ARM-facing REST surface):
+    there is no "getLoginLinks"-style operation there (unlike azext-aigateway's
+    AIGatewayToolServer_GetLoginLinks, which does return a public loginLink).
+    The only endpoints that construct/validate the Entra OAuth handshake for
+    connectors (src/AuthenticationEndpoint/Controllers/EntraSSOController.cs)
+    are Mise-authenticated, service-to-service routes meant for the portal's
+    own browser session -- not callable with a bearer token from the CLI.
+    So the CLI can only detect PendingConsent and point the user at the
+    one place that *can* complete it: the connector's blade in the portal.
+    """
+    resource_id = connector.get("id") if isinstance(connector, dict) else None
+    name = connector.get("name") if isinstance(connector, dict) else None
+    where = (
+        f"https://portal.azure.com/#@/resource{resource_id}/overview"
+        if isinstance(resource_id, str) and resource_id
+        else "the connector's blade in the Azure portal"
+    )
+    label = f"Connector '{name}'" if name else "This connector"
+    return (
+        f"{label} is PendingConsent: the OAuth sign-in step has not been "
+        "completed yet. The CLI cannot complete this step for you -- Azure "
+        "SRE Agent only exposes it as an interactive browser consent flow, "
+        f"not as a public ARM action. Open {where} and complete the "
+        "sign-in prompt, then re-run this command to confirm consentStatus "
+        "has changed to Consented."
+    )
+
+
 def _annotate_connector_consent_status(connector):
     """Add a CLI-only consentStatus field to a connector response dict,
     computed from properties.extendedProperties.{authType,entraOAuth}.
     No-ops (leaves the dict unchanged) for connectors that are not
     EntraOAuth-authenticated -- e.g. Kusto/Outlook/Teams connectors, or
     Mcp connectors using a different auth type, have no consent step.
+
+    When the computed status is PendingConsent, also logs actionable
+    guidance (see _connector_consent_guidance) since the CLI itself has no
+    way to drive the OAuth consent step to completion.
     """
     if not isinstance(connector, dict):
         return connector
@@ -641,14 +745,19 @@ def _annotate_connector_consent_status(connector):
     status = _connector_consent_status(extended_properties)
     if status is not None:
         connector["consentStatus"] = status
+        if status == "PendingConsent":
+            logger.warning(_connector_consent_guidance(connector))
     return connector
 
 
-@register_command("sre agent connector show")
+@register_command("sre connector show")
 class ConnectorShow(_GeneratedConnectorShow):
     """Show the details of an Agent Connector, including OAuth consent
     status (consentStatus: Consented/PendingConsent) for EntraOAuth-backed
-    Mcp connectors."""
+    Mcp connectors. If PendingConsent, a warning is printed with a portal
+    link to finish the sign-in -- the CLI cannot complete OAuth consent
+    itself, since the service only exposes it as an interactive browser
+    flow, not a public ARM action."""
 
     _args_schema = None
 
@@ -657,7 +766,7 @@ class ConnectorShow(_GeneratedConnectorShow):
         return _annotate_connector_consent_status(result)
 
 
-@register_command("sre agent connector list")
+@register_command("sre connector list")
 class ConnectorList(_GeneratedConnectorList):
     """List an SRE Agent's Connectors, including OAuth consent status
     (consentStatus: Consented/PendingConsent) for EntraOAuth-backed Mcp
@@ -666,7 +775,7 @@ class ConnectorList(_GeneratedConnectorList):
     _args_schema = None
 
     EMPTY_GUIDANCE = (
-        "No connectors found. Add one with 'az sre agent connector create "
+        "No connectors found. Add one with 'az sre connector create "
         "--data-connector-type Mcp --github true' (or --mcp-endpoint/"
         "--file-path for other connector types)."
     )
@@ -683,6 +792,643 @@ class ConnectorList(_GeneratedConnectorList):
         if not value and not next_link:
             logger.warning(self.EMPTY_GUIDANCE)
         return value, next_link
+
+
+@register_command("sre connector delete")
+class ConnectorDelete(_GeneratedConnectorDelete):
+    """Delete an Agent Connector."""
+
+    _args_schema = None
+
+
+class _ConnectorNameAliasMixin:
+    """Adds the usual '-n'/'--name' aliases to --connector-name, matching
+    show/update/delete -- the generated ListSecret recipe is missing them
+    (the swagger operation just didn't carry the same x-ms-client-name
+    alias the other connector operations have), which would otherwise make
+    this one command inconsistent with every other 'sre connector ...'
+    command's argument names.
+    """
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        connector_name = getattr(schema, "connector_name", None)
+        if connector_name is not None:
+            connector_name._options = ["-n", "--name", "--connector-name"]
+        return schema
+
+
+@register_command("sre connector list-secret")
+class ConnectorListSecret(_ConnectorNameAliasMixin, _GeneratedConnectorListSecret):
+    """Get a Data Connector's details including its secret(s) in plain text.
+
+    Unlike 'sre connector show'/'sre connector list', which redact secret
+    fields server-side, this command returns them unredacted.
+
+    :example: Read back a Kusto connector's secret after creating it
+        az sre connector list-secret --agent-name myagent --resource-group myrg --name conn-kusto
+    """
+
+    _args_schema = None
+
+
+# --------------------------------------------------------------------------------------------
+# "sre identity" -- matches the portal's Identity tab/blade: assign or
+# remove the agent resource's own system/user-assigned managed identity
+# (the identity the agent's data plane runs as, used for its own Azure
+# RBAC-gated calls -- distinct from 'sre access', which controls who can
+# manage/use the agent, and from 'sre repo connect', which is about repo
+# auth). Promoted from the generated 'app agent identity' subgroup (now
+# removed from the raw agent surface in commands.py) to its own top-level
+# noun, since manager feedback was explicit that 'agent' should stay a
+# pure CRUD/lifecycle noun and not carry extra nested subgroups.
+# --------------------------------------------------------------------------------------------
+@register_command_group("sre identity")
+class _IdentityGroup(AAZCommandGroup):
+    """Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls.
+
+    A managed identity is the credential the agent itself runs as when it
+    calls Azure APIs on your behalf (for example, to read a monitored
+    resource). Use 'sre identity assign' to turn one on (system-assigned
+    and/or user-assigned), 'sre identity show' to see what's assigned, and
+    'sre identity remove' to turn it off. Not to be confused with 'sre
+    access' (who can manage/use the agent) or 'sre repo connect' (repo auth).
+    """
+
+
+@register_command("sre identity assign")
+class IdentityAssign(_GeneratedIdentityAssign):
+    """Assign a system- and/or user-assigned managed identity to an SRE Agent.
+
+    :example: Turn on the agent's system-assigned identity
+        az sre identity assign --agent-name myagent --resource-group myrg --system-assigned
+
+    :example: Assign one or more user-assigned identities
+        az sre identity assign --agent-name myagent --resource-group myrg \\
+            --user-assigned "/subscriptions/.../resourceGroups/myrg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/myid"
+    """
+
+    _args_schema = None
+
+
+@register_command("sre identity remove")
+class IdentityRemove(_GeneratedIdentityRemove):
+    """Remove a system- and/or user-assigned managed identity from an SRE Agent.
+
+    :example: Turn off the agent's system-assigned identity
+        az sre identity remove --agent-name myagent --resource-group myrg --system-assigned
+    """
+
+    _args_schema = None
+
+
+@register_command("sre identity show")
+class IdentityShow(_GeneratedIdentityShow):
+    """Show the managed identity (-ies) currently assigned to an SRE Agent."""
+
+    _args_schema = None
+
+
+# --------------------------------------------------------------------------------------------
+# "sre supported-agent-model" -- lists which default-model providers/names
+# are available in a given Azure region, i.e. the real values accepted by
+# 'sre agent create --default-model-provider/--default-model-name'. Kept
+# as its own top-level noun (not folded into 'sre agent') since it is a
+# read-only region/location lookup, not an agent-lifecycle operation.
+# Registered here (rather than left as the raw generated
+# 'app supported-agent-model' recipe) purely to fix a real, observed bug:
+# commands.py's blanket "app " -> "sre " rename only touches the command/
+# command-group tables, not knack's separate global help registry, so any
+# group/command that is renamed but never re-registered under its new
+# name via @register_command/@register_command_group ends up with a
+# blank, unhelpful '--help' (confirmed live: 'az sre supported-agent-model
+# -h' showed no description at all before this fix).
+# --------------------------------------------------------------------------------------------
+@register_command_group("sre supported-agent-model")
+class _SupportedAgentModelGroup(AAZCommandGroup):
+    """List which AI model providers/names are available in a region.
+
+    Use this before 'sre agent create' to confirm
+    --default-model-provider/--default-model-name is supported in the
+    region you're deploying to.
+    """
+
+
+@register_command("sre supported-agent-model list")
+class SupportedAgentModelList(_GeneratedSupportedAgentModelList):
+    """List the model providers/names supported for new SRE Agents in a region.
+
+    :example: See which models are available in East US
+        az sre supported-agent-model list --location eastus
+    """
+
+    _args_schema = None
+
+
+# --------------------------------------------------------------------------------------------
+# "sre managed-resource" -- matches the portal's Build + setup > Context >
+# Managed resources page (tabs: Management groups / Subscriptions /
+# Resource groups). Confirmed directly from the portal's "Add management
+# groups" dialog text: "The agent will be granted Reader and Azure Monitor
+# Monitoring Contributor roles on the selected management groups. These
+# roles are inherited by all subscriptions and resources within them."
+#
+# This is the EXACT MIRROR IMAGE of 'sre access grant/revoke':
+#   - 'sre access'          : assignee = a user/group/SP : scope = THIS agent
+#                             (who can manage/use the agent)
+#   - 'sre managed-resource': assignee = the agent's OWN managed identity
+#                             (via 'sre identity show'.principalId) : scope =
+#                             an EXTERNAL subscription/resource-group/
+#                             management-group (what the agent can read/
+#                             monitor out in the world)
+# Built on the same 'az role assignment create/delete/list' primitives as
+# _RoleAssignmentScopeCommand above, just with assignee and scope reversed.
+#
+# The two built-in roles are NOT user-selectable in the portal -- the
+# dialog always grants both together, so grant/revoke always operate on
+# both roles as a pair rather than exposing a --role flag (confirmed
+# "Reader and ... Monitoring Contributor roles" wording, plural, no choice
+# shown anywhere in the 3 tabs' dialogs). The portal's friendly label
+# "Azure Monitor Monitoring Contributor" is NOT the real role name -- the
+# actual built-in RBAC role is just "Monitoring Contributor", confirmed
+# live via 'az role definition list'.
+# --------------------------------------------------------------------------------------------
+MANAGED_RESOURCE_ROLES = ["Reader", "Monitoring Contributor"]
+
+
+def _resolve_subscription_id(cli_ctx, subscription):
+    """Normalize a subscription name or ID to its real subscription ID via
+    'az account show', the same way portal scope-pickers resolve a
+    human-picked subscription to its ARM ID."""
+    invoke = partial(_cli_invoke, cli_ctx)
+    account = invoke("account", "show", "--subscription", subscription)
+    sub_id = (account or {}).get("id") if isinstance(account, dict) else None
+    if not sub_id:
+        raise CLIError(f"Could not resolve subscription '{subscription}' via 'az account show'.")
+    return sub_id
+
+
+def _resolve_managed_resource_scope(cli_ctx, scope, target_subscription, target_resource_group, management_group):
+    """Build the ARM scope string for the 3 portal tabs (management
+    groups/subscriptions/resource groups), or pass through a raw --scope
+    resource ID for power users / other scope types the portal doesn't expose."""
+    convenience_flags_used = any((target_subscription, target_resource_group, management_group))
+    if scope and convenience_flags_used:
+        raise CLIError(
+            "Specify --scope on its own, or use --target-subscription/--target-resource-group/"
+            "--management-group instead -- not both."
+        )
+    if scope:
+        return scope
+    if management_group:
+        if target_subscription or target_resource_group:
+            raise CLIError(
+                "--management-group cannot be combined with --target-subscription/--target-resource-group."
+            )
+        return f"/providers/Microsoft.Management/managementGroups/{management_group}"
+    if target_resource_group and not target_subscription:
+        raise CLIError("--target-resource-group requires --target-subscription.")
+    if target_subscription:
+        sub_id = _resolve_subscription_id(cli_ctx, target_subscription)
+        if target_resource_group:
+            return f"/subscriptions/{sub_id}/resourceGroups/{target_resource_group}"
+        return f"/subscriptions/{sub_id}"
+    raise CLIError(
+        "Specify a target scope: --scope, --target-subscription, --target-subscription with "
+        "--target-resource-group, or --management-group."
+    )
+
+
+def _resolve_agent_principal_id(cli_ctx, agent_name, resource_group):
+    """Resolve the agent's own managed-identity object ID via 'sre identity
+    show' -- this is the fixed "assignee" for every managed-resource grant/
+    revoke (the agent is granted access to the outside world, not the other
+    way around)."""
+    invoke = partial(_cli_invoke, cli_ctx)
+    identity = invoke("sre", "identity", "show", "--agent-name", agent_name, "--resource-group", resource_group)
+    principal_id = (identity or {}).get("principalId") if isinstance(identity, dict) else None
+    if not principal_id:
+        raise CLIError(
+            f"Agent '{agent_name}' has no managed identity assigned yet. Run "
+            "'az sre identity assign --agent-name ... --resource-group ... --system-assigned' first."
+        )
+    return principal_id
+
+
+class _ManagedResourceScopeCommand(AAZCommand):
+    """Shared base for 'managed-resource grant'/'managed-resource revoke':
+    resolves the agent's own principal ID and the target external scope,
+    so each subclass only has to loop 'role assignment create'/'delete'
+    over MANAGED_RESOURCE_ROLES with (principal_id, scope) already in hand."""
+
+    _args_schema = None
+    _VERB = None  # set by subclasses: "grant" or "revoke"
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.agent_name = AAZStrArg(
+            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(
+            help="Resource group of the SRE Agent (NOT the target scope -- use "
+            "--target-resource-group for that).",
+            required=True,
+        )
+        schema.scope = AAZStrArg(
+            options=["--scope"],
+            help=f"Full resource ID of the scope to {cls._VERB} access on/from. "
+            "Alternative to --target-subscription/--target-resource-group/--management-group.",
+        )
+        schema.target_subscription = AAZStrArg(
+            options=["--target-subscription"],
+            help="Target subscription name or ID. Used alone for subscription-level "
+            "scope, or with --target-resource-group for resource-group-level scope. "
+            "(Named --target-subscription, not --subscription, because the latter is "
+            "a reserved global az CLI argument.)",
+        )
+        schema.target_resource_group = AAZStrArg(
+            options=["--target-resource-group"],
+            help="Target resource group name (requires --target-subscription). Distinct "
+            "from --resource-group, which locates the agent itself.",
+        )
+        schema.management_group = AAZStrArg(
+            options=["--management-group"],
+            help="Target management group name/ID.",
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _resolve(self):
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        principal_id = _resolve_agent_principal_id(self.cli_ctx, agent_name, resource_group)
+        scope = _resolve_managed_resource_scope(
+            self.cli_ctx,
+            _arg_value(getattr(self.ctx.args, "scope", None)),
+            _arg_value(getattr(self.ctx.args, "target_subscription", None)),
+            _arg_value(getattr(self.ctx.args, "target_resource_group", None)),
+            _arg_value(getattr(self.ctx.args, "management_group", None)),
+        )
+        return principal_id, scope
+
+
+@register_command_group("sre managed-resource")
+class _ManagedResourceGroup(AAZCommandGroup):
+    """Let the agent's own managed identity monitor resources outside its own resource group.
+
+    Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles
+    together (the same pair, no individual role choice) on a subscription,
+    resource group, or management group. Use 'sre managed-resource grant' to
+    add a scope, 'sre managed-resource list' to see what's granted, and 'sre
+    managed-resource revoke' to remove it.
+    """
+
+
+@register_command("sre managed-resource grant")
+class ManagedResourceGrant(_ManagedResourceScopeCommand):
+    """Grant the agent's managed identity Reader + Monitoring Contributor on a scope.
+
+    :example: Grant on a subscription
+        az sre managed-resource grant --agent-name myagent --resource-group myrg \\
+            --target-subscription my-sub
+
+    :example: Grant on a resource group
+        az sre managed-resource grant --agent-name myagent --resource-group myrg \\
+            --target-subscription my-sub --target-resource-group monitored-rg
+
+    :example: Grant on a management group
+        az sre managed-resource grant --agent-name myagent --resource-group myrg \\
+            --management-group my-mg
+    """
+
+    _args_schema = None
+    _VERB = "grant"
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        principal_id, scope = self._resolve()
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        results = []
+        for role in MANAGED_RESOURCE_ROLES:
+            results.append(invoke(
+                "role", "assignment", "create",
+                "--role", role, "--assignee", principal_id, "--scope", scope,
+            ))
+        return results
+
+
+@register_command("sre managed-resource revoke")
+class ManagedResourceRevoke(_ManagedResourceScopeCommand):
+    """Revoke the agent's managed identity's Reader + Monitoring Contributor on a scope.
+
+    :example: Revoke access to a resource group
+        az sre managed-resource revoke --agent-name myagent --resource-group myrg \\
+            --target-subscription my-sub --target-resource-group monitored-rg
+    """
+
+    _args_schema = None
+    _VERB = "revoke"
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        principal_id, scope = self._resolve()
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        for role in MANAGED_RESOURCE_ROLES:
+            invoke(
+                "role", "assignment", "delete",
+                "--role", role, "--assignee", principal_id, "--scope", scope,
+            )
+        return None
+
+
+@register_command("sre managed-resource list")
+class ManagedResourceList(AAZCommand):
+    """List the external scopes the agent's managed identity currently has
+    access to (i.e. every role assignment where the agent is the assignee).
+
+    :example: List what an agent can currently monitor
+        az sre managed-resource list --agent-name myagent --resource-group myrg
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.agent_name = AAZStrArg(
+            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(
+            help="Resource group of the SRE Agent.", required=True,
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        principal_id = _resolve_agent_principal_id(self.cli_ctx, agent_name, resource_group)
+
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        return invoke("role", "assignment", "list", "--assignee", principal_id, "--all")
+
+
+# --------------------------------------------------------------------------------------------
+# "sre knowledge" -- matches the portal's Build + setup > Context > Knowledge
+# sources page ("Add file" / "Add web page"), confirmed from its live nav
+# and banner text ("Repository connections have moved to Code access" --
+# i.e. KnowledgeRepository is being phased out of this page in favor of
+# 'sre repo connect').
+#
+# WHY A FACADE, NOT A NEW ARM RESOURCE TYPE: knowledge items are NOT a
+# separate extension type like tools/skills/hooks -- they are ordinary
+# AgentConnector resources (Microsoft.App/agents/connectors) whose
+# dataConnectorType happens to be one of KnowledgeFile/KnowledgeText/
+# KnowledgeWebPage/KnowledgeRepository (see DATA_CONNECTOR_TYPES above).
+# The portal just renders those specific connector types on their own page
+# for UX reasons. So, same pattern as 'sre tool'/'sre skill': this is a
+# thin front door that pins --data-connector-type and self-invokes the
+# already-registered 'sre connector ...' commands -- no new ARM logic.
+#
+# --file-path (KnowledgeFile/KnowledgeText) reuses the already-confirmed
+# _ConnectorConvenienceArgsMixin behavior via 'sre connector create'. --url
+# (KnowledgeWebPage) is NOT a confirmed wire shape in this repo (only
+# KnowledgeFile/KnowledgeText/Mcp's inner JSON have been live-confirmed so
+# far) -- it is forwarded as both --data-source and extended-properties
+# url=<url> as a best-effort convenience; pass --extended-properties
+# yourself via 'sre connector create' directly if the service expects a
+# different field for web pages.
+# --------------------------------------------------------------------------------------------
+KNOWLEDGE_TYPES = {
+    "file": "KnowledgeFile",
+    "text": "KnowledgeText",
+    "webpage": "KnowledgeWebPage",
+    "repository": "KnowledgeRepository",
+}
+
+
+@register_command_group("sre knowledge")
+class _KnowledgeGroup(AAZCommandGroup):
+    """Add files or web pages the agent can read and reason over.
+
+    Use 'sre knowledge create --type file' or '--type webpage' to add one.
+    Repository knowledge sources use 'sre repo connect' instead.
+    """
+
+
+@register_command("sre knowledge create")
+class KnowledgeCreate(AAZCommand):
+    """Add a knowledge source (file or web page) to an SRE Agent.
+
+    :example: Add a local file as a knowledge source
+        az sre knowledge create --agent-name myagent --resource-group myrg \\
+            --name runbook-md --type file --file-path ./runbook.md
+
+    :example: Add a web page as a knowledge source
+        az sre knowledge create --agent-name myagent --resource-group myrg \\
+            --name docs-site --type webpage --url https://learn.microsoft.com/azure/
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.agent_name = AAZStrArg(
+            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        schema.name = AAZStrArg(
+            options=["--name", "-n"], help="Name of this knowledge source.", required=True,
+        )
+        schema.type = AAZStrArg(
+            options=["--type"],
+            help="Kind of knowledge source. One of: " + ", ".join(sorted(KNOWLEDGE_TYPES)) + ".",
+            required=True,
+            enum={k: k for k in KNOWLEDGE_TYPES},
+        )
+        schema.file_path = AAZStrArg(
+            options=["--file-path"],
+            help="Local file to ingest. Required for --type file/text.",
+        )
+        schema.url = AAZStrArg(
+            options=["--url"],
+            help="Web page URL to ingest. Required for --type webpage. NOTE: this "
+            "wire shape is not yet live-confirmed -- forwarded as both --data-source "
+            "and extended-properties url=<url> on a best-effort basis.",
+        )
+        schema.data_source = AAZStrArg(
+            options=["--data-source"],
+            help="Raw --data-source passthrough, for --type repository or any case "
+            "--file-path/--url don't cover.",
+        )
+        schema.overwrite = AAZBoolArg(
+            options=["--overwrite"],
+            help="Allow replacing an existing knowledge source of the same name.",
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        name = _arg_value(self.ctx.args.name)
+        kind = _arg_value(self.ctx.args.type)
+        file_path = _arg_value(self.ctx.args.file_path)
+        url = _arg_value(self.ctx.args.url)
+        data_source = _arg_value(self.ctx.args.data_source)
+        overwrite = _arg_value(getattr(self.ctx.args, "overwrite", None))
+
+        connector_type = KNOWLEDGE_TYPES[kind]
+        if connector_type in ("KnowledgeFile", "KnowledgeText") and not file_path:
+            raise CLIError(f"--file-path is required for --type {kind}.")
+        if connector_type == "KnowledgeWebPage" and not (url or data_source):
+            raise CLIError("--url (or --data-source) is required for --type webpage.")
+
+        argv = [
+            "sre", "connector", "create",
+            "--agent-name", agent_name, "--resource-group", resource_group,
+            "--name", name, "--data-connector-type", connector_type,
+        ]
+        if file_path:
+            argv += ["--file-path", file_path]
+        if url:
+            argv += ["--data-source", url, "--extended-properties", f"url={url}"]
+        elif data_source:
+            argv += ["--data-source", data_source]
+        if overwrite:
+            argv.append("--overwrite")
+
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        return invoke(*argv)
+
+
+@register_command("sre knowledge show")
+class KnowledgeShow(AAZCommand):
+    """Show a knowledge source."""
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.agent_name = AAZStrArg(
+            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        schema.name = AAZStrArg(
+            options=["--name", "-n"], help="Name of the knowledge source.", required=True,
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        name = _arg_value(self.ctx.args.name)
+
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        return invoke(
+            "sre", "connector", "show",
+            "--agent-name", agent_name, "--resource-group", resource_group, "--name", name,
+        )
+
+
+@register_command("sre knowledge list")
+class KnowledgeList(AAZCommand):
+    """List an SRE Agent's knowledge sources (files and web pages).
+
+    Self-invokes 'sre connector list' (knowledge items are connectors under
+    the hood -- see module comment above) and filters to just the
+    Knowledge* dataConnectorType values, so non-knowledge connectors
+    (Kusto/Mcp/etc.) configured on the same agent don't show up here.
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.agent_name = AAZStrArg(
+            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        result = invoke(
+            "sre", "connector", "list",
+            "--agent-name", agent_name, "--resource-group", resource_group,
+        )
+        items = result if isinstance(result, list) else []
+        knowledge_items = [
+            item for item in items
+            if isinstance(item, dict)
+            and item.get("properties", {}).get("dataConnectorType") in KNOWLEDGE_DATA_CONNECTOR_TYPES
+        ]
+        if not knowledge_items:
+            logger.warning(
+                "No knowledge sources found on agent '%s'. Add one with "
+                "'az sre knowledge create --type file --file-path <path>' "
+                "(or --type webpage --url <url>).",
+                agent_name,
+            )
+        return knowledge_items
+
+
+@register_command("sre knowledge delete")
+class KnowledgeDelete(AAZCommand):
+    """Remove a knowledge source."""
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.agent_name = AAZStrArg(
+            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        schema.name = AAZStrArg(
+            options=["--name", "-n"], help="Name of the knowledge source.", required=True,
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        name = _arg_value(self.ctx.args.name)
+
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        return invoke(
+            "sre", "connector", "delete",
+            "--agent-name", agent_name, "--resource-group", resource_group, "--name", name,
+        )
 
 
 @register_command("sre agent show")
@@ -710,7 +1456,7 @@ class Stop(_GeneratedStop):
     """Stop a running SRE Agent."""
 
 
-@register_command("sre agent get-connection")
+@register_command("sre connection show")
 class GetConnection(AAZCommand):
     """Resolve and save an SRE Agent's data-plane connection.
 
@@ -722,6 +1468,9 @@ class GetConnection(AAZCommand):
     'az aks get-credentials' writing kubeconfig for kubectl: the control
     plane and data plane are two different CLIs/binaries by design (see
     running notes section 1), and this command is their only bridge.
+
+    :example: Resolve and save the data-plane endpoint for an agent
+        az sre connection show --agent-name myagent --resource-group myrg
     """
 
     _args_schema = None
@@ -804,7 +1553,7 @@ class GetConnection(AAZCommand):
         }
 
 
-@register_command("sre agent list-usage")
+@register_command("sre usage list")
 class ListUsage(AAZCommand):
     """List monthly or daily agent-unit usage for an SRE Agent.
 
@@ -813,6 +1562,9 @@ class ListUsage(AAZCommand):
     plain GETs with no Create/Update verb, so aaz-dev-tools has nothing to
     anchor a generated command group on. Hand-written the same way
     azext-aigateway wraps metrics it has no generated recipe for.
+
+    :example: List this month's usage for an agent
+        az sre usage list --agent-name myagent --resource-group myrg
     """
 
     _args_schema = None
@@ -862,7 +1614,64 @@ class ListUsage(AAZCommand):
 
 @register_command_group("sre agent")
 class _AgentGroup(AAZCommandGroup):
-    """Commands for managing SRE Agent resources (control plane)."""
+    """Manage the core lifecycle of an SRE Agent resource.
+
+    Create, show, list, update, delete, start, and stop an agent.
+    """
+
+
+@register_command_group("sre access")
+class _AccessGroup(AAZCommandGroup):
+    """Control who can manage or use an SRE Agent.
+
+    Grants or revokes a built-in RBAC role (admin, user, author, or reader)
+    on the agent itself, for a specific person, group, or service principal.
+    Use 'sre access grant' to add someone and 'sre access revoke' to remove
+    them. This is the mirror image of 'sre managed-resource', which grants
+    the agent's own identity access to things outside itself -- not other
+    people access to the agent.
+    """
+
+
+@register_command_group("sre connection")
+class _ConnectionGroup(AAZCommandGroup):
+    """Resolve the URL used to actually talk to an SRE Agent's data plane.
+
+    Every agent has a control-plane (ARM) resource and a separate
+    data-plane endpoint it runs on. Use 'sre connection show' to look up
+    and save that live endpoint -- for example, before calling the agent
+    directly or configuring another tool to talk to it.
+    """
+
+
+@register_command_group("sre usage")
+class _UsageGroup(AAZCommandGroup):
+    """Read an SRE Agent's usage and billing stats.
+
+    Token counts and request counts, for a month or broken down by day.
+    Use 'sre usage list' to see how much an agent has used.
+    """
+
+
+@register_command_group("sre network")
+class _NetworkGroup(AAZCommandGroup):
+    """Control an SRE Agent's sandbox networking (preview).
+
+    Configures VNet injection and the sandbox's outbound (egress)
+    allowlist -- the network the agent's own sandboxed tool/code execution
+    can reach, not the agent resource's own inbound access. Use 'sre
+    network update' to change these settings.
+    """
+
+
+@register_command_group("sre repo")
+class _RepoGroup(AAZCommandGroup):
+    """Connect a code repository so the agent can read source during investigations.
+
+    Supports GitHub, Azure DevOps, and GitLab. Use 'sre repo connect' to
+    link one repo to an agent in a single step (it wires up both the auth
+    and the repository extension for you).
+    """
 
 
 class _RoleAssignmentScopeCommand(AAZCommand):
@@ -945,7 +1754,7 @@ class _RoleAssignmentScopeCommand(AAZCommand):
         return resource_id
 
 
-@register_command("sre agent grant-access")
+@register_command("sre access grant")
 class GrantAccess(_RoleAssignmentScopeCommand):
     """Grant a built-in SRE Agent RBAC role to a user, group, or principal.
 
@@ -955,6 +1764,12 @@ class GrantAccess(_RoleAssignmentScopeCommand):
     so callers do not need to construct the scope string by hand. Pass
     --assignee-me to grant yourself access without looking up your own
     object ID first.
+
+    :example: Grant yourself admin access to an agent
+        az sre access grant --name myagent --resource-group myrg --role admin --assignee-me
+
+    :example: Grant a user read-only access
+        az sre access grant --name myagent --resource-group myrg --role reader --assignee someone@contoso.com
     """
 
     _args_schema = None
@@ -978,7 +1793,7 @@ class GrantAccess(_RoleAssignmentScopeCommand):
         )
 
 
-@register_command("sre agent revoke-access")
+@register_command("sre access revoke")
 class RevokeAccess(_RoleAssignmentScopeCommand):
     """Revoke a built-in SRE Agent RBAC role from a user, group, or principal.
 
@@ -986,6 +1801,9 @@ class RevokeAccess(_RoleAssignmentScopeCommand):
     assignment delete' that builds the agent's full resource-ID scope for
     you, so callers do not need to construct the scope string (or look up
     their own object ID, via --assignee-me) by hand.
+
+    :example: Revoke a user's access to an agent
+        az sre access revoke --name myagent --resource-group myrg --role user --assignee someone@contoso.com
     """
 
     _args_schema = None
@@ -1009,7 +1827,7 @@ class RevokeAccess(_RoleAssignmentScopeCommand):
         )
 
 
-@register_command("sre agent update-network")
+@register_command("sre network update")
 class UpdateNetwork(AAZCommand):
     """Configure VNet injection and sandbox egress for an SRE Agent (preview).
 
@@ -1021,6 +1839,10 @@ class UpdateNetwork(AAZCommand):
     property) directly against that api-version, merging only the
     networking properties the caller actually supplied and leaving
     everything else on the resource untouched.
+
+    :example: Limit the agent's sandbox egress to one allowed host
+        az sre network update --name myagent --resource-group myrg \\
+            --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}"
     """
 
     _args_schema = None
@@ -1759,22 +2581,23 @@ def _decode_extension_envelope(envelope):
     return envelope
 
 
-@register_command_group("sre agent extension")
+@register_command_group("sre extension")
 class _ExtensionGroup(AAZCommandGroup):
-    """Commands for an SRE Agent's 'runbook' extensions -- subagents, tools,
-    skills, scheduled tasks, incident filters/handlers, common prompts,
-    hooks, HTTP triggers, repositories, plugin marketplaces/installations,
-    GitHub/Azure DevOps auths, and global settings (preview).
+    """Manage an SRE Agent's low-level 'extension' resources directly.
 
-    Hand-written: these are real ARM-authenticated proxy endpoints the
-    control plane forwards to the agent's data plane, but they are not
-    modeled as ARM resource types in any public swagger, so there is no
-    generated command surface to subclass (see the module-level comment
-    above this command group for citations).
+    Extensions are the generic building block behind several higher-level
+    nouns in this CLI -- 'sre tool', 'sre skill', 'sre hook', 'sre
+    instructions', and 'sre plugin marketplace'/'sre plugin install' all use
+    this mechanism under the hood (subagents, tools, skills, scheduled
+    tasks, incident filters/handlers, common prompts, hooks, HTTP triggers,
+    repositories, plugin marketplaces/installations, GitHub/Azure DevOps
+    auths, and global settings (preview)). Prefer the dedicated noun for
+    anything that has one; use 'sre extension' directly only for an
+    extension type that doesn't have its own noun yet.
     """
 
 
-@register_command("sre agent extension create")
+@register_command("sre extension create")
 class ExtensionCreate(AAZCommand):
     """Create or update an SRE Agent extension (subagent/tool/skill/etc.).
 
@@ -1876,7 +2699,7 @@ class ExtensionCreate(AAZCommand):
         return _decode_extension_envelope(result)
 
 
-@register_command("sre agent extension show")
+@register_command("sre extension show")
 class ExtensionShow(AAZCommand):
     """Show an SRE Agent extension."""
 
@@ -1932,7 +2755,7 @@ class ExtensionShow(AAZCommand):
         return _decode_extension_envelope(result)
 
 
-@register_command("sre agent extension list")
+@register_command("sre extension list")
 class ExtensionList(AAZCommand):
     """List an SRE Agent's extensions of a given type."""
 
@@ -1978,16 +2801,16 @@ class ExtensionList(AAZCommand):
             if not result["value"]:
                 logger.warning(
                     "No '%s' extensions found on agent '%s'. Add one with "
-                    "'az sre agent extension create --extension-type %s "
+                    "'az sre extension create --extension-type %s "
                     "--extension-name <name> --value <json>' (or "
-                    "'az sre agent repo connect' for repositories/"
+                    "'az sre repo connect' for repositories/"
                     "githubAuths/azureDevOpsAuths).",
                     extension_type, agent_name, extension_type,
                 )
         return result
 
 
-@register_command("sre agent extension delete")
+@register_command("sre extension delete")
 class ExtensionDelete(AAZCommand):
     """Delete an SRE Agent extension."""
 
@@ -2037,7 +2860,598 @@ class ExtensionDelete(AAZCommand):
 
 
 # --------------------------------------------------------------------------------------------
-# "sre agent repo connect" -- a one-command golden path for the GitHub/Azure
+# Noun-specific extension facades -- "sre tool", "sre skill", "sre hook",
+# "sre instructions", "sre plugin marketplace"/"sre plugin install".
+#
+# WHY: the generic "sre extension create/show/list/delete --extension-type
+# X" surface above is a direct, flat mirror of the ARM resource shape
+# (Microsoft.App/agents/<extensionType>/<name>). That matches the backend,
+# but it does NOT match the Azure SRE Agent portal's own navigation, which
+# splits these extension types into separate first-class pages under
+# Build + setup > Extensions: Connectors, Tools, Skills, Skill builder,
+# Plugins, Hooks, Custom instructions (each with its own "Add"/"Create"
+# button, not a shared "pick a type" dropdown). Confirmed directly from the
+# portal's left nav (SRE Agent product, Build + setup section).
+#
+# Each command below is a thin front door that pins --extension-type to the
+# matching value and self-invokes the already-registered generic "sre
+# extension ..." command -- same internal self-invoke pattern already used
+# by RepoConnect and _GrantAccessToMeMixin elsewhere in this file. There is
+# no new ARM logic here: this only renames the noun so a user who has seen
+# the portal's "Tools" page can type "az sre tool create" instead of having
+# to already know the extension type string "tools".
+# --------------------------------------------------------------------------------------------
+class _PinnedExtensionCreate(AAZCommand):
+    """Base for a noun-specific 'create' facade. Subclasses set
+    _EXTENSION_TYPE (and optionally _VALUE_HELP) and are decorated with
+    their own @register_command(...)."""
+
+    _EXTENSION_TYPE = None
+    _VALUE_HELP = "Configuration as a JSON document (the CLI base64-encodes it for you)."
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.agent_name = AAZStrArg(
+            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        schema.extension_name = AAZStrArg(
+            options=["--name", "-n", "--extension-name"],
+            help="Name of this instance.",
+            required=True,
+        )
+        schema.value = AAZStrArg(options=["--value"], help=cls._VALUE_HELP, required=True)
+        schema.overwrite = AAZBoolArg(
+            options=["--overwrite"],
+            help="Allow replacing an existing one of the same name. Without "
+            "this flag, creation refuses to overwrite an existing instance.",
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _prepare_value(self):
+        """Hook for subclasses that offer a convenience way to build --value
+        (e.g. SkillCreate's --file-path SKILL.md parsing) instead of requiring
+        a hand-built JSON string. Called after self.ctx.args is populated but
+        before --value is read, so overrides can freely read other args and
+        assign self.ctx.args.value. No-op by default."""
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        self._prepare_value()
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        extension_name = _arg_value(self.ctx.args.extension_name)
+        raw_value = _arg_value(self.ctx.args.value)
+        overwrite = _arg_value(getattr(self.ctx.args, "overwrite", None))
+
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        argv = [
+            "sre", "extension", "create",
+            "--agent-name", agent_name, "--resource-group", resource_group,
+            "--extension-type", self._EXTENSION_TYPE,
+            "--extension-name", extension_name, "--value", raw_value,
+        ]
+        if overwrite:
+            argv.append("--overwrite")
+        return invoke(*argv)
+
+
+class _PinnedExtensionShow(AAZCommand):
+    """Base for a noun-specific 'show' facade."""
+
+    _EXTENSION_TYPE = None
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.agent_name = AAZStrArg(
+            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        schema.extension_name = AAZStrArg(
+            options=["--name", "-n", "--extension-name"],
+            help="Name of this instance.",
+            required=True,
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        extension_name = _arg_value(self.ctx.args.extension_name)
+
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        return invoke(
+            "sre", "extension", "show",
+            "--agent-name", agent_name, "--resource-group", resource_group,
+            "--extension-type", self._EXTENSION_TYPE, "--extension-name", extension_name,
+        )
+
+
+class _PinnedExtensionList(AAZCommand):
+    """Base for a noun-specific 'list' facade."""
+
+    _EXTENSION_TYPE = None
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.agent_name = AAZStrArg(
+            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        return invoke(
+            "sre", "extension", "list",
+            "--agent-name", agent_name, "--resource-group", resource_group,
+            "--extension-type", self._EXTENSION_TYPE,
+        )
+
+
+class _PinnedExtensionDelete(AAZCommand):
+    """Base for a noun-specific 'delete' facade."""
+
+    _EXTENSION_TYPE = None
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.agent_name = AAZStrArg(
+            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        schema.extension_name = AAZStrArg(
+            options=["--name", "-n", "--extension-name"],
+            help="Name of this instance.",
+            required=True,
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        extension_name = _arg_value(self.ctx.args.extension_name)
+
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        return invoke(
+            "sre", "extension", "delete",
+            "--agent-name", agent_name, "--resource-group", resource_group,
+            "--extension-type", self._EXTENSION_TYPE, "--extension-name", extension_name,
+        )
+
+
+def _parse_skill_md(file_path):
+    """Parse a SKILL.md-style file into (description, skill_content).
+
+    Matches the portal's "Skill builder" > "Create skill" dialog's own file
+    template: an optional '---'-delimited YAML frontmatter block containing
+    'name:'/'description:' lines, followed by the skill's markdown
+    instructions body. Only 'description:' is extracted from the
+    frontmatter (the service's skills wire shape has no 'name' field --
+    the skill's name is the extension-name, confirmed via
+    _validate_skills_shape above); the body becomes 'skillContent' verbatim.
+    A plain file with no frontmatter is treated as the body only.
+    """
+    if not os.path.isfile(file_path):
+        raise CLIError(f"--file-path '{file_path}' does not exist.")
+    with open(file_path, "r", encoding="utf-8") as handle:
+        text = handle.read()
+
+    description = None
+    content = text
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        end_idx = None
+        for idx in range(1, len(lines)):
+            if lines[idx].strip() == "---":
+                end_idx = idx
+                break
+        if end_idx is not None:
+            for line in lines[1:end_idx]:
+                if ":" not in line:
+                    continue
+                key, _, value = line.partition(":")
+                if key.strip().lower() == "description" and value.strip():
+                    description = value.strip()
+            content = "\n".join(lines[end_idx + 1:]).strip("\n")
+    return description, content
+
+
+# ---- sre tool (portal: Extensions > Tools > Custom tools) ----
+@register_command_group("sre tool")
+class _ToolGroup(AAZCommandGroup):
+    """Manage custom tools the agent can call.
+
+    Built-in tools and MCP servers/services are configured separately and
+    are not yet exposed by this CLI.
+    """
+
+
+@register_command("sre tool create")
+class ToolCreate(_PinnedExtensionCreate):
+    """Create or update a custom tool."""
+
+    _EXTENSION_TYPE = "tools"
+    _args_schema = None
+    _VALUE_HELP = (
+        "Tool configuration as a JSON document, e.g. "
+        "{\"toolType\": \"LinkTool\", \"url\": \"https://...\"}."
+    )
+
+
+@register_command("sre tool show")
+class ToolShow(_PinnedExtensionShow):
+    """Show a custom tool."""
+
+    _EXTENSION_TYPE = "tools"
+    _args_schema = None
+
+
+@register_command("sre tool list")
+class ToolList(_PinnedExtensionList):
+    """List custom tools."""
+
+    _EXTENSION_TYPE = "tools"
+    _args_schema = None
+
+
+@register_command("sre tool delete")
+class ToolDelete(_PinnedExtensionDelete):
+    """Delete a custom tool."""
+
+    _EXTENSION_TYPE = "tools"
+    _args_schema = None
+
+
+# ---- sre skill (portal: Extensions > Skills / Skill builder) ----
+@register_command_group("sre skill")
+class _SkillGroup(AAZCommandGroup):
+    """Manage custom skills -- specialized capabilities the agent can use.
+
+    Built-in skills are toggled on/off separately, not created here; use
+    'sre skill create --file-path SKILL.md' to author a custom one, then
+    'sre skill list'/'sre skill show' to see it.
+    """
+
+
+@register_command("sre skill create")
+class SkillCreate(_PinnedExtensionCreate):
+    """Create or update a custom skill.
+
+    :example: Create a skill from a SKILL.md file
+        az sre skill create --agent-name myagent --resource-group myrg --name my-skill \\
+            --file-path SKILL.md --tools kusto-query log-search
+
+    :example: Create a skill from a raw JSON value
+        az sre skill create --agent-name myagent --resource-group myrg --name my-skill \\
+            --value '{"description": "...", "tools": [], "skillContent": "# My skill\\n..."}'
+    """
+
+    _EXTENSION_TYPE = "skills"
+    _args_schema = None
+    _VALUE_HELP = (
+        "Skill configuration as a JSON document. Alternative to --file-path "
+        "(specify exactly one of the two)."
+    )
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        # --value is normally required by the base class; relax that here
+        # since --file-path is the other, mutually-exclusive way to supply
+        # it (enforced in _prepare_value below).
+        schema.value._required = False
+        schema.file_path = AAZStrArg(
+            options=["--file-path"],
+            arg_group="Skill builder",
+            help="Path to a SKILL.md-style file -- an optional "
+            "'---'-delimited frontmatter block with a 'description:' line, "
+            "followed by the skill's markdown instructions body. "
+            "Alternative to --value.",
+        )
+        schema.tools = AAZListArg(
+            options=["--tools"],
+            arg_group="Skill builder",
+            help="Space-separated tool names this skill can use when "
+            "active. Only used with --file-path; defaults to none.",
+        )
+        schema.tools.Element = AAZStrArg()
+        schema.description = AAZStrArg(
+            options=["--description"],
+            arg_group="Skill builder",
+            help="Skill description. Only used with --file-path; overrides "
+            "the SKILL.md frontmatter's 'description:' line if both are given.",
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _prepare_value(self):
+        args = self.ctx.args
+        file_path = _arg_value(getattr(args, "file_path", None))
+        explicit_value = _arg_value(getattr(args, "value", None))
+        if file_path and explicit_value:
+            raise CLIError("Specify either --file-path or --value, not both.")
+        if not file_path and not explicit_value:
+            raise CLIError("Specify either --file-path or --value.")
+        if not file_path:
+            return
+
+        description, content = _parse_skill_md(file_path)
+        description = _arg_value(getattr(args, "description", None)) or description
+        if not description:
+            raise CLIError(
+                "No description found -- add a 'description:' line to the "
+                "SKILL.md frontmatter, or pass --description explicitly."
+            )
+        tools = _arg_value(getattr(args, "tools", None)) or []
+        args.value = json.dumps(
+            {"description": description, "tools": list(tools), "skillContent": content}
+        )
+
+
+@register_command("sre skill show")
+class SkillShow(_PinnedExtensionShow):
+    """Show a custom skill."""
+
+    _EXTENSION_TYPE = "skills"
+    _args_schema = None
+
+
+@register_command("sre skill list")
+class SkillList(_PinnedExtensionList):
+    """List custom skills."""
+
+    _EXTENSION_TYPE = "skills"
+    _args_schema = None
+
+
+@register_command("sre skill delete")
+class SkillDelete(_PinnedExtensionDelete):
+    """Delete a custom skill."""
+
+    _EXTENSION_TYPE = "skills"
+    _args_schema = None
+
+
+# ---- sre hook (portal: Extensions > Hooks) ----
+@register_command_group("sre hook")
+class _HookGroup(AAZCommandGroup):
+    """Manage lifecycle hooks that inject a prompt at a specific agent event.
+
+    For example, running a prompt automatically when the agent is stopped.
+    """
+
+
+@register_command("sre hook create")
+class HookCreate(_PinnedExtensionCreate):
+    """Create or update a hook."""
+
+    _EXTENSION_TYPE = "hooks"
+    _args_schema = None
+    _VALUE_HELP = (
+        "Hook configuration as a JSON document, e.g. "
+        "{\"eventType\": \"Stop\", \"hookType\": \"Prompt\", \"prompt\": \"...\", "
+        "\"activationMode\": \"Always\"} -- fields: eventType/hookType/"
+        "prompt/activationMode, plus optional name/description/model/"
+        "timeout/failMode/maxRejections."
+    )
+
+
+@register_command("sre hook show")
+class HookShow(_PinnedExtensionShow):
+    """Show a hook."""
+
+    _EXTENSION_TYPE = "hooks"
+    _args_schema = None
+
+
+@register_command("sre hook list")
+class HookList(_PinnedExtensionList):
+    """List hooks."""
+
+    _EXTENSION_TYPE = "hooks"
+    _args_schema = None
+
+
+@register_command("sre hook delete")
+class HookDelete(_PinnedExtensionDelete):
+    """Delete a hook."""
+
+    _EXTENSION_TYPE = "hooks"
+    _args_schema = None
+
+
+# ---- sre instructions (portal: Extensions > Custom instructions) ----
+@register_command_group("sre instructions")
+class _InstructionsGroup(AAZCommandGroup):
+    """Manage the agent's always-on custom instructions.
+
+    A single free-text block (up to 16384 bytes) appended to the agent's
+    default system prompt.
+    """
+
+
+@register_command("sre instructions create")
+class InstructionsCreate(_PinnedExtensionCreate):
+    """Create or update the agent's custom instructions.
+
+    There is only one instructions block per agent; use the same --name
+    (e.g. "default") each time to update it in place, or pass --overwrite
+    to replace an existing one.
+    """
+
+    _EXTENSION_TYPE = "commonPrompts"
+    _args_schema = None
+    _VALUE_HELP = (
+        "Instructions as a JSON document of the form "
+        "{\"prompt\": \"...\"} -- the \"prompt\" field holds the free text "
+        "(confirmed live round-trip)."
+    )
+
+
+@register_command("sre instructions show")
+class InstructionsShow(_PinnedExtensionShow):
+    """Show the agent's custom instructions."""
+
+    _EXTENSION_TYPE = "commonPrompts"
+    _args_schema = None
+
+
+@register_command("sre instructions list")
+class InstructionsList(_PinnedExtensionList):
+    """List the agent's custom instructions entries."""
+
+    _EXTENSION_TYPE = "commonPrompts"
+    _args_schema = None
+
+
+@register_command("sre instructions delete")
+class InstructionsDelete(_PinnedExtensionDelete):
+    """Delete the agent's custom instructions."""
+
+    _EXTENSION_TYPE = "commonPrompts"
+    _args_schema = None
+
+
+# ---- sre plugin (portal: Extensions > Plugins) ----
+# Nested two-deep, matching az aigateway's real precedent for genuine
+# parent->child sub-resources (e.g. 'model policy', 'mcp source',
+# 'network private-endpoint-connection') -- NOT the 'agent connector'
+# anti-pattern, which would nest every noun under the one universal
+# parent every resource already scopes to via --agent-name. Marketplace
+# and install are a true two-step flow (install requires an existing
+# marketplace), the same shape as model->policy and mcp->source.
+@register_command_group("sre plugin")
+class _PluginGroup(AAZCommandGroup):
+    """Manage community plugins that add skills, tools, and integrations.
+
+    Two separate steps: connecting a marketplace (a GitHub/Azure
+    DevOps/GitLab repo of plugins, via 'sre plugin marketplace') and
+    installing a specific plugin from one (via 'sre plugin install').
+    """
+
+
+@register_command_group("sre plugin marketplace")
+class _PluginMarketplaceGroup(AAZCommandGroup):
+    """Connect a repo of plugins as a marketplace the agent can install from.
+
+    Supports GitHub, Azure DevOps, and GitLab repos. Use 'sre plugin install'
+    afterward to actually install a plugin from the connected marketplace.
+    """
+
+
+@register_command("sre plugin marketplace create")
+class PluginMarketplaceCreate(_PinnedExtensionCreate):
+    """Connect a plugin marketplace."""
+
+    _EXTENSION_TYPE = "pluginMarketplaces"
+    _args_schema = None
+    _VALUE_HELP = (
+        "Marketplace configuration as a JSON document, e.g. "
+        "{\"sourceType\": \"github\", \"sourceUrl\": \"https://github.com/owner/repo\"}."
+    )
+
+
+@register_command("sre plugin marketplace show")
+class PluginMarketplaceShow(_PinnedExtensionShow):
+    """Show a connected plugin marketplace."""
+
+    _EXTENSION_TYPE = "pluginMarketplaces"
+    _args_schema = None
+
+
+@register_command("sre plugin marketplace list")
+class PluginMarketplaceList(_PinnedExtensionList):
+    """List connected plugin marketplaces."""
+
+    _EXTENSION_TYPE = "pluginMarketplaces"
+    _args_schema = None
+
+
+@register_command("sre plugin marketplace delete")
+class PluginMarketplaceDelete(_PinnedExtensionDelete):
+    """Disconnect a plugin marketplace."""
+
+    _EXTENSION_TYPE = "pluginMarketplaces"
+    _args_schema = None
+
+
+@register_command_group("sre plugin install")
+class _PluginInstallGroup(AAZCommandGroup):
+    """Install a specific plugin from an already-connected marketplace.
+
+    Run 'sre plugin marketplace create' first if you haven't connected a
+    marketplace yet.
+    """
+
+
+@register_command("sre plugin install create")
+class PluginInstallCreate(_PinnedExtensionCreate):
+    """Install a plugin from a connected marketplace."""
+
+    _EXTENSION_TYPE = "pluginInstallations"
+    _args_schema = None
+    _VALUE_HELP = (
+        "Plugin install configuration as a JSON document, e.g. "
+        "{\"marketplaceName\": \"<name from 'sre plugin marketplace list'>\", "
+        "\"pluginName\": \"<plugin>\"}."
+    )
+
+
+@register_command("sre plugin install show")
+class PluginInstallShow(_PinnedExtensionShow):
+    """Show an installed plugin."""
+
+    _EXTENSION_TYPE = "pluginInstallations"
+    _args_schema = None
+
+
+@register_command("sre plugin install list")
+class PluginInstallList(_PinnedExtensionList):
+    """List installed plugins."""
+
+    _EXTENSION_TYPE = "pluginInstallations"
+    _args_schema = None
+
+
+@register_command("sre plugin install delete")
+class PluginInstallDelete(_PinnedExtensionDelete):
+    """Uninstall a plugin."""
+
+    _EXTENSION_TYPE = "pluginInstallations"
+    _args_schema = None
+
+
+# --------------------------------------------------------------------------------------------
+# "sre repo connect" -- a one-command golden path for the GitHub/Azure
 # DevOps repo-connection flow, modeled directly on azext-aigateway's
 # "az aigateway mcp create --github true" (custom.py's McpCreate.pre_operations
 # + _onboarding.py's github_mcp_endpoints/_github_cli_token). That command
@@ -2047,7 +3461,7 @@ class ExtensionDelete(AAZCommand):
 # build for the user.
 #
 # Before this command, connecting one repo required two raw
-# "sre agent extension create" calls the user had to build by hand:
+# "sre extension create" calls the user had to build by hand:
 #   1. githubAuths/azureDevOpsAuths, with a manually-pasted PAT
 #   2. repositories, with a hand-written JSON --value
 # This command does both, using a token it fetches itself -- `gh auth token`
@@ -2055,7 +3469,7 @@ class ExtensionDelete(AAZCommand):
 # Azure DevOps PAT via the vssps.dev.azure.com REST API for Azure DevOps
 # (ADO PAT creation has no `az devops` command; see running notes section on
 # ADO PAT generation). Nothing here bypasses the real extension model --
-# it is sugar that calls "sre agent extension create" twice with payloads it
+# it is sugar that calls "sre extension create" twice with payloads it
 # builds instead of asking the user to build them.
 # --------------------------------------------------------------------------------------------
 
@@ -2154,7 +3568,7 @@ def _detect_repo_provider(repo_url):
     )
 
 
-@register_command("sre agent repo connect")
+@register_command("sre repo connect")
 class RepoConnect(AAZCommand):
     """Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 
@@ -2162,7 +3576,7 @@ class RepoConnect(AAZCommand):
     'gh auth login' credential (GitHub) or mints a fresh PAT via the Azure
     DevOps REST API (Azure DevOps) and wires up both the auth extension and
     the repositories extension for you, instead of requiring two manual
-    'sre agent extension create' calls with hand-built JSON --value payloads.
+    'sre extension create' calls with hand-built JSON --value payloads.
     """
 
     _args_schema = None
@@ -2266,7 +3680,7 @@ class RepoConnect(AAZCommand):
             finally:
                 token = None
             auth_result = invoke(
-                "sre", "agent", "extension", "create",
+                "sre", "extension", "create",
                 "--agent-name", agent_name, "--resource-group", resource_group,
                 "--extension-type", "githubAuths", "--extension-name", "github_com",
                 "--value", auth_value, "--overwrite", "true",
@@ -2315,7 +3729,7 @@ class RepoConnect(AAZCommand):
                 finally:
                     pat = None
             auth_result = invoke(
-                "sre", "agent", "extension", "create",
+                "sre", "extension", "create",
                 "--agent-name", agent_name, "--resource-group", resource_group,
                 "--extension-type", "azureDevOpsAuths", "--extension-name", organization,
                 "--value", auth_value, "--overwrite", "true",
@@ -2326,7 +3740,7 @@ class RepoConnect(AAZCommand):
         if branch:
             repo_body["branch"] = branch
         repo_result = invoke(
-            "sre", "agent", "extension", "create",
+            "sre", "extension", "create",
             "--agent-name", agent_name, "--resource-group", resource_group,
             "--extension-type", "repositories", "--extension-name", display_name,
             "--value", json.dumps(repo_body), "--overwrite", "true",

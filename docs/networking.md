@@ -1,6 +1,6 @@
 # Networking guide
 
-`agent update-network` configures VNet injection (outbound) and sandbox
+`network update` configures VNet injection (outbound) and sandbox
 egress for an SRE Agent. It is **hand-written, not generated** — there is
 no public Swagger for the api-version that actually supports these fields
 in production (`2026-11-01-preview`; see `NETWORK_API_VERSION` in
@@ -15,15 +15,15 @@ actually supplied and leaving everything else on the resource untouched.
 > `agent show`/`agent list` query ARM at the pinned, older
 > `API_VERSION = "2026-01-01"` (see `custom.py`), which does not expose
 > `sandboxConfiguration`/`vnetConfiguration` at all. Live-verified: setting
-> `--sandbox-configuration` via `update-network` succeeds (confirmed in the
+> `--sandbox-configuration` via `network update` succeeds (confirmed in the
 > PUT's own response body, which is read at `NETWORK_API_VERSION =
 > "2026-11-01-preview"`), but a subsequent `agent show` on the same agent
 > returns `null` for both fields — not because the write was lost, but
 > because `agent show` is reading the wrong api-version to see them. There
 > is currently **no command in this CLI that can read back** a
 > previously-set networking configuration. Use `az rest` directly against
-> the preview api-version as a workaround until a dedicated `agent network
-> show` (or an `update-network`-equivalent read) is added:
+> the preview api-version as a workaround until a dedicated `network show`
+> (or an `update`-equivalent read) is added:
 >
 > ```bash
 > az rest --method get \
@@ -31,30 +31,30 @@ actually supplied and leaving everything else on the resource untouched.
 >   --query "properties.{sandbox:sandboxConfiguration, vnet:vnetConfiguration}"
 > ```
 
-There is no dedicated `agent network show` — networking fields are part of
+There is no dedicated `network show` — networking fields are part of
 the main agent resource body, and today only readable at the preview
 api-version (see warning above).
 
 ## Configure sandbox egress
 
 ```bash
-az sre agent update-network -g myrg --agent-name myagent \
+az sre network update -g myrg --agent-name myagent \
   --sandbox-configuration "{egress:{mode:Unrestricted}}"
 
-az sre agent update-network -g myrg --agent-name myagent \
+az sre network update -g myrg --agent-name myagent \
   --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}"
 ```
 
 ## Configure VNet injection
 
 ```bash
-az sre agent update-network -g myrg --agent-name myagent \
+az sre network update -g myrg --agent-name myagent \
   --vnet-configuration "{subnet-resource-id:/subscriptions/.../subnets/mysubnet}"
 ```
 
 ## Important sequencing note
 
-`update-network` is itself a long-running operation — the agent enters
+`network update` is itself a long-running operation — the agent enters
 `provisioningState: InProgress` while it applies. Any other mutating
 command issued against the same agent while this is in flight will be
 rejected with a clean `OperationConflict` error
@@ -72,7 +72,7 @@ nesting, field names) was read directly from the internal control-plane
 source (`AAPT-SREAgent-ControlPlane`,
 `src/WebApi/Views/Version20261101Preview/AgentView.cs`), not from any
 public spec. Live-verified against a disposable test agent
-(`sre-network-verify`): `update-network --sandbox-configuration
+(`sre-network-verify`): `network update --sandbox-configuration
 "{egress:{mode:Unrestricted}}"` returned `201`, correctly flipped
 `provisioningState` to `InProgress`, and its own response body (read at
 `2026-11-01-preview`) showed `sandboxConfiguration.egress.mode:

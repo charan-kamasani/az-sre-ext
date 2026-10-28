@@ -43,6 +43,16 @@ class SreCommandsLoader(AzCommandsLoader):
                 args=aaz_args
             )
         load_command_table(self, args)
+
+        # Merge in per-group 'examples:' help now that custom.py's import
+        # (triggered by load_command_table above) has finished running every
+        # @register_command_group decorator -- those decorators overwrite
+        # helps[name] with a plain short/long-summary dict (no examples
+        # support), so examples have to be applied after, not before. See
+        # the comment above GROUP_EXAMPLES in _help.py for the full story.
+        from azext_sre._help import apply_group_examples
+        apply_group_examples()
+
         return self.command_table
 
     def load_arguments(self, command):

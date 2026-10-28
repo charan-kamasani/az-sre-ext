@@ -15,6 +15,7 @@ rebuilt one.
 import base64
 import json
 import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -28,6 +29,8 @@ from azext_sre import SreCommandsLoader
 from azext_sre.custom import (
     EXTENSION_TYPES,
     GITHUB_COPILOT_MCP_ENDPOINT,
+    KNOWLEDGE_TYPES,
+    MANAGED_RESOURCE_ROLES,
     Create,
     ConnectorCreate,
     ConnectorList,
@@ -37,13 +40,50 @@ from azext_sre.custom import (
     ExtensionShow,
     GrantAccess,
     RevokeAccess,
+    ManagedResourceGrant,
+    ManagedResourceRevoke,
+    ManagedResourceList,
     UpdateNetwork,
     RepoConnect,
+    KnowledgeCreate,
+    KnowledgeShow,
+    KnowledgeList,
+    KnowledgeDelete,
+    ToolCreate,
+    ToolShow,
+    ToolList,
+    ToolDelete,
+    SkillCreate,
+    SkillShow,
+    SkillList,
+    SkillDelete,
+    HookCreate,
+    HookShow,
+    HookList,
+    HookDelete,
+    InstructionsCreate,
+    InstructionsShow,
+    InstructionsList,
+    InstructionsDelete,
+    PluginMarketplaceCreate,
+    PluginMarketplaceShow,
+    PluginMarketplaceList,
+    PluginMarketplaceDelete,
+    PluginInstallCreate,
+    PluginInstallShow,
+    PluginInstallList,
+    PluginInstallDelete,
+    ConnectorListSecret,
+    IdentityAssign,
+    IdentityRemove,
+    IdentityShow,
+    SupportedAgentModelList,
     _ConnectorConvenienceArgsMixin,
     _ConnectorExistenceGuardMixin,
     _GrantAccessToMeMixin,
     _annotate_connector_consent_status,
     _arg_value,
+    _connector_consent_guidance,
     _connector_consent_status,
     _decode_extension_envelope,
     _detect_repo_provider,
@@ -51,6 +91,9 @@ from azext_sre.custom import (
     _extension_type_arg,
     _normalize_data_connector_type,
     _normalize_model_provider,
+    _parse_skill_md,
+    _resolve_agent_principal_id,
+    _resolve_managed_resource_scope,
     _resolve_signed_in_user_object_id,
 )
 
@@ -196,6 +239,49 @@ class ConnectorConsentStatusTests(unittest.TestCase):
 
     def test_annotate_passes_through_non_dict(self):
         self.assertEqual(_annotate_connector_consent_status("not a dict"), "not a dict")
+
+    def test_annotate_warns_with_portal_link_when_pending_consent(self):
+        connector = {
+            "id": "/subscriptions/sub1/resourceGroups/rg1/providers/"
+            "Microsoft.App/agents/myagent/connectors/conn-mcp",
+            "name": "conn-mcp",
+            "extendedProperties": {"authType": "EntraOAuth", "entraOAuth": None},
+        }
+        with patch("azext_sre.custom.logger") as mock_logger:
+            _annotate_connector_consent_status(connector)
+            mock_logger.warning.assert_called_once()
+            message = mock_logger.warning.call_args[0][0]
+        self.assertIn("conn-mcp", message)
+        self.assertIn(
+            "https://portal.azure.com/#@/resource/subscriptions/sub1/"
+            "resourceGroups/rg1/providers/Microsoft.App/agents/myagent/"
+            "connectors/conn-mcp/overview",
+            message,
+        )
+
+    def test_annotate_does_not_warn_when_consented(self):
+        connector = {
+            "name": "conn-mcp",
+            "extendedProperties": {"authType": "EntraOAuth", "entraOAuth": {"a": 1}},
+        }
+        with patch("azext_sre.custom.logger") as mock_logger:
+            _annotate_connector_consent_status(connector)
+            mock_logger.warning.assert_not_called()
+
+    def test_annotate_does_not_warn_for_non_entra_connector(self):
+        connector = {"name": "my-kusto-connector", "dataConnectorType": "Kusto"}
+        with patch("azext_sre.custom.logger") as mock_logger:
+            _annotate_connector_consent_status(connector)
+            mock_logger.warning.assert_not_called()
+
+    def test_guidance_falls_back_to_generic_portal_text_without_id(self):
+        connector = {
+            "name": "conn-mcp",
+            "extendedProperties": {"authType": "EntraOAuth", "entraOAuth": None},
+        }
+        message = _connector_consent_guidance(connector)
+        self.assertIn("the connector's blade in the Azure portal", message)
+        self.assertIn("conn-mcp", message)
 
 
 class ArgValueTests(unittest.TestCase):
@@ -368,6 +454,167 @@ class AssigneeMeTests(unittest.TestCase):
         with patch("azext_sre.custom._cli_invoke", lambda cli_ctx, *args, **kwargs: {}):
             with self.assertRaises(CLIError):
                 _resolve_signed_in_user_object_id(SimpleNamespace())
+
+
+class ManagedResourceScopeResolutionTests(unittest.TestCase):
+    """'sre managed-resource' is the mirror image of 'sre access': assignee
+    = the agent's OWN identity (via 'sre identity show'), scope = an
+    EXTERNAL subscription/resource-group/management-group -- confirmed from
+    the portal's "Add management groups" dialog ("The agent will be granted
+    Reader and Azure Monitor Monitoring Contributor roles..."). These tests
+    cover the pure scope-string-building and principal-resolution helpers."""
+
+    def test_raw_scope_passthrough(self):
+        scope = _resolve_managed_resource_scope(
+            SimpleNamespace(), "/subscriptions/x/resourceGroups/y", None, None, None
+        )
+        self.assertEqual(scope, "/subscriptions/x/resourceGroups/y")
+
+    def test_management_group_scope(self):
+        scope = _resolve_managed_resource_scope(SimpleNamespace(), None, None, None, "my-mg")
+        self.assertEqual(scope, "/providers/Microsoft.Management/managementGroups/my-mg")
+
+    def test_subscription_only_scope_resolves_subscription_id(self):
+        with patch("azext_sre.custom._cli_invoke", lambda cli_ctx, *args, **kwargs: {"id": "sub-guid"}):
+            scope = _resolve_managed_resource_scope(SimpleNamespace(), None, "my-sub", None, None)
+        self.assertEqual(scope, "/subscriptions/sub-guid")
+
+    def test_subscription_and_target_resource_group_scope(self):
+        with patch("azext_sre.custom._cli_invoke", lambda cli_ctx, *args, **kwargs: {"id": "sub-guid"}):
+            scope = _resolve_managed_resource_scope(SimpleNamespace(), None, "my-sub", "monitored-rg", None)
+        self.assertEqual(scope, "/subscriptions/sub-guid/resourceGroups/monitored-rg")
+
+    def test_target_resource_group_without_subscription_raises(self):
+        with self.assertRaises(CLIError):
+            _resolve_managed_resource_scope(SimpleNamespace(), None, None, "monitored-rg", None)
+
+    def test_management_group_combined_with_subscription_raises(self):
+        with self.assertRaises(CLIError):
+            _resolve_managed_resource_scope(SimpleNamespace(), None, "my-sub", None, "my-mg")
+
+    def test_scope_combined_with_convenience_flags_raises(self):
+        with self.assertRaises(CLIError):
+            _resolve_managed_resource_scope(SimpleNamespace(), "/subscriptions/x", "my-sub", None, None)
+
+    def test_nothing_given_raises(self):
+        with self.assertRaises(CLIError):
+            _resolve_managed_resource_scope(SimpleNamespace(), None, None, None, None)
+
+    def test_resolve_agent_principal_id_returns_principal(self):
+        with patch("azext_sre.custom._cli_invoke", lambda cli_ctx, *args, **kwargs: {"principalId": "agent-principal"}):
+            self.assertEqual(
+                _resolve_agent_principal_id(SimpleNamespace(), "myagent", "myrg"), "agent-principal"
+            )
+
+    def test_resolve_agent_principal_id_raises_when_no_identity(self):
+        with patch("azext_sre.custom._cli_invoke", lambda cli_ctx, *args, **kwargs: {}):
+            with self.assertRaises(CLIError):
+                _resolve_agent_principal_id(SimpleNamespace(), "myagent", "myrg")
+
+
+class ManagedResourceCommandTests(unittest.TestCase):
+    """End-to-end (mocked) tests for grant/revoke/list -- confirms both
+    MANAGED_RESOURCE_ROLES are always applied together (the portal gives no
+    role choice), and that the agent's own principalId is always the
+    assignee while the external scope is whatever the caller targets."""
+
+    def test_roles_are_reader_and_monitoring_contributor(self):
+        self.assertEqual(MANAGED_RESOURCE_ROLES, ["Reader", "Monitoring Contributor"])
+
+    def test_grant_creates_both_role_assignments_on_target_scope(self):
+        command = _bare_command(
+            ManagedResourceGrant, agent_name="myagent", resource_group="myrg",
+            scope=None, target_subscription="my-sub", target_resource_group=None, management_group=None,
+        )
+        calls = []
+
+        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
+            calls.append(args)
+            if args[:3] == ("sre", "identity", "show"):
+                return {"principalId": "agent-principal-id"}
+            if args[:2] == ("account", "show"):
+                return {"id": "sub-guid"}
+            return {"result": "created"}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            result = command._handler({})
+
+        self.assertEqual(result, [{"result": "created"}, {"result": "created"}])
+        role_assignment_calls = [c for c in calls if c[:2] == ("role", "assignment")]
+        self.assertEqual(len(role_assignment_calls), 2)
+        self.assertEqual(
+            role_assignment_calls[0],
+            ("role", "assignment", "create", "--role", "Reader",
+             "--assignee", "agent-principal-id", "--scope", "/subscriptions/sub-guid"),
+        )
+        self.assertEqual(
+            role_assignment_calls[1],
+            ("role", "assignment", "create", "--role", "Monitoring Contributor",
+             "--assignee", "agent-principal-id", "--scope", "/subscriptions/sub-guid"),
+        )
+
+    def test_revoke_deletes_both_role_assignments_on_target_scope(self):
+        command = _bare_command(
+            ManagedResourceRevoke, agent_name="myagent", resource_group="myrg",
+            scope="/providers/Microsoft.Management/managementGroups/my-mg",
+            target_subscription=None, target_resource_group=None, management_group=None,
+        )
+        calls = []
+
+        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
+            calls.append(args)
+            if args[:3] == ("sre", "identity", "show"):
+                return {"principalId": "agent-principal-id"}
+            return {"result": "deleted"}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            command._handler({})
+
+        role_assignment_calls = [c for c in calls if c[:2] == ("role", "assignment")]
+        self.assertEqual(len(role_assignment_calls), 2)
+        for call, role in zip(role_assignment_calls, MANAGED_RESOURCE_ROLES):
+            self.assertEqual(
+                call,
+                ("role", "assignment", "delete", "--role", role, "--assignee", "agent-principal-id",
+                 "--scope", "/providers/Microsoft.Management/managementGroups/my-mg"),
+            )
+
+    def test_list_queries_role_assignments_for_agent_principal(self):
+        command = _bare_command(ManagedResourceList, agent_name="myagent", resource_group="myrg")
+        calls = []
+
+        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
+            calls.append(args)
+            if args[:3] == ("sre", "identity", "show"):
+                return {"principalId": "agent-principal-id"}
+            return [{"roleDefinitionName": "Reader"}]
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            result = command._handler({})
+
+        self.assertEqual(result, [{"roleDefinitionName": "Reader"}])
+        self.assertEqual(
+            calls[-1], ("role", "assignment", "list", "--assignee", "agent-principal-id", "--all"),
+        )
+
+    def test_grant_raises_when_agent_has_no_identity(self):
+        command = _bare_command(
+            ManagedResourceGrant, agent_name="myagent", resource_group="myrg",
+            scope="/subscriptions/x", target_subscription=None, target_resource_group=None, management_group=None,
+        )
+
+        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
+            if args[:3] == ("sre", "identity", "show"):
+                return {}
+            return {"result": "unused"}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            with self.assertRaises(CLIError):
+                command._handler({})
 
 
 class ExtensionValueCodecTests(unittest.TestCase):
@@ -923,7 +1170,7 @@ class AzureDevOpsAuthsShapeValidationTests(unittest.TestCase):
 
 class RepoProviderDetectionTests(unittest.TestCase):
     """_detect_repo_provider maps a repo's URL host to the provider enum
-    'sre agent extension create --extension-type repositories' expects."""
+    'sre extension create --extension-type repositories' expects."""
 
     def test_detects_github(self):
         self.assertEqual(_detect_repo_provider("https://github.com/org/repo"), "GitHub")
@@ -948,7 +1195,7 @@ class RepoConnectTests(unittest.TestCase):
     """RepoConnect is the one-command golden path mirroring azext-aigateway's
     'az aigateway mcp create --github true': it must fetch a token itself
     (never ask the user to paste one) and issue exactly the same two
-    'sre agent extension create' calls a user would otherwise build by hand.
+    'sre extension create' calls a user would otherwise build by hand.
     """
 
     def _run_github(self, repo_url="https://github.com/org/repo", **extra_args):
@@ -1074,7 +1321,7 @@ class RepoConnectTests(unittest.TestCase):
 
         def fake_pat_token(cli_ctx, org, name):
             raise CLIError(
-                '\'sre agent extension create ...\' failed: Bad Request('
+                '\'sre extension create ...\' failed: Bad Request('
                 '{"message":"DisablePatCreationPolicyViolation"})'
             )
 
@@ -1263,6 +1510,252 @@ class ExtensionCommandResourceIdTests(unittest.TestCase):
         )
 
 
+class PinnedExtensionFacadeTests(unittest.TestCase):
+    """'sre tool'/'sre skill'/'sre hook'/'sre instructions'/
+    'sre plugin marketplace'/'sre plugin install' are thin noun-specific
+    front doors, modeled on the portal's own Extensions nav (Tools/Skills/
+    Hooks/Custom instructions/Plugins), that must self-invoke the generic
+    'sre extension ...' commands with --extension-type pinned to the right
+    value -- never reimplement the ARM call themselves.
+    """
+
+    def _assert_forwards(self, command_cls, extension_type, expected_argv_tail,
+                          args_kwargs, fake_result=None):
+        calls = []
+
+        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
+            calls.append(args)
+            return fake_result
+
+        command = _bare_command(command_cls, **args_kwargs)
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            result = command._handler({})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0], expected_argv_tail)
+        self.assertIn(extension_type, calls[0])
+        self.assertEqual(result, fake_result)
+
+    def test_tool_create_pins_extension_type_tools(self):
+        self._assert_forwards(
+            ToolCreate, "tools",
+            (
+                "sre", "extension", "create",
+                "--agent-name", "myagent", "--resource-group", "rg",
+                "--extension-type", "tools",
+                "--extension-name", "mytool", "--value", '{"toolType": "LinkTool"}',
+                "--overwrite",
+            ),
+            {
+                "agent_name": "myagent", "resource_group": "rg",
+                "extension_name": "mytool", "value": '{"toolType": "LinkTool"}',
+                "overwrite": True,
+            },
+        )
+
+    def test_tool_create_omits_overwrite_flag_when_falsy(self):
+        self._assert_forwards(
+            ToolCreate, "tools",
+            (
+                "sre", "extension", "create",
+                "--agent-name", "myagent", "--resource-group", "rg",
+                "--extension-type", "tools",
+                "--extension-name", "mytool", "--value", '{"toolType": "LinkTool"}',
+            ),
+            {
+                "agent_name": "myagent", "resource_group": "rg",
+                "extension_name": "mytool", "value": '{"toolType": "LinkTool"}',
+                "overwrite": None,
+            },
+        )
+
+    def test_skill_show_pins_extension_type_skills(self):
+        self._assert_forwards(
+            SkillShow, "skills",
+            (
+                "sre", "extension", "show",
+                "--agent-name", "myagent", "--resource-group", "rg",
+                "--extension-type", "skills", "--extension-name", "myskill",
+            ),
+            {"agent_name": "myagent", "resource_group": "rg", "extension_name": "myskill"},
+            fake_result={"properties": {"value": {}}},
+        )
+
+    def test_hook_list_pins_extension_type_hooks(self):
+        self._assert_forwards(
+            HookList, "hooks",
+            (
+                "sre", "extension", "list",
+                "--agent-name", "myagent", "--resource-group", "rg",
+                "--extension-type", "hooks",
+            ),
+            {"agent_name": "myagent", "resource_group": "rg"},
+            fake_result={"value": []},
+        )
+
+    def test_instructions_delete_pins_extension_type_common_prompts(self):
+        self._assert_forwards(
+            InstructionsDelete, "commonPrompts",
+            (
+                "sre", "extension", "delete",
+                "--agent-name", "myagent", "--resource-group", "rg",
+                "--extension-type", "commonPrompts", "--extension-name", "default",
+            ),
+            {"agent_name": "myagent", "resource_group": "rg", "extension_name": "default"},
+        )
+
+    def test_plugin_marketplace_create_pins_extension_type(self):
+        self._assert_forwards(
+            PluginMarketplaceCreate, "pluginMarketplaces",
+            (
+                "sre", "extension", "create",
+                "--agent-name", "myagent", "--resource-group", "rg",
+                "--extension-type", "pluginMarketplaces",
+                "--extension-name", "mp", "--value", '{"sourceType": "github"}',
+            ),
+            {
+                "agent_name": "myagent", "resource_group": "rg",
+                "extension_name": "mp", "value": '{"sourceType": "github"}',
+                "overwrite": None,
+            },
+        )
+
+    def test_plugin_install_show_pins_extension_type(self):
+        self._assert_forwards(
+            PluginInstallShow, "pluginInstallations",
+            (
+                "sre", "extension", "show",
+                "--agent-name", "myagent", "--resource-group", "rg",
+                "--extension-type", "pluginInstallations", "--extension-name", "myplugin",
+            ),
+            {"agent_name": "myagent", "resource_group": "rg", "extension_name": "myplugin"},
+            fake_result={"properties": {"value": {}}},
+        )
+
+
+class KnowledgeFacadeTests(unittest.TestCase):
+    """'sre knowledge' matches the portal's Context > Knowledge sources page
+    (Add file / Add web page). Under the hood these are ordinary
+    'sre connector' resources whose dataConnectorType is one of the
+    Knowledge* values -- these tests assert the facade forwards to
+    'sre connector ...' with the right type, and that 'list' filters out
+    non-knowledge connectors (Kusto/Mcp/etc.) configured on the same agent.
+    """
+
+    def _run(self, command_cls, fake_result=None, **args_kwargs):
+        calls = []
+
+        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
+            calls.append(args)
+            return fake_result
+
+        command = _bare_command(command_cls, **args_kwargs)
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            result = command._handler({})
+        return result, calls
+
+    def test_create_file_forwards_data_connector_type_and_file_path(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as handle:
+            handle.write("# notes")
+            path = handle.name
+        try:
+            _, calls = self._run(
+                KnowledgeCreate,
+                agent_name="myagent", resource_group="rg", name="notes",
+                type="file", file_path=path, url=None, data_source=None, overwrite=None,
+            )
+        finally:
+            os.unlink(path)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0],
+            (
+                "sre", "connector", "create",
+                "--agent-name", "myagent", "--resource-group", "rg",
+                "--name", "notes", "--data-connector-type", "KnowledgeFile",
+                "--file-path", path,
+            ),
+        )
+
+    def test_create_file_without_file_path_raises(self):
+        with self.assertRaises(CLIError) as raised:
+            self._run(
+                KnowledgeCreate,
+                agent_name="myagent", resource_group="rg", name="notes",
+                type="file", file_path=None, url=None, data_source=None, overwrite=None,
+            )
+        self.assertIn("--file-path", str(raised.exception))
+
+    def test_create_webpage_forwards_data_source_and_extended_properties(self):
+        _, calls = self._run(
+            KnowledgeCreate,
+            agent_name="myagent", resource_group="rg", name="docs",
+            type="webpage", file_path=None, url="https://example.com", data_source=None,
+            overwrite=True,
+        )
+        self.assertEqual(
+            calls[0],
+            (
+                "sre", "connector", "create",
+                "--agent-name", "myagent", "--resource-group", "rg",
+                "--name", "docs", "--data-connector-type", "KnowledgeWebPage",
+                "--data-source", "https://example.com",
+                "--extended-properties", "url=https://example.com",
+                "--overwrite",
+            ),
+        )
+
+    def test_create_webpage_without_url_or_data_source_raises(self):
+        with self.assertRaises(CLIError) as raised:
+            self._run(
+                KnowledgeCreate,
+                agent_name="myagent", resource_group="rg", name="docs",
+                type="webpage", file_path=None, url=None, data_source=None, overwrite=None,
+            )
+        self.assertIn("--url", str(raised.exception))
+
+    def test_show_forwards_to_connector_show(self):
+        _, calls = self._run(
+            KnowledgeShow, agent_name="myagent", resource_group="rg", name="docs",
+            fake_result={"properties": {"dataConnectorType": "KnowledgeWebPage"}},
+        )
+        self.assertEqual(
+            calls[0],
+            ("sre", "connector", "show", "--agent-name", "myagent", "--resource-group", "rg", "--name", "docs"),
+        )
+
+    def test_delete_forwards_to_connector_delete(self):
+        _, calls = self._run(
+            KnowledgeDelete, agent_name="myagent", resource_group="rg", name="docs",
+        )
+        self.assertEqual(
+            calls[0],
+            ("sre", "connector", "delete", "--agent-name", "myagent", "--resource-group", "rg", "--name", "docs"),
+        )
+
+    def test_list_filters_to_knowledge_connector_types_only(self):
+        result, calls = self._run(
+            KnowledgeList, agent_name="myagent", resource_group="rg",
+            fake_result=[
+                {"name": "kusto1", "properties": {"dataConnectorType": "Kusto"}},
+                {"name": "file1", "properties": {"dataConnectorType": "KnowledgeFile"}},
+                {"name": "web1", "properties": {"dataConnectorType": "KnowledgeWebPage"}},
+            ],
+        )
+        self.assertEqual(
+            calls[0],
+            ("sre", "connector", "list", "--agent-name", "myagent", "--resource-group", "rg"),
+        )
+        self.assertEqual([item["name"] for item in result], ["file1", "web1"])
+
+    def test_knowledge_types_cover_all_four_portal_concepts(self):
+        self.assertEqual(
+            set(KNOWLEDGE_TYPES.values()),
+            {"KnowledgeFile", "KnowledgeText", "KnowledgeWebPage", "KnowledgeRepository"},
+        )
+
+
 class UpdateNetworkMergeTests(unittest.TestCase):
     """UpdateNetwork does a real read-modify-write at NETWORK_API_VERSION:
     GET current properties, merge in only the networking fields the caller
@@ -1333,14 +1826,47 @@ class CommandRegistrationTests(unittest.TestCase):
         expected = [
             "sre agent create", "sre agent update", "sre agent show",
             "sre agent list", "sre agent delete", "sre agent start",
-            "sre agent stop", "sre agent get-connection", "sre agent list-usage",
-            "sre agent grant-access", "sre agent revoke-access", "sre agent update-network",
-            "sre agent extension create", "sre agent extension show",
-            "sre agent extension list", "sre agent extension delete",
-            "sre agent repo connect",
+            "sre agent stop", "sre connection show", "sre usage list",
+            "sre access grant", "sre access revoke", "sre network update",
+            "sre connector create", "sre connector show", "sre connector list",
+            "sre connector update", "sre connector delete", "sre connector list-secret",
+            "sre identity assign", "sre identity remove", "sre identity show",
+            "sre supported-agent-model list",
+            "sre managed-resource grant", "sre managed-resource revoke", "sre managed-resource list",
+            "sre extension create", "sre extension show",
+            "sre extension list", "sre extension delete",
+            "sre repo connect",
+            "sre tool create", "sre tool show", "sre tool list", "sre tool delete",
+            "sre skill create", "sre skill show", "sre skill list", "sre skill delete",
+            "sre hook create", "sre hook show", "sre hook list", "sre hook delete",
+            "sre instructions create", "sre instructions show",
+            "sre instructions list", "sre instructions delete",
+            "sre plugin marketplace create", "sre plugin marketplace show",
+            "sre plugin marketplace list", "sre plugin marketplace delete",
+            "sre plugin install create", "sre plugin install show",
+            "sre plugin install list", "sre plugin install delete",
+            "sre knowledge create", "sre knowledge show",
+            "sre knowledge list", "sre knowledge delete",
         ]
         missing = [name for name in expected if name not in self.command_table]
         self.assertEqual(missing, [], f"Missing registered commands: {missing}")
+
+    def test_retired_duplicate_commands_are_not_registered(self):
+        """Manager feedback explicitly called these out as confusing
+        duplicates of the real top-level nouns ('sre connector', the new
+        'sre identity', and the new 'sre connector list-secret') -- they
+        must stay gone, not silently reappear if commands.py's generated-
+        recipe auto-discovery is ever refactored."""
+        retired = [
+            "sre agent connector create", "sre agent connector show",
+            "sre agent connector list", "sre agent connector update",
+            "sre agent connector delete", "sre agent connector list-secret",
+            "sre agent identity assign", "sre agent identity remove",
+            "sre agent identity show",
+            "sre agent list-connectors-with-secret",
+        ]
+        still_present = [name for name in retired if name in self.command_table]
+        self.assertEqual(still_present, [], f"Retired duplicate commands still registered: {still_present}")
 
 
 class CliArgumentEnforcementTests(unittest.TestCase):
@@ -1524,6 +2050,177 @@ class ConnectorConvenienceArgsTests(unittest.TestCase):
         self.assertIsNotNone(schema.github)
 
 
+class _StubOutputBase:
+    """Stand-in base providing a canned _output() result, so
+    _ConnectorConvenienceArgsMixin._output()'s empty-extendedProperties
+    warning can be tested without a real AAZ response object."""
+
+    def __init__(self, result):
+        self._result = result
+
+    def _output(self, *args, **kwargs):
+        return self._result
+
+
+class _TestConnectorConvenienceOutput(_ConnectorConvenienceArgsMixin, _StubOutputBase):
+    pass
+
+
+class ConnectorCreateEmptyExtendedPropertiesWarningTests(unittest.TestCase):
+    """Confirmed live (via --debug on a direct, unmodified 'connector
+    create --data-connector-type KnowledgeFile --file-path ...'): the PUT
+    request body correctly contains extendedProperties.fileContent/
+    fileName, but the service's 200 response (and a later 'connector
+    show') echoes back extendedProperties: {"fileContent": null,
+    "fileName": null} -- a service-side gap, not a CLI bug. _output()
+    should warn about this (without raising), so users don't assume their
+    file silently never got sent."""
+
+    def test_warns_when_file_path_used_and_response_extended_properties_empty(self):
+        command = _TestConnectorConvenienceOutput(
+            {"properties": {"extendedProperties": {"fileContent": None, "fileName": None}}}
+        )
+        command._file_path_used = True
+        with patch("azext_sre.custom.logger") as mock_logger:
+            result = command._output()
+            mock_logger.warning.assert_called_once()
+            self.assertIn("known service-side gap", mock_logger.warning.call_args[0][0])
+        self.assertEqual(result["properties"]["extendedProperties"], {"fileContent": None, "fileName": None})
+
+    def test_no_warning_when_response_extended_properties_populated(self):
+        command = _TestConnectorConvenienceOutput(
+            {"properties": {"extendedProperties": {"fileContent": "abc", "fileName": "f.txt"}}}
+        )
+        command._file_path_used = True
+        with patch("azext_sre.custom.logger") as mock_logger:
+            command._output()
+            mock_logger.warning.assert_not_called()
+
+    def test_no_warning_when_file_path_was_not_used(self):
+        command = _TestConnectorConvenienceOutput(
+            {"properties": {"extendedProperties": {}}}
+        )
+        with patch("azext_sre.custom.logger") as mock_logger:
+            command._output()
+            mock_logger.warning.assert_not_called()
+
+
+class ConnectorListSecretAliasTests(unittest.TestCase):
+    """The generated ListSecret recipe only exposed --connector-name (no
+    -n/--name alias), unlike every other 'sre connector ...' command --
+    _ConnectorNameAliasMixin patches that in for consistency."""
+
+    def test_connector_name_has_short_and_long_name_aliases(self):
+        schema = ConnectorListSecret._build_arguments_schema()
+        cmd_arg = schema.connector_name.to_cmd_arg("connector_name")
+        self.assertEqual(cmd_arg.options_list, ["-n", "--name", "--connector-name"])
+
+
+class IdentityAndSupportedAgentModelRegistrationTests(unittest.TestCase):
+    """'sre identity'/'sre supported-agent-model' are thin re-registrations
+    of generated recipes (promoted out of the retired 'sre agent identity'
+    subgroup / fixed-up from the raw 'app supported-agent-model' group) --
+    just confirms their schemas build without error under the new names."""
+
+    def test_identity_assign_schema_builds(self):
+        schema = IdentityAssign._build_arguments_schema()
+        self.assertIsNotNone(schema.agent_name)
+
+    def test_identity_remove_schema_builds(self):
+        schema = IdentityRemove._build_arguments_schema()
+        self.assertIsNotNone(schema.agent_name)
+
+    def test_identity_show_schema_builds(self):
+        schema = IdentityShow._build_arguments_schema()
+        self.assertIsNotNone(schema.agent_name)
+
+    def test_supported_agent_model_list_schema_builds(self):
+        schema = SupportedAgentModelList._build_arguments_schema()
+        self.assertIsNotNone(schema.location)
+
+
+class SkillCreateFilePathTests(unittest.TestCase):
+    """'sre skill create --file-path' parses a SKILL.md-style file (the
+    portal's own Skill builder file template: '---'-delimited frontmatter
+    with 'description:', followed by a markdown body) into the real
+    {"description", "tools", "skillContent"} wire shape, instead of
+    requiring a hand-built --value JSON string."""
+
+    def _write(self, text):
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False, encoding="utf-8"
+        )
+        self.addCleanup(lambda: os.remove(handle.name))
+        handle.write(text)
+        handle.close()
+        return handle.name
+
+    def test_parses_frontmatter_description_and_body(self):
+        path = self._write(
+            "---\nname: my-skill\ndescription: Summarizes incidents\n---\n"
+            "# My skill\n\nDo the thing.\n"
+        )
+        description, content = _parse_skill_md(path)
+        self.assertEqual(description, "Summarizes incidents")
+        self.assertEqual(content, "# My skill\n\nDo the thing.")
+
+    def test_plain_file_with_no_frontmatter_is_treated_as_body_only(self):
+        path = self._write("# Just a body\n\nNo frontmatter here.\n")
+        description, content = _parse_skill_md(path)
+        self.assertIsNone(description)
+        self.assertEqual(content, "# Just a body\n\nNo frontmatter here.\n")
+
+    def test_missing_file_raises(self):
+        with self.assertRaises(CLIError):
+            _parse_skill_md("does-not-exist-123.md")
+
+    def test_prepare_value_builds_expected_json_with_tools(self):
+        path = self._write("---\ndescription: Desc\n---\nBody text\n")
+        command = _bare_command(
+            SkillCreate, file_path=path, value=None, description=None,
+            tools=["kusto-query", "log-search"],
+        )
+        command._prepare_value()
+        self.assertEqual(
+            json.loads(command.ctx.args.value),
+            {"description": "Desc", "tools": ["kusto-query", "log-search"], "skillContent": "Body text"},
+        )
+
+    def test_prepare_value_explicit_description_overrides_frontmatter(self):
+        path = self._write("---\ndescription: From frontmatter\n---\nBody\n")
+        command = _bare_command(
+            SkillCreate, file_path=path, value=None, description="From flag", tools=None,
+        )
+        command._prepare_value()
+        self.assertEqual(json.loads(command.ctx.args.value)["description"], "From flag")
+
+    def test_prepare_value_no_description_anywhere_raises(self):
+        path = self._write("Body with no frontmatter at all\n")
+        command = _bare_command(SkillCreate, file_path=path, value=None, description=None, tools=None)
+        with self.assertRaises(CLIError):
+            command._prepare_value()
+
+    def test_prepare_value_both_file_path_and_value_raises(self):
+        path = self._write("---\ndescription: D\n---\nBody\n")
+        command = _bare_command(
+            SkillCreate, file_path=path, value='{"description": "x"}', description=None, tools=None,
+        )
+        with self.assertRaises(CLIError):
+            command._prepare_value()
+
+    def test_prepare_value_neither_file_path_nor_value_raises(self):
+        command = _bare_command(SkillCreate, file_path=None, value=None, description=None, tools=None)
+        with self.assertRaises(CLIError):
+            command._prepare_value()
+
+    def test_prepare_value_noop_when_only_value_given(self):
+        command = _bare_command(
+            SkillCreate, file_path=None, value='{"description": "x"}', description=None, tools=None,
+        )
+        command._prepare_value()
+        self.assertEqual(command.ctx.args.value, '{"description": "x"}')
+
+
 class _NoOpPostOperationsBase:
     """Stand-in base for isolating _GrantAccessToMeMixin the same way
     _NoOpPreOperationsBase isolates the connector mixin above."""
@@ -1568,7 +2265,7 @@ class GrantAccessToMeTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0][:3], ("ad", "signed-in-user", "show"))
         grant_call = calls[1]
-        self.assertEqual(grant_call[:3], ("sre", "agent", "grant-access"))
+        self.assertEqual(grant_call[:3], ("sre", "access", "grant"))
         self.assertIn("myagent", grant_call)
         self.assertIn("rg", grant_call)
         self.assertIn("admin", grant_call)

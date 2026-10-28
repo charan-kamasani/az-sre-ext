@@ -9,3 +9,176 @@
 # pylint: disable=too-many-lines
 
 from knack.help_files import helps  # pylint: disable=unused-import
+
+# Top-level overview for 'az sre -h'. There is no root AAZCommandGroup class
+# for "sre" in custom.py (it's the implicit root every noun below registers
+# under), so this is the one place that can carry an explicit summary -- and
+# nothing in custom.py ever overwrites this specific key, so a plain
+# module-level assignment is safe here (see GROUP_EXAMPLES below for why
+# every OTHER group needs a different mechanism).
+#
+# One-line short-summary only -- deliberately matches 'az aigateway -h'
+# exactly (its 'Group' section is a single line, no long-summary/category
+# text at all). An earlier version here added a categorized long-summary
+# grouping nouns into the portal's own Build + setup categories, but that
+# diverged from the real az aigateway precedent and kept going stale as the
+# noun set changed (e.g. 'connector' briefly listed under the wrong
+# category). Removed in favor of 1:1 parity with az aigateway: a plain
+# short-summary, and let the native alphabetical "Subgroups:" list (always
+# in sync, since it's generated from the registered command groups) do the
+# rest of the work.
+helps['sre'] = """
+type: group
+short-summary: Manage Azure SRE Agent resources -- the agent itself, what it can access, how it's customized, who can use it, and how it's doing.
+examples:
+  - name: Create an agent with an Anthropic default model.
+    text: |-
+      az sre agent create --name myagent --resource-group myrg --location eastus2 \\
+          --default-model "{provider:anthropic,name:claude-sonnet-4-5}"
+  - name: Grant the agent's managed identity read/monitoring access to a resource group.
+    text: az sre managed-resource grant -g myrg --agent-name myagent --scope /subscriptions/<sub-id>/resourceGroups/prod-rg
+"""
+
+# Every noun group below ('sre access', 'sre agent', ...) is an AAZCommandGroup
+# subclass in custom.py, decorated with @register_command_group. That
+# decorator (azure.cli.core.aaz._command.register_command_group) parses the
+# class docstring into short-summary/long-summary and does
+# `helps[name] = yaml.safe_dump(cls.AZ_HELP)` -- an unconditional dict
+# overwrite, with no "examples" support for groups at all (it's silently
+# discarded even if the docstring has an ':example:' block). That decorator
+# runs when custom.py is imported, which AzCommandsLoader.load_command_table
+# does AFTER this module (_help.py) is imported by __init__.py. So any
+# `helps['sre <noun>'] = "..."` written here gets clobbered the moment the
+# command table loads, and the override is invisible by the time '-h' runs
+# -- confirmed by live-patching the installed extension's _help.py and
+# seeing the change have zero effect on rendered help.
+#
+# Fix: don't fight the overwrite, run after it. GROUP_EXAMPLES below is read
+# by apply_group_examples(), which __init__.py's load_command_table() calls
+# AFTER importing custom.py (see azext_sre/__init__.py). It merges an
+# 'examples' key onto whatever AZ_HELP the decorator already produced,
+# leaving that decorator's short-summary/long-summary (sourced from the
+# class docstring -- the single source of truth) untouched.
+GROUP_EXAMPLES = {
+    "sre access": [
+        {"name": 'Grant a user the "reader" role on an agent.',
+         "text": "az sre access grant -g myrg --agent-name myagent --principal-id <object-id> --role reader"},
+        {"name": "Revoke a user's access from an agent.",
+         "text": "az sre access revoke -g myrg --agent-name myagent --principal-id <object-id>"},
+    ],
+    "sre agent": [
+        {"name": "Create an agent with an Anthropic default model.",
+         "text": ('az sre agent create --name myagent --resource-group myrg --location eastus2 '
+                   '--default-model "{provider:anthropic,name:claude-sonnet-4-5}"')},
+        {"name": "Show one agent's details.",
+         "text": "az sre agent show -g myrg -n myagent"},
+    ],
+    "sre connection": [
+        {"name": "Resolve and save an agent's data-plane endpoint.",
+         "text": "az sre connection show -g myrg --agent-name myagent"},
+    ],
+    "sre connector": [
+        {"name": "List an agent's connectors, including OAuth consent status.",
+         "text": "az sre connector list -g myrg --agent-name myagent"},
+        {"name": "Show one connector's details.",
+         "text": "az sre connector show -g myrg --agent-name myagent -n conn-kusto"},
+    ],
+    "sre extension": [
+        {"name": "List an agent's extensions of a given type.",
+         "text": "az sre extension list -g myrg --agent-name myagent --extension-type subAgent"},
+        {"name": "Show one extension.",
+         "text": "az sre extension show -g myrg --agent-name myagent --extension-type subAgent -n myextension"},
+    ],
+    "sre hook": [
+        {"name": "List an agent's hooks.",
+         "text": "az sre hook list -g myrg --agent-name myagent"},
+        {"name": "Create a hook that runs on stop.",
+         "text": 'az sre hook create -g myrg --agent-name myagent -n on-stop --event Stop --prompt "Summarize this session"'},
+    ],
+    "sre identity": [
+        {"name": "Show the managed identity assigned to an agent.",
+         "text": "az sre identity show -g myrg --agent-name myagent"},
+        {"name": "Assign a system-assigned managed identity to an agent.",
+         "text": "az sre identity assign -g myrg --agent-name myagent --system-assigned"},
+    ],
+    "sre instructions": [
+        {"name": "Show an agent's current custom instructions.",
+         "text": "az sre instructions show -g myrg --agent-name myagent"},
+        {"name": "Set an agent's custom instructions.",
+         "text": 'az sre instructions create -g myrg --agent-name myagent --content "Always cite the runbook section you used."'},
+    ],
+    "sre knowledge": [
+        {"name": "List an agent's knowledge sources.",
+         "text": "az sre knowledge list -g myrg --agent-name myagent"},
+        {"name": "Add a web page as a knowledge source.",
+         "text": "az sre knowledge create -g myrg --agent-name myagent -n runbook --url https://contoso.com/runbook"},
+    ],
+    "sre managed-resource": [
+        {"name": "List the scopes an agent's identity can currently monitor.",
+         "text": "az sre managed-resource list -g myrg --agent-name myagent"},
+        {"name": "Grant an agent's identity access to a resource group.",
+         "text": "az sre managed-resource grant -g myrg --agent-name myagent --scope /subscriptions/<sub-id>/resourceGroups/prod-rg"},
+    ],
+    "sre network": [
+        {"name": "Add an outbound allowlist entry to an agent's sandbox.",
+         "text": "az sre network update -g myrg --agent-name myagent --egress-allowlist contoso.com"},
+    ],
+    "sre plugin": [
+        {"name": "Connect a plugin marketplace, then install a plugin from it.",
+         "text": ("az sre plugin marketplace create -g myrg --agent-name myagent -n contoso-plugins "
+                   "--repo-url https://github.com/contoso/sre-plugins\n"
+                   "az sre plugin install create -g myrg --agent-name myagent --marketplace-name contoso-plugins "
+                   "-n pagerduty-triage")},
+    ],
+    "sre plugin marketplace": [
+        {"name": "List an agent's connected plugin marketplaces.",
+         "text": "az sre plugin marketplace list -g myrg --agent-name myagent"},
+        {"name": "Connect a GitHub repo as a plugin marketplace.",
+         "text": "az sre plugin marketplace create -g myrg --agent-name myagent -n contoso-plugins --repo-url https://github.com/contoso/sre-plugins"},
+    ],
+    "sre plugin install": [
+        {"name": "List an agent's installed plugins.",
+         "text": "az sre plugin install list -g myrg --agent-name myagent"},
+        {"name": "Install a plugin from a connected marketplace.",
+         "text": "az sre plugin install create -g myrg --agent-name myagent --marketplace-name contoso-plugins -n pagerduty-triage"},
+    ],
+    "sre repo": [
+        {"name": "Connect a GitHub repo to an agent.",
+         "text": "az sre repo connect -g myrg --agent-name myagent --repo-url https://github.com/contoso/service-a --repo-type GitHub"},
+    ],
+    "sre skill": [
+        {"name": "List an agent's custom skills.",
+         "text": "az sre skill list -g myrg --agent-name myagent"},
+        {"name": "Author a custom skill from an SKILL.md file.",
+         "text": "az sre skill create -g myrg --agent-name myagent -n triage-skill --file-path ./SKILL.md"},
+    ],
+    "sre supported-agent-model": [
+        {"name": "List supported model providers/names in a region.",
+         "text": "az sre supported-agent-model list -l eastus2"},
+    ],
+    "sre tool": [
+        {"name": "List an agent's custom tools.",
+         "text": "az sre tool list -g myrg --agent-name myagent"},
+        {"name": "Show one custom tool.",
+         "text": "az sre tool show -g myrg --agent-name myagent -n my-tool"},
+    ],
+    "sre usage": [
+        {"name": "List an agent's usage for the current month.",
+         "text": "az sre usage list -g myrg --agent-name myagent"},
+    ],
+}
+
+
+def apply_group_examples():
+    """Merge GROUP_EXAMPLES onto the helps[] entries custom.py's
+    @register_command_group decorators already created. Must be called
+    after 'from . import custom' (directly or via commands.py) has run --
+    see the module-level comment above GROUP_EXAMPLES for why.
+    """
+    import yaml
+
+    for name, examples in GROUP_EXAMPLES.items():
+        existing = helps.get(name)
+        data = yaml.safe_load(existing) if existing else {"type": "group"}
+        data["examples"] = examples
+        helps[name] = yaml.safe_dump(data)

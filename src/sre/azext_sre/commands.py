@@ -66,4 +66,31 @@ def load_command_table(self, _):  # pylint: disable=unused-argument
     for recipe in recipes:
         self.command_table[recipe.AZ_NAME] = recipe(loader=self)
 
+    # Drop raw generated duplicates that custom.py deliberately does NOT
+    # override/reuse, so they don't linger in the command surface as
+    # confusing near-duplicates of the real, documented nouns. These were
+    # flagged directly in manager feedback: 'sre agent connector *'
+    # duplicates the top-level 'sre connector' noun, 'sre agent identity *'
+    # has been promoted to the top-level 'sre identity' noun instead (see
+    # custom.py), and 'sre agent list-connectors-with-secret' is replaced
+    # by the top-level 'sre connector list-secret'. Every one of these was
+    # confirmed, live, to render with a *blank* '--help' description too
+    # (see custom.py's '_SupportedAgentModelGroup' comment for why), so
+    # removing them also removes a second, independent source of confusion.
+    _retired_command_prefixes = (
+        "sre agent connector",
+        "sre agent identity",
+    )
+    _retired_commands = (
+        "sre agent list-connectors-with-secret",
+    )
+    for name in list(self.command_table):
+        if name in _retired_commands or any(
+            name == prefix or name.startswith(prefix + " ") for prefix in _retired_command_prefixes
+        ):
+            del self.command_table[name]
+    for name in list(self.command_group_table):
+        if any(name == prefix or name.startswith(prefix + " ") for prefix in _retired_command_prefixes):
+            del self.command_group_table[name]
+
 

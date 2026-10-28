@@ -60,7 +60,7 @@ since they're registered last).
 
 ## How a command flows
 
-1. `az sre agent connector create ...` is typed.
+1. `az sre connector create ...` is typed.
 2. The Azure CLI core calls `SreCommandsLoader.load_command_table(args)`.
 3. `__init__.py` remaps the leading `sre` to `app` for the *lazy-load args
    only*, then calls `load_aaz_command_table`, which imports and registers
@@ -79,7 +79,7 @@ since they're registered last).
    matters) and calls `_normalize_data_connector_type` on the parsed value
    before the generated `super()` request logic runs.
 6. The request is sent using the pinned `API_VERSION` (or
-   `NETWORK_API_VERSION` for `update-network`, which is fully hand-written —
+   `NETWORK_API_VERSION` for `network update`, which is fully hand-written —
    see [the networking guide](networking.md)).
 
 ## Why `custom.py` exists (and what's in it)
@@ -105,13 +105,18 @@ Everything in `custom.py` falls into one of these categories:
   convert to a clean one-line error — it surfaces as an unhandled
   traceback instead).
 - **Fully hand-written commands with no generated counterpart**:
-  `GetConnection`, `ListUsage`, `GrantAccess` (a thin wrapper over `az role
-  assignment create` that builds the agent's full resource-ID scope),
-  `UpdateNetwork` (GET-merge-PUT against a preview api-version with no
-  public Swagger yet), and the entire `Extension*` family (runbook
-  extension CRUD against the agent's data-plane proxy endpoints, including
-  the base64/JSON `_encode_extension_value`/`_decode_extension_envelope`
-  codec and the per-extension-type `EXTENSION_VALUE_VALIDATORS`).
+  `ConnectionShow`, `UsageList`, `AccessGrant`/`AccessRevoke` (a thin
+  wrapper over `az role assignment create` that builds the agent's full
+  resource-ID scope), `ManagedResourceGrant`/`Revoke`/`List` (the mirror
+  image — grants the agent's own managed identity access to an external
+  scope instead), `NetworkUpdate` (GET-merge-PUT against a preview
+  api-version with no public Swagger yet), and the entire `Extension*`
+  family (runbook extension CRUD against the agent's data-plane proxy
+  endpoints, including the base64/JSON
+  `_encode_extension_value`/`_decode_extension_envelope` codec and the
+  per-extension-type `EXTENSION_VALUE_VALIDATORS`) along with its dedicated
+  front-door nouns (`Tool*`, `Skill*`, `Hook*`, `Instructions*`,
+  `Knowledge*`, `Repo*`/`RepoConnect`, `Plugin*`).
 - **Connector secret-handling**: `_connector_consent_status`/
   `_annotate_connector_consent_status` add a derived `consentStatus` field
   to connector output without ever touching the underlying secret value,
@@ -128,16 +133,21 @@ changes; see [development.md](development.md).
 
 ### Not regenerated (hand-maintained in `custom.py`)
 
-- `agent update-network` — the real deployed api-version
+- `network update` — the real deployed api-version
   (`2026-11-01-preview`) has no public Swagger; the shape was read directly
   from the internal control-plane source with repo access, not from any
   spec. Re-verify against that source if the service's shape ever changes.
-- `agent extension *` — the data-plane extension CRUD proxy endpoints have
-  no ARM Swagger at all; payload shapes for each of the 12 extension types
-  are confirmed one at a time by live verification against a real agent
-  (see [operations.md](operations.md) for the confirmed/unconfirmed table).
-- `agent grant-access` — not a new ARM operation, a convenience wrapper
-  over an existing generic command.
+- `extension *` (and its dedicated front-door nouns `tool`, `skill`, `hook`,
+  `instructions`, `knowledge`, `repo connect`, `plugin marketplace`/`plugin
+  install`) — the data-plane extension CRUD proxy endpoints have no ARM
+  Swagger at all; payload shapes for each of the 15 extension types are
+  confirmed one at a time by live verification against a real agent (12 of
+  15 live-verified so far; see [operations.md](operations.md) for the full
+  confirmed/unconfirmed table).
+- `access grant`/`access revoke` — not a new ARM operation, a convenience
+  wrapper over an existing generic command. `managed-resource
+  grant`/`revoke`/`list` is the same pattern in the other direction (grants
+  the agent's own identity access to an external scope).
 - `--model-provider`/`--data-connector-type` enum values — the Swagger
   declares these as bare strings; the real enum came from live `az rest`
   probing, not the spec.
@@ -170,9 +180,9 @@ changes; see [development.md](development.md).
 
 ## Security boundaries
 
-- `agent connector list-secret` and `agent list-connectors-with-secret` are
-  the only commands that can return connector secret material. Every other
-  connector command recursively redacts secrets from output.
+- `connector list-secret` is the only command that can return connector
+  secret material. Every other connector command recursively redacts
+  secrets from output.
 - The generated `--debug` flag will print raw request/response bodies
   including any secret fields present on the wire — use it only against
   disposable test resources, never against anything with real customer

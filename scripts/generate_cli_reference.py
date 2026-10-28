@@ -165,6 +165,52 @@ def _argument_options(command, undefined):
     return options
 
 
+def _group_help_by_name():
+    """Map AZ_NAME -> AZ_HELP for every AAZCommandGroup custom.py defines.
+
+    commands.py only ever registers AAZCommand *instances* into
+    loader.command_group_table (see its load_command_table -- there is no
+    loop copying AAZCommandGroup subclasses in), so group docstrings
+    written on e.g. '_AccessGroup'/'_ConnectorGroup' in custom.py are never
+    visible to the real 'az sre access -h' help renderer through that
+    table either -- they reach the CLI via a separate knack code path that
+    reads AZ_HELP directly off the class. Mirror that here instead of
+    relying on command_group_table, which is empty for every one of our
+    hand-written top-level nouns.
+    """
+    import inspect
+
+    from azure.cli.core.aaz import AAZCommandGroup
+
+    from azext_sre import custom
+
+    result = {
+        value.AZ_NAME: (value.AZ_HELP or {})
+        for value in vars(custom).values()
+        if (
+            inspect.isclass(value)
+            and issubclass(value, AAZCommandGroup)
+            and value is not AAZCommandGroup
+            and getattr(value, "AZ_NAME", None)
+            and value.__module__ == custom.__name__
+        )
+    }
+
+    # The root "sre" group has no AAZCommandGroup subclass at all (it's the
+    # implicit root everything else registers under) -- its summary lives
+    # directly in _help.py's knack `helps['sre']` YAML string instead. Parse
+    # it the same way knack itself does, so the reference and the real `az
+    # sre -h` output can never show two different root summaries.
+    import yaml
+
+    from azext_sre._help import helps as knack_helps
+
+    if "sre" in knack_helps:
+        result["sre"] = yaml.safe_load(knack_helps["sre"]) or {}
+
+    return result
+
+
 def collect_reference():
     from azure.cli.core.aaz import AAZUndefined
     from azure.cli.core.mock import DummyCli
@@ -177,6 +223,7 @@ def collect_reference():
 
     commands = dict(loader.command_table)
     groups = dict(loader.command_group_table)
+    custom_group_help = _group_help_by_name()
     # command_group_table only contains groups that were explicitly
     # registered with @register_command_group; derive the rest (e.g. "sre
     # agent extension", which only exists implicitly via its commands) so
@@ -206,7 +253,11 @@ def collect_reference():
             for name, command in public_commands.items()
         },
         "groups": {
-            name: {"help": (group.help if group is not None else {})}
+            name: {
+                "help": custom_group_help.get(name)
+                or (group.help if group is not None else None)
+                or {}
+            }
             for name, group in public_groups.items()
         },
     }
@@ -272,17 +323,21 @@ def render_reference(reference=None) -> str:
         "- This CLI only talks to the control plane (`Microsoft.App/agents` ARM "
         "resource). It never talks to the agent's own data plane "
         "(`*.azuresre.ai`) directly. See the [implementation plan](../PLAN.md).",
-        "- `agent update-network` is hand-written against the real "
+        "- `network update` is hand-written against the real "
         "`2026-11-01-preview` api-version; there is no public Swagger for it "
         "yet. See the [networking guide](networking.md).",
-        "- `agent extension create/show/list/delete` accept a `--value` JSON "
+        "- `extension create/show/list/delete` accept a `--value` JSON "
         "document that is base64-encoded and sent as-is to the agent's data "
-        "plane. Only `commonPrompts`, `globalSettings`, and `pluginMarketplaces` "
-        "have live-verified payload shapes today; see the "
+        "plane. Prefer the dedicated front-door nouns (`tool`, `skill`, "
+        "`hook`, `instructions`, `plugin marketplace`/`plugin install`, "
+        "`repo connect`) where one exists; `extension` remains the generic "
+        "escape hatch for `subagents`, `scheduledTasks`, `incidentFilters`, "
+        "`incidentHandlers`, `httpTriggers`, and `globalSettings`. See the "
         "[operations guide](operations.md).",
-        "- `agent connector list-secret` and `agent list-connectors-with-secret` "
-        "are the only commands that can return connector secret material; "
-        "everything else recursively redacts secrets from output.",
+        "- `connector list-secret` is the only command that can return "
+        "connector secret material in plain text; everything else "
+        "(`connector show`, `connector list`, `connector create`/`update` "
+        "responses) redacts secret fields server-side.",
         "",
         "## Global options",
         "",

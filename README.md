@@ -27,6 +27,12 @@ intentionally out of scope and why.
 
 ## Quick use
 
+Every noun below is a flat top-level group directly under `az sre` — there is
+no `az sre agent connector ...`-style nesting except where a resource
+genuinely only exists inside another one (`az sre plugin marketplace`/
+`az sre plugin install`). See [docs/cli-reference.md](docs/cli-reference.md)
+for the complete, always-current list.
+
 The shortest useful walkthrough creates a disposable agent, grants a
 collaborator RBAC access to it, inspects its connection details, then removes
 it.
@@ -46,13 +52,13 @@ az sre agent create \
   --location "$LOCATION"
 ```
 
-Grant a teammate the built-in "Standard User" role (see
-[`GrantAccess._ROLES`](src/sre/azext_sre/custom.py) for the full
+Grant a teammate a built-in role (see [`MANAGED_RESOURCE_ROLES`/`_ROLES`
+in `custom.py`](src/sre/azext_sre/custom.py) for the full
 `admin`/`user`/`author`/`reader` mapping — confirmed against real
 `az role definition list` output, not the Portal's friendly labels):
 
 ```bash
-az sre agent grant-access \
+az sre access grant \
   --resource-group "$RG" \
   --agent-name "$AGENT" \
   --role user \
@@ -62,7 +68,7 @@ az sre agent grant-access \
 Inspect the agent's connection info and clean up:
 
 ```bash
-az sre agent get-connection --resource-group "$RG" --name "$AGENT"
+az sre connection show --resource-group "$RG" --name "$AGENT"
 
 az sre agent delete --resource-group "$RG" --name "$AGENT" --yes
 az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
@@ -70,18 +76,28 @@ az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
 
 ## What's implemented today
 
-| Area | Commands | Status |
+| Group | Example commands | Status |
 |---|---|---|
-| Agent lifecycle | `create`/`show`/`list`/`update`/`delete`/`start`/`stop`/`wait` | Done, live-verified |
-| Identity | `agent identity assign`/`show`/`remove` | Done, live-verified |
-| RBAC | `agent grant-access --role admin\|user\|author\|reader` | Done, live-verified, regression-tested |
-| Connectors | `agent connector create`/`update`/`delete`/`list`/`show` | Done, live-verified against a real Kusto cluster |
-| Usage | `agent get-connection`, `agent list-usage` | Done, live-verified |
-| Networking | `agent update-network` (VNet injection, sandbox egress) | Done — hand-written against the real `2026-11-01-preview` api-version, no public Swagger exists for it yet |
-| Runbook extensions | `agent extension create`/`show`/`list`/`delete` | Mechanism done; 12 of 15 extension types (`tools`, `skills`, `commonPrompts`, etc.) are expected to work and awaiting a live end-to-end test; the other 3 (`subagents`, `hooks`, `scheduledTasks`) are intentionally portal-only by Microsoft's own design — see [Implementation plan](PLAN.md) |
+| `agent` | `create`/`show`/`list`/`update`/`delete`/`start`/`stop`/`wait` | Done, live-verified |
+| `access` | `grant`/`revoke --role admin\|user\|author\|reader [--assignee\|--assignee-me]` | Done, live-verified, regression-tested |
+| `managed-resource` | `grant`/`revoke`/`list` — grants the agent's own identity Reader + Monitoring Contributor on an external scope | Done, live-verified |
+| `identity` | `assign`/`show`/`remove` (system/user-assigned) | Done, live-verified |
+| `connection` | `show` — resolves the agent's data-plane URL | Done, live-verified |
+| `usage` | `list [--daily]` — token/request usage stats | Done, live-verified |
+| `network` | `update` (VNet injection, sandbox egress) | Done — hand-written against the real `2026-11-01-preview` api-version, no public Swagger exists for it yet |
+| `connector` | `create`/`update`/`delete`/`list`/`show`/`list-secret` | Done, live-verified against a real Kusto cluster + Mcp/Knowledge connector types |
+| `knowledge` | `create --type {file,text,webpage,repository}`/`show`/`list`/`delete` | Done, live-verified (file/text types; service redacts content on read-back, a documented service-side limitation) |
+| `repo` | `connect` — one-step GitHub/Azure DevOps repo connect | Done, live-verified |
+| `tool` / `skill` / `hook` / `instructions` | `create`/`show`/`list`/`delete` (`skill create` also supports `--file-path SKILL.md`) | Done, live-verified |
+| `plugin marketplace` / `plugin install` | `create`/`show`/`list`/`delete` | Create/show live-verified; K8s-backed install provisioning not exercised in this sandbox |
+| `extension` | `create`/`show`/`list`/`delete --extension-type {...}` | Generic escape hatch behind every noun above plus `subagents`, `scheduledTasks`, `incidentFilters`, `incidentHandlers`, `httpTriggers`, `globalSettings` (no dedicated noun yet) |
+| `supported-agent-model` | `list --location <value>` | Done, live-verified |
 
 Everything in this table is backed by the unit test suite described below, and
-most rows have also been exercised against real Azure resources by hand.
+most rows have also been exercised against real Azure resources by hand. The
+full syntax for every command — options, defaults, allowed values, examples —
+is in the generated [CLI ergonomics reference](docs/cli-reference.md), which
+is regenerated by a commit hook so it can't drift from this table.
 
 ## Testing
 
@@ -90,11 +106,12 @@ cd src/sre
 python -m unittest discover -s azext_sre/tests -v
 ```
 
-54+ offline, credential-free tests cover every hand-written command in
-`custom.py`: RBAC role-name mapping, the networking GET-merge-PUT logic,
-extension create/show/list/delete resource-ID and payload shape, the
-base64/JSON extension-value codec, model-provider and data-connector-type
-normalization, extension-type enum completeness, command registration,
+180+ offline, credential-free tests cover every hand-written command in
+`custom.py`: RBAC role-name and managed-resource-scope mapping, the networking
+GET-merge-PUT logic, extension create/show/list/delete resource-ID and payload
+shape, the base64/JSON extension-value codec, model-provider and
+data-connector-type normalization, extension-type enum completeness,
+file-path-based skill/repo-connect convenience flags, command registration,
 arg-schema help regressions, and CLI-level argument enforcement
 (invalid/missing arguments rejected by argparse before any handler runs) —
 following the same pattern `azext-aigateway`'s own test suite uses. See

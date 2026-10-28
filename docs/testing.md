@@ -37,11 +37,11 @@ az extension add --source dist/sre-1.0.0b1-py3-none-any.whl -y
 ```
 
 **For read-only / idempotent checks**, use your long-lived test agent
-directly (`show`, `list`, `get-connection`, `list-usage`, connector/
+directly (`show`, `list`, `connection show`, `usage list`, connector/
 extension `show`/`list`).
 
 **For anything destructive or state-changing** (`create`, `delete`,
-`start`, `stop`, `identity assign`/`remove`, `update-network`, a new
+`start`, `stop`, `identity assign`/`remove`, `network update`, a new
 connector or extension type you haven't confirmed yet), create a disposable
 throwaway agent, exercise the command, then tear the throwaway agent down
 completely:
@@ -52,7 +52,7 @@ AGENT="sre-lifecycle-test"
 
 az sre agent create --name "$AGENT" -g "$RG" -l eastus2 \
   --default-model "{provider:anthropic,name:claude-sonnet-4-5}" \
-  --mi-system-assigned --no-wait
+  --system-assigned --no-wait
 
 az sre agent wait --name "$AGENT" -g "$RG" --created --timeout 600
 
@@ -61,7 +61,7 @@ az sre agent wait --name "$AGENT" -g "$RG" --created --timeout 600
 az sre agent delete --name "$AGENT" -g "$RG" -y
 ```
 
-At least one identity (`--mi-system-assigned` or `--mi-user-assigned`) is
+At least one identity (`--system-assigned` or `--user-assigned`) is
 required at create time — the server rejects creation without one.
 
 **When confirming an extension payload shape**, a 200 response alone is
@@ -70,11 +70,11 @@ instead of rejecting them. Always GET back what you just PUT and diff it
 byte-for-byte against what you sent:
 
 ```bash
-az sre agent extension create -g "$RG" --agent-name "$AGENT" \
+az sre extension create -g "$RG" --agent-name "$AGENT" \
   --extension-type commonPrompts --extension-name default \
   --value '{""prompt"": ""test prompt""}'
 
-az sre agent extension show -g "$RG" --agent-name "$AGENT" \
+az sre extension show -g "$RG" --agent-name "$AGENT" \
   --extension-type commonPrompts --extension-name default
 ```
 
