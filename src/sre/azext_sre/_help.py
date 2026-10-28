@@ -62,9 +62,9 @@ examples:
 GROUP_EXAMPLES = {
     "sre access": [
         {"name": 'Grant a user the "reader" role on an agent.',
-         "text": "az sre access grant -g myrg --agent-name myagent --principal-id <object-id> --role reader"},
+         "text": "az sre access grant -g myrg --agent-name myagent --assignee <object-id-or-upn> --role reader"},
         {"name": "Revoke a user's access from an agent.",
-         "text": "az sre access revoke -g myrg --agent-name myagent --principal-id <object-id>"},
+         "text": "az sre access revoke -g myrg --agent-name myagent --assignee <object-id-or-upn> --role reader"},
     ],
     "sre agent": [
         {"name": "Create an agent with an Anthropic default model.",
