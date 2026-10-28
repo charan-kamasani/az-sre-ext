@@ -1404,7 +1404,10 @@ class KnowledgeList(AAZCommand):
         return knowledge_items
 
 
-@register_command("sre knowledge delete")
+@register_command(
+    "sre knowledge delete",
+    confirmation="Are you sure you want to perform this operation?",
+)
 class KnowledgeDelete(AAZCommand):
     """Remove a knowledge source."""
 
@@ -1431,10 +1434,13 @@ class KnowledgeDelete(AAZCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         name = _arg_value(self.ctx.args.name)
 
+        # Forward --yes to the inner "sre connector delete" self-invocation
+        # (already confirmed once at this command's own prompt above).
         invoke = partial(_cli_invoke, self.cli_ctx)
         return invoke(
             "sre", "connector", "delete",
             "--agent-name", agent_name, "--resource-group", resource_group, "--name", name,
+            "--yes",
         )
 
 
@@ -2806,18 +2812,23 @@ class ExtensionList(AAZCommand):
         if isinstance(result, dict) and isinstance(result.get("value"), list):
             result["value"] = [_decode_extension_envelope(item) for item in result["value"]]
             if not result["value"]:
+                if extension_type in ("repositories", "githubAuths", "azureDevOpsAuths"):
+                    hint = " (or 'az sre repo connect' for a one-step connect)"
+                else:
+                    hint = ""
                 logger.warning(
                     "No '%s' extensions found on agent '%s'. Add one with "
                     "'az sre extension create --extension-type %s "
-                    "--extension-name <name> --value <json>' (or "
-                    "'az sre repo connect' for repositories/"
-                    "githubAuths/azureDevOpsAuths).",
-                    extension_type, agent_name, extension_type,
+                    "--extension-name <name> --value <json>'%s.",
+                    extension_type, agent_name, extension_type, hint,
                 )
         return result
 
 
-@register_command("sre extension delete")
+@register_command(
+    "sre extension delete",
+    confirmation="Are you sure you want to perform this operation?",
+)
 class ExtensionDelete(AAZCommand):
     """Delete an SRE Agent extension."""
 
@@ -3045,11 +3056,17 @@ class _PinnedExtensionDelete(AAZCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         extension_name = _arg_value(self.ctx.args.extension_name)
 
+        # The user already confirmed via this command's own confirmation
+        # prompt (see its @register_command(confirmation=...)); pass --yes
+        # through to the inner "sre extension delete" self-invocation so it
+        # doesn't prompt a second time (and so this doesn't hang/fail when
+        # re-invoked programmatically with no real tty).
         invoke = partial(_cli_invoke, self.cli_ctx)
         return invoke(
             "sre", "extension", "delete",
             "--agent-name", agent_name, "--resource-group", resource_group,
             "--extension-type", self._EXTENSION_TYPE, "--extension-name", extension_name,
+            "--yes",
         )
 
 
@@ -3128,7 +3145,10 @@ class ToolList(_PinnedExtensionList):
     _args_schema = None
 
 
-@register_command("sre tool delete")
+@register_command(
+    "sre tool delete",
+    confirmation="Are you sure you want to perform this operation?",
+)
 class ToolDelete(_PinnedExtensionDelete):
     """Delete a custom tool."""
 
@@ -3240,7 +3260,10 @@ class SkillList(_PinnedExtensionList):
     _args_schema = None
 
 
-@register_command("sre skill delete")
+@register_command(
+    "sre skill delete",
+    confirmation="Are you sure you want to perform this operation?",
+)
 class SkillDelete(_PinnedExtensionDelete):
     """Delete a custom skill."""
 
@@ -3265,10 +3288,15 @@ class HookCreate(_PinnedExtensionCreate):
     _args_schema = None
     _VALUE_HELP = (
         "Hook configuration as a JSON document, e.g. "
-        "{\"eventType\": \"Stop\", \"hookType\": \"Prompt\", \"prompt\": \"...\", "
-        "\"activationMode\": \"Always\"} -- fields: eventType/hookType/"
-        "prompt/activationMode, plus optional name/description/model/"
-        "timeout/failMode/maxRejections."
+        "{\"eventType\": \"Stop\", \"activationMode\": \"always\", "
+        "\"description\": \"...\", \"hook\": {\"type\": \"prompt\", "
+        "\"prompt\": \"...\"}} -- top-level fields: eventType (\"Stop\" or "
+        "\"PostToolUse\")/activationMode (\"always\" or \"onDemand\", "
+        "lowercase)/description, plus a nested \"hook\" object: type "
+        "(\"prompt\" or \"command\")/prompt/command/script/matcher/model/"
+        "timeout/failMode/maxRejections/sources. Live-confirmed shape -- "
+        "do not put hookType/prompt at the top level, they must be nested "
+        "under \"hook\"."
     )
 
 
@@ -3288,7 +3316,10 @@ class HookList(_PinnedExtensionList):
     _args_schema = None
 
 
-@register_command("sre hook delete")
+@register_command(
+    "sre hook delete",
+    confirmation="Are you sure you want to perform this operation?",
+)
 class HookDelete(_PinnedExtensionDelete):
     """Delete a hook."""
 
@@ -3340,7 +3371,10 @@ class InstructionsList(_PinnedExtensionList):
     _args_schema = None
 
 
-@register_command("sre instructions delete")
+@register_command(
+    "sre instructions delete",
+    confirmation="Are you sure you want to perform this operation?",
+)
 class InstructionsDelete(_PinnedExtensionDelete):
     """Delete the agent's custom instructions."""
 
@@ -3403,7 +3437,10 @@ class PluginMarketplaceList(_PinnedExtensionList):
     _args_schema = None
 
 
-@register_command("sre plugin marketplace delete")
+@register_command(
+    "sre plugin marketplace delete",
+    confirmation="Are you sure you want to perform this operation?",
+)
 class PluginMarketplaceDelete(_PinnedExtensionDelete):
     """Disconnect a plugin marketplace."""
 
@@ -3449,7 +3486,10 @@ class PluginInstallList(_PinnedExtensionList):
     _args_schema = None
 
 
-@register_command("sre plugin install delete")
+@register_command(
+    "sre plugin install delete",
+    confirmation="Are you sure you want to perform this operation?",
+)
 class PluginInstallDelete(_PinnedExtensionDelete):
     """Uninstall a plugin."""
 

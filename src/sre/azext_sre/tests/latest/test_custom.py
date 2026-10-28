@@ -1600,6 +1600,7 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
                 "sre", "extension", "delete",
                 "--agent-name", "myagent", "--resource-group", "rg",
                 "--extension-type", "commonPrompts", "--extension-name", "default",
+                "--yes",
             ),
             {"agent_name": "myagent", "resource_group": "rg", "extension_name": "default"},
         )
@@ -1732,7 +1733,7 @@ class KnowledgeFacadeTests(unittest.TestCase):
         )
         self.assertEqual(
             calls[0],
-            ("sre", "connector", "delete", "--agent-name", "myagent", "--resource-group", "rg", "--name", "docs"),
+            ("sre", "connector", "delete", "--agent-name", "myagent", "--resource-group", "rg", "--name", "docs", "--yes"),
         )
 
     def test_list_filters_to_knowledge_connector_types_only(self):

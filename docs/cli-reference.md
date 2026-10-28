@@ -460,7 +460,7 @@ Extensions are the generic building block behind several higher-level nouns in t
 | Verb | Exact syntax |
 | --- | --- |
 | `create` | `az sre extension create --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value> --value <value> [--overwrite {false,true}]` |
-| `delete` | `az sre extension delete --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value>` |
+| `delete` | `az sre extension delete --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value> [--yes]` |
 | `list` | `az sre extension list --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings}` |
 | `show` | `az sre extension show --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value>` |
 
@@ -489,7 +489,7 @@ Delete an SRE Agent extension.
 
 **Syntax**
 
-`az sre extension delete --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value>`
+`az sre extension delete --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value> [--yes]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -497,6 +497,7 @@ Delete an SRE Agent extension.
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--extension-type`, `--type` | String | Yes |  | `subagents`, `tools`, `skills`, `scheduledTasks`, `incidentFilters`, `commonPrompts`, `hooks`, `incidentHandlers`, `httpTriggers`, `repositories`, `pluginMarketplaces`, `pluginInstallations`, `githubAuths`, `azureDevOpsAuths`, `globalSettings` | Kind of agent extension. One of: subagents, tools, skills, scheduledTasks, incidentFilters, commonPrompts, hooks, incidentHandlers, httpTriggers, repositories, pluginMarketplaces, pluginInstallations, githubAuths, azureDevOpsAuths, globalSettings. |
 | `--extension-name`, `--name`, `-n` | String | Yes |  |  | Name of the extension instance. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
 ### `az sre extension list`
 
@@ -536,7 +537,7 @@ For example, running a prompt automatically when the agent is stopped.
 | Verb | Exact syntax |
 | --- | --- |
 | `create` | `az sre hook create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
-| `delete` | `az sre hook delete --agent-name <value> --resource-group <value> --name <value>` |
+| `delete` | `az sre hook delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
 | `list` | `az sre hook list --agent-name <value> --resource-group <value>` |
 | `show` | `az sre hook show --agent-name <value> --resource-group <value> --name <value>` |
 
@@ -553,7 +554,7 @@ Create or update a hook.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Hook configuration as a JSON document, e.g. {"eventType": "Stop", "hookType": "Prompt", "prompt": "...", "activationMode": "Always"} -- fields: eventType/hookType/prompt/activationMode, plus optional name/description/model/timeout/failMode/maxRejections. |
+| `--value` | String | Yes |  |  | Hook configuration as a JSON document, e.g. {"eventType": "Stop", "activationMode": "always", "description": "...", "hook": {"type": "prompt", "prompt": "..."}} -- top-level fields: eventType ("Stop" or "PostToolUse")/activationMode ("always" or "onDemand", lowercase)/description, plus a nested "hook" object: type ("prompt" or "command")/prompt/command/script/matcher/model/timeout/failMode/maxRejections/sources. Live-confirmed shape -- do not put hookType/prompt at the top level, they must be nested under "hook". |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 ### `az sre hook delete`
@@ -562,13 +563,14 @@ Delete a hook.
 
 **Syntax**
 
-`az sre hook delete --agent-name <value> --resource-group <value> --name <value>`
+`az sre hook delete --agent-name <value> --resource-group <value> --name <value> [--yes]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
 ### `az sre hook list`
 
@@ -678,7 +680,7 @@ A single free-text block (up to 16384 bytes) appended to the agent's default sys
 | Verb | Exact syntax |
 | --- | --- |
 | `create` | `az sre instructions create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
-| `delete` | `az sre instructions delete --agent-name <value> --resource-group <value> --name <value>` |
+| `delete` | `az sre instructions delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
 | `list` | `az sre instructions list --agent-name <value> --resource-group <value>` |
 | `show` | `az sre instructions show --agent-name <value> --resource-group <value> --name <value>` |
 
@@ -706,13 +708,14 @@ Delete the agent's custom instructions.
 
 **Syntax**
 
-`az sre instructions delete --agent-name <value> --resource-group <value> --name <value>`
+`az sre instructions delete --agent-name <value> --resource-group <value> --name <value> [--yes]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
 ### `az sre instructions list`
 
@@ -750,7 +753,7 @@ Use 'sre knowledge create --type file' or '--type webpage' to add one. Repositor
 | Verb | Exact syntax |
 | --- | --- |
 | `create` | `az sre knowledge create --agent-name <value> --resource-group <value> --name <value> --type {file,text,webpage,repository} [--file-path <value>] [--url <value>] [--data-source <value>] [--overwrite {false,true}]` |
-| `delete` | `az sre knowledge delete --agent-name <value> --resource-group <value> --name <value>` |
+| `delete` | `az sre knowledge delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
 | `list` | `az sre knowledge list --agent-name <value> --resource-group <value>` |
 | `show` | `az sre knowledge show --agent-name <value> --resource-group <value> --name <value>` |
 
@@ -788,13 +791,14 @@ Remove a knowledge source.
 
 **Syntax**
 
-`az sre knowledge delete --agent-name <value> --resource-group <value> --name <value>`
+`az sre knowledge delete --agent-name <value> --resource-group <value> --name <value> [--yes]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n` | String | Yes |  |  | Name of the knowledge source. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
 ### `az sre knowledge list`
 
@@ -998,7 +1002,7 @@ Built-in skills are toggled on/off separately, not created here; use 'sre skill 
 | Verb | Exact syntax |
 | --- | --- |
 | `create` | `az sre skill create --agent-name <value> --resource-group <value> --name <value> [--value <value>] [--overwrite {false,true}] [--file-path <value>] [--tools <json-or-@file>] [--description <value>]` |
-| `delete` | `az sre skill delete --agent-name <value> --resource-group <value> --name <value>` |
+| `delete` | `az sre skill delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
 | `list` | `az sre skill list --agent-name <value> --resource-group <value>` |
 | `show` | `az sre skill show --agent-name <value> --resource-group <value> --name <value>` |
 
@@ -1036,13 +1040,14 @@ Delete a custom skill.
 
 **Syntax**
 
-`az sre skill delete --agent-name <value> --resource-group <value> --name <value>`
+`az sre skill delete --agent-name <value> --resource-group <value> --name <value> [--yes]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
 ### `az sre skill list`
 
@@ -1110,7 +1115,7 @@ Built-in tools and MCP servers/services are configured separately and are not ye
 | Verb | Exact syntax |
 | --- | --- |
 | `create` | `az sre tool create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
-| `delete` | `az sre tool delete --agent-name <value> --resource-group <value> --name <value>` |
+| `delete` | `az sre tool delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
 | `list` | `az sre tool list --agent-name <value> --resource-group <value>` |
 | `show` | `az sre tool show --agent-name <value> --resource-group <value> --name <value>` |
 
@@ -1136,13 +1141,14 @@ Delete a custom tool.
 
 **Syntax**
 
-`az sre tool delete --agent-name <value> --resource-group <value> --name <value>`
+`az sre tool delete --agent-name <value> --resource-group <value> --name <value> [--yes]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
 ### `az sre tool list`
 
@@ -1212,7 +1218,7 @@ Run 'sre plugin marketplace create' first if you haven't connected a marketplace
 | Verb | Exact syntax |
 | --- | --- |
 | `create` | `az sre plugin install create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
-| `delete` | `az sre plugin install delete --agent-name <value> --resource-group <value> --name <value>` |
+| `delete` | `az sre plugin install delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
 | `list` | `az sre plugin install list --agent-name <value> --resource-group <value>` |
 | `show` | `az sre plugin install show --agent-name <value> --resource-group <value> --name <value>` |
 
@@ -1238,13 +1244,14 @@ Uninstall a plugin.
 
 **Syntax**
 
-`az sre plugin install delete --agent-name <value> --resource-group <value> --name <value>`
+`az sre plugin install delete --agent-name <value> --resource-group <value> --name <value> [--yes]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
 ### `az sre plugin install list`
 
@@ -1282,7 +1289,7 @@ Supports GitHub, Azure DevOps, and GitLab repos. Use 'sre plugin install' afterw
 | Verb | Exact syntax |
 | --- | --- |
 | `create` | `az sre plugin marketplace create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
-| `delete` | `az sre plugin marketplace delete --agent-name <value> --resource-group <value> --name <value>` |
+| `delete` | `az sre plugin marketplace delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
 | `list` | `az sre plugin marketplace list --agent-name <value> --resource-group <value>` |
 | `show` | `az sre plugin marketplace show --agent-name <value> --resource-group <value> --name <value>` |
 
@@ -1308,13 +1315,14 @@ Disconnect a plugin marketplace.
 
 **Syntax**
 
-`az sre plugin marketplace delete --agent-name <value> --resource-group <value> --name <value>`
+`az sre plugin marketplace delete --agent-name <value> --resource-group <value> --name <value> [--yes]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
 ### `az sre plugin marketplace list`
 
