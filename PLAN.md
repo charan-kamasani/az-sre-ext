@@ -20,7 +20,7 @@ hard part, creating a useful agent is.
 
 | Feature | Status | Blocker | Next step |
 |---|---|---|---|
-| Agent CRUD (create/show/list/update/delete/start/stop/wait) | Done | None | Live-verified end-to-end against a real resource. |
+| Agent CRUD (create/show/list/update/delete/start/stop/wait) | Done | None | Live-verified end-to-end against a real resource. All `agent create`/`agent update` Properties/Identity args (`--action-configuration`, `--knowledge-graph-configuration`, `--log-configuration`, `--incident-management-configuration`, `--tags`, `--upgrade-channel`, `--mi-system-assigned`/`--mi-user-assigned`) live-verified this pass against real resources (disposable App Insights + user-assigned identity); `--agent-identity` not independently tested (needs a real tenant AAD sponsor group ID, out of scope). Found and fixed a real create-time bug (service requires a managed identity; CLI now defaults to `--mi-system-assigned` with a warning instead of failing with a raw ARM error) and documented two real, non-CLI-fixable findings: a Swagger/service `--action-configuration` mode enum mismatch (`ReadOnly` rejected live) and a `--log-configuration` + `identity assign`/`remove` GET-merge-PUT interaction bug (write-only `connectionString` lost on merge). See docs/operations.md. |
 | `connection show` / `usage list` | Done | None | Live-verified. |
 | Identity (`--system-assigned`/`--user-assigned`) | Done | None | Live-verified against a real managed identity. |
 | RBAC (`access grant --role admin\|user\|author\|reader`) | Done | None | Live-verified; a real role-name-mapping bug (wrong role names, not matching Azure's actual built-ins) was found and fixed this session, now locked in with a regression test. |

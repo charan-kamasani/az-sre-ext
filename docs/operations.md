@@ -31,6 +31,26 @@ az sre identity remove -g myrg --agent-name myagent --system-assigned
 `identity remove` is correctly rejected by the server if it would leave the
 agent with zero identities (`ManagedIdentityRequired`).
 
+### `agent create`/`agent update` -- Properties/Identity args live-verification
+
+All non-trivial `--<property>` arguments on `agent create`/`agent update`
+were live-tested end-to-end against a real agent (not just schema/help
+inspection). Status:
+
+| Arg | Status | Notes |
+| --- | --- | --- |
+| `--default-model` | Live-verified | Used throughout this session. |
+| `--grant-access-to-me` | Live-verified | See RBAC section. |
+| `--mi-system-assigned` (create) | Live-verified | **Required** -- see the `agent create` defaulting behavior below. |
+| `--mi-user-assigned` (create only) | Live-verified | Not accepted on `agent update` (service only exposes it on the create/PUT recipe) -- use `az sre identity assign --user-assigned <id>` to add one to an existing agent instead. |
+| `--tags` | Live-verified | Plain pass-through. |
+| `--upgrade-channel` | Live-verified | `Preview`/`Stable` both accepted. |
+| `--action-configuration` | Live-verified, with one real enum/server mismatch found | `identity` must be the literal string `"system"` (not a resource ID) to reference the agent's own system-assigned identity, or a user-assigned identity's resource ID. **`mode` accepts `Autonomous`/`ReadOnly`/`Review` per the CLI's generated enum (from Swagger), but the live service only accepts `Autonomous`/`Review` -- `ReadOnly` is rejected with `(InvalidActionMode)`.** This is a Swagger/service enum drift, not a CLI defect; not fixable without a service-side Swagger fix or hand-editing generated code (which this project avoids). |
+| `--knowledge-graph-configuration` | Live-verified | Same `identity: "system"` convention as `--action-configuration`. |
+| `--log-configuration` | Live-verified, with a real identity-assign interaction bug found | `applicationInsightsConfiguration.connectionString` is write-only (never echoed back on `agent show`), same pattern as connector `extendedProperties`/`dataSource`. **Known gotcha**: if an agent has `--log-configuration` set, a subsequent `sre identity assign`/`sre identity remove` call will fail with `(InvalidApplicationInsightsConfiguration) The AppId and ConnectionString fields must be provided together` -- these are generated GET-merge-PUT commands, and the GET can never recover the write-only `connectionString`, so the merged PUT re-submits `appId` alone. Not fixable at the CLI layer without either (a) silently dropping the user's existing log configuration as a side effect of an unrelated identity change (worse), or (b) a service-side change. **Workaround**: re-apply `--log-configuration` with the same `app-id`/`connection-string` immediately after any `identity assign`/`identity remove` call on an agent that has one configured. The same risk likely applies to `--incident-management-configuration`'s `connection-key` (also a write-only/password field), though not independently reproduced. |
+| `--incident-management-configuration` | Live-verified, with a real validation message found | `connection-url` must be omitted for production IcM connections (it's auto-wired via the Agent Space proxy); if set for testing it must be an `https://*.microsofticm.com` URL -- any other host is rejected with `(InvalidIcmConnectionUrl)` and a clear, actionable error message. |
+| `--agent-identity` | Not independently tested | Requires `initial-sponsor-group-id`, a real tenant-specific AAD "sponsor group" GUID used for agent-identity/Teams-user provisioning -- out of scope without guidance from the SRE Agent team on which group is valid to use in this tenant. |
+
 ## RBAC
 
 ```bash
