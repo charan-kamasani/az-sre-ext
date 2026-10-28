@@ -99,7 +99,7 @@ Thin convenience wrapper over 'az role assignment create' that builds the agent'
 
 Revoke a built-in SRE Agent RBAC role from a user, group, or principal.
 
-Mirrors 'grant-access': thin convenience wrapper over 'az role assignment delete' that builds the agent's full resource-ID scope for you, so callers do not need to construct the scope string (or look up their own object ID, via --assignee-me) by hand.
+Mirrors 'access grant': thin convenience wrapper over 'az role assignment delete' that builds the agent's full resource-ID scope for you, so callers do not need to construct the scope string (or look up their own object ID, via --assignee-me) by hand.
 
 **Syntax**
 

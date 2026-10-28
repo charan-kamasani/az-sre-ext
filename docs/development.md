@@ -14,7 +14,7 @@ request-flow walkthrough.
 - SRE Agent ARM resource: `Microsoft.App/agents`, pinned
   `API_VERSION = "2026-01-01"` (must match whatever `aaz/latest` was
   generated against — see `custom.py`'s top-of-file comment).
-- Networking fields (`update-network`): the real deployed
+- Networking fields (`network update`): the real deployed
   `2026-11-01-preview` api-version, confirmed live via `az provider show
   --namespace Microsoft.App`, no public Swagger yet.
 - `PLAN.md` documents every architecture decision with its evidence —

@@ -276,8 +276,8 @@ class _ModelProviderArgMixin:
 def _resolve_signed_in_user_object_id(cli_ctx):
     """Resolve the signed-in user's AAD object ID via 'az ad signed-in-user show'.
 
-    Shared by --grant-access-to-me (agent create), --assignee-me (grant-access
-    and revoke-access) so "me" always means the same thing and is resolved the
+    Shared by --grant-access-to-me (agent create), --assignee-me (access grant
+    and access revoke) so "me" always means the same thing and is resolved the
     same way in exactly one place.
     """
     invoke = partial(_cli_invoke, cli_ctx)
@@ -290,7 +290,7 @@ def _resolve_signed_in_user_object_id(cli_ctx):
 
 class _GrantAccessToMeMixin:
     """Adds --grant-access-to-me to 'agent create', collapsing the
-    create -> `az ad signed-in-user show` -> grant-access dance into one
+    create -> `az ad signed-in-user show` -> access grant dance into one
     flag. GrantAccess (defined further below in this module) already
     builds the agent's resource-ID scope and issues 'role assignment
     create' for you; this just auto-resolves "me" and calls it right
@@ -1675,7 +1675,7 @@ class _RepoGroup(AAZCommandGroup):
 
 
 class _RoleAssignmentScopeCommand(AAZCommand):
-    """Shared base for 'grant-access'/'revoke-access': builds the agent's
+    """Shared base for 'access grant'/'access revoke': builds the agent's
     full resource-ID scope and resolves --assignee/--assignee-me to a single
     object ID, so each subclass only has to call 'role assignment
     create'/'delete' with (role_name, assignee, scope) already in hand.
@@ -1797,7 +1797,7 @@ class GrantAccess(_RoleAssignmentScopeCommand):
 class RevokeAccess(_RoleAssignmentScopeCommand):
     """Revoke a built-in SRE Agent RBAC role from a user, group, or principal.
 
-    Mirrors 'grant-access': thin convenience wrapper over 'az role
+    Mirrors 'access grant': thin convenience wrapper over 'az role
     assignment delete' that builds the agent's full resource-ID scope for
     you, so callers do not need to construct the scope string (or look up
     their own object ID, via --assignee-me) by hand.
@@ -2005,7 +2005,7 @@ class UpdateNetwork(AAZCommand):
 #   - src/Services/Services/AgentExtensionsApiService.cs's GetExtensionTypes()
 #     (the canonical ApiType/ExtensionType pairs, reproduced below)
 #   - src/WebApi/ApiCalls/Agents.http (real example request/response bodies)
-# Hand-written the same way update-network is: no codegen, _arm_request
+# Hand-written the same way 'network update' is: no codegen, _arm_request
 # directly, re-verify against the real swagger once one is ever published.
 # --------------------------------------------------------------------------------------------
 

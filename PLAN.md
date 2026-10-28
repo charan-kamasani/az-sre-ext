@@ -21,25 +21,26 @@ hard part, creating a useful agent is.
 | Feature | Status | Blocker | Next step |
 |---|---|---|---|
 | Agent CRUD (create/show/list/update/delete/start/stop/wait) | Done | None | Live-verified end-to-end against a real resource. |
-| `get-connection` / `list-usage` | Done | None | Live-verified. |
+| `connection show` / `usage list` | Done | None | Live-verified. |
 | Identity (`--system-assigned`/`--user-assigned`) | Done | None | Live-verified against a real managed identity. |
-| RBAC (`grant-access --role admin\|user\|author\|reader`) | Done | None | Live-verified; a real role-name-mapping bug (wrong role names, not matching Azure's actual built-ins) was found and fixed this session, now locked in with a regression test. |
+| RBAC (`access grant --role admin\|user\|author\|reader`) | Done | None | Live-verified; a real role-name-mapping bug (wrong role names, not matching Azure's actual built-ins) was found and fixed this session, now locked in with a regression test. |
 | Connectors (Kusto/Mcp/Outlook/Teams CRUD) | Done | None | Live-verified against a real Kusto cluster. `--data-connector-type` enum validation and the connector consent flow are tracked separately (see below). |
-| Networking (`update-network`, vnet/sandbox) | Done | None | Hand-written (not generated — no public Swagger exists for the real deployed api-version `2026-11-01-preview` yet) GET-merge-PUT that preserves unrelated properties. Unit-tested; one live end-to-end run against a real agent remains. |
+| Networking (`network update`, vnet/sandbox) | Done | None | Hand-written (not generated — no public Swagger exists for the real deployed api-version `2026-11-01-preview` yet) GET-merge-PUT that preserves unrelated properties. Unit-tested and live-verified end-to-end against a real agent (`sre-network-verify`; see docs/networking.md). |
 | Runbook extensions — mechanism (routing/auth/base64 envelope) | Done | None | Real ARM-proxy routes confirmed (`.../agents/{name}/{extensionType}[/{name}]`), 15 extension types total. Full CRUD built and unit-tested; the 400/500s hit while probing proved it genuinely reaches the data-plane cluster, not a dead route. |
-| Runbook extensions — 12 of 15 types (`tools`, `skills`, `commonPrompts`, `incidentFilters`, `incidentHandlers`, `httpTriggers`, `repositories`, `pluginMarketplaces`, `pluginInstallations`, `githubAuths`, `azureDevOpsAuths`, `globalSettings`) | In progress | None known — not gated server-side | Live-test one using the internal `Agents.http` worked example for `pluginMarketplaces` as a known-good starting point. |
-| Runbook extensions — `subagents`/`hooks`/`scheduledTasks` | Permanently out of scope | These 3 types require an "approve" data-action claim that ARM only forwards for portal-originated sessions — confirmed both in the control-plane service's own test comments and independently by the official Microsoft Learn doc (`learn.microsoft.com/azure/sre-agent/create-subagent`), which documents subagent authoring as Agent-Canvas/portal-only with no public REST/CLI path | No CLI fix exists for this; it's a deliberate platform boundary, not missing code. Per Paul's guidance, not chasing a workaround — formally closed rather than carried as a backlog item. |
+| Runbook extensions — 12 of 15 types (`tools`, `skills`, `commonPrompts`, `hooks`, `pluginMarketplaces`, `pluginInstallations`, `repositories`) | Done | None | Live-verified end-to-end (PUT + GET round-trip against a real agent), each promoted to its own dedicated top-level noun (`tool`, `skill`, `instructions`, `hook`, `plugin marketplace`/`plugin install`, `repo connect`). |
+| Runbook extensions — `incidentFilters`/`incidentHandlers`/`githubAuths`/`azureDevOpsAuths` | Shape-confirmed, live-create blocked | Sandbox lacks real IcM team-identity resolution / real auth credentials, not a shape defect | Re-verify once a tenant with real credentials/IcM team identity is available. |
+| Runbook extensions — `subagents`/`scheduledTasks` | Permanently out of scope | These 2 types require an "approve" data-action claim that ARM only forwards for portal-originated sessions — confirmed both in the control-plane service's own test comments and independently by the official Microsoft Learn doc (`learn.microsoft.com/azure/sre-agent/create-subagent`), which documents subagent authoring as Agent-Canvas/portal-only with no public REST/CLI path | No CLI fix exists for this; it's a deliberate platform boundary, not missing code. Per Paul's guidance, not chasing a workaround — formally closed rather than carried as a backlog item. Still reachable via the generic `extension` noun if the gating is ever lifted server-side. |
 | `--data-connector-type` enum validation | Done | None | Implemented via `_DataConnectorTypeArgMixin`, mirroring the `--model-provider` fix exactly: case-insensitive validation/normalization of `kusto`/`mcp`/`outlook`/`teams`, `CLIError` on invalid input, unit-tested (`test_custom.py`). This row was stale — the fix had already landed. |
 | Stale generic `Reader` role assignment cleanup | Done | None | Checked live against `mytestagent`'s scope and the `ckamasani-publishtest` resource group: no generic ARM `Reader` assignment remains, only the correct `SRE Agent Standard User` assignment. Nothing to clean up. |
-| Repo + CI/CD infrastructure | Done | None | Code lives in `charan-kamasani/az-sre-ext` (private). Minimal GitHub Actions CI (install deps → run unit tests → build wheel) runs green on every push. 27 unit tests, offline/mocked, same pattern as `azext-aigateway`'s own suite. |
+| Repo + CI/CD infrastructure | Done | None | Code lives in `charan-kamasani/az-sre-ext` (private). Minimal GitHub Actions CI (install deps → run unit tests → build wheel) runs green on every push. 188+ unit tests, offline/mocked, same pattern as `azext-aigateway`'s own suite. |
 
 ### Data plane (`sre.azure.com` — agent runtime, NOT touched by `az sre`)
 
 | Feature | Status | Blocker | Next step |
 |---|---|---|---|
 | Threads & Incidents chat UI (Priority 1 — the actual job) | Not started | Depends on all control-plane prerequisites above (done). Open design decision: **read-write vs. read-only access model per role**, gated by client-authorization checks | Needs a decision from Paul before building starts — not an access or code problem. |
-| Connector consent flow (first-time auth) | Not started | Design not yet done — distinct from the raw ARM `connector create` call, which already works | Needs a decision from Paul on the intended UX. |
-| Per-extension-type payload schema (field-level shapes for 11 of the 12 "ready" types) | Partially known | Only one fully-worked example exists (`pluginMarketplaces`, from the internal `Agents.http` file) | Not a Priority-1 blocker; lowest-priority item on this list. |
+| Connector consent flow (first-time auth) | Investigated, closed as not CLI-fixable | The control plane has no public ARM action to initiate/complete OAuth consent (confirmed: no `getLoginLinks`-style operation exists anywhere in the SRE Agent control-plane source, unlike `azext-aigateway`'s `AIGatewayToolServer_GetLoginLinks`) | CLI now detects `consentStatus=PendingConsent` and surfaces a direct Azure Portal deep link via `connector show`/`list`/`create`/`update`. No further CLI work possible until the service adds a public consent-initiation action. |
+| Per-extension-type payload schema (field-level shapes for all 15 types) | 14 of 15 confirmed from authoritative source; 12 of 15 live-verified end-to-end (PUT+GET round trip) against a real agent | `subagents` has no model file anywhere in the runtime source; believed server-managed/non-CLI-creatable | No further action planned unless a `subagents` model surfaces in a future source pull. |
 | Repo (code context for investigations) | Confirmed data-plane only, not something this CLI builds | N/A — architectural, not a gap | Confirmed via spec: `PUT /api/v2/repos/{repoName}` lives entirely on the agent's own data-plane endpoint. |
 | Context categories observed in the portal (Code/Logs/Deployments/Incidents/Azure resources/Knowledge files/S360) | Observed only, intentionally not built | N/A — exactly the kind of portal-parity surface Paul's guidance says to skip | Informational only — confirmed our RBAC roles are mapped correctly (reaching the real data-plane UI). No CLI work planned. |
 
@@ -88,13 +89,16 @@ hard part, creating a useful agent is.
   (route + the authoritative regex of valid `extensionType` values) and
   `AgentExtensionsApiService.cs`'s `GetExtensionTypes()` (the canonical
   type list, reproduced in `custom.py`'s `EXTENSION_TYPES`).
-- `subagents`, `hooks`, and `scheduledTasks` are deliberately gated
-  server-side: they require an "approve" data-action claim supplied via an
-  `x-allowed-actions` header that only the Portal's own session provides;
-  generic ARM/CLI PUTs never receive it, so these three types will always
-  fail regardless of payload shape. Confirmed in the control-plane repo's own
-  unit test comments, and independently confirmed for `subagents` by the
-  official Microsoft Learn doc
+- `subagents` and `scheduledTasks` are deliberately gated server-side: they
+  require an "approve" data-action claim supplied via an `x-allowed-actions`
+  header that only the Portal's own session provides; generic ARM/CLI PUTs
+  never receive it, so these two types will always fail regardless of
+  payload shape. (`hooks` was originally believed to be gated the same way,
+  but was later live-verified end-to-end via a real ARM PUT+GET round trip
+  and promoted to its own dedicated `sre hook create/show/list/delete` noun —
+  that earlier finding did not hold for `hooks` specifically.) Confirmed in
+  the control-plane repo's own unit test comments, and independently
+  confirmed for `subagents` by the official Microsoft Learn doc
   (`learn.microsoft.com/azure/sre-agent/create-subagent`), which documents
   subagent creation as a Portal/Agent-Canvas-only flow with a YAML edit tab
   matching the reverse-engineered schema below, and no public REST/CLI path.
@@ -107,7 +111,7 @@ hard part, creating a useful agent is.
   correctly-shaped YAML subagent payload still returned a `500` live, which
   is expected and consistent with the gating finding above — the payload
   shape was never the problem for this extension type.
-- 27+ offline, credential-free unit tests cover every hand-written command in
+- 188+ offline, credential-free unit tests cover every hand-written command in
   `custom.py`, following the same testing pattern as `azext-aigateway`'s own
   suite: argument-validation/routing-logic tests for hand-written logic
   (constructed by pre-seeding a bare `AAZCommand` instance's `.ctx`/`.cli_ctx`
@@ -142,10 +146,11 @@ hard part, creating a useful agent is.
   (networking, runbook extensions) or where real-world validation needs
   tightening beyond what the generated bare-string argument allows
   (`--model-provider`).
-- Formally treat `subagents`/`hooks`/`scheduledTasks` runbook authoring as
-  out of CLI scope rather than an open blocker to keep chasing — it's a
-  deliberate Microsoft platform boundary (confirmed via official docs), not
-  a missing schema or a coding gap.
+- Formally treat `subagents`/`scheduledTasks` runbook authoring as out of CLI
+  scope rather than an open blocker to keep chasing — it's a deliberate
+  Microsoft platform boundary (confirmed via official docs), not a missing
+  schema or a coding gap. (`hooks` was re-tested and does NOT share this
+  boundary — it shipped as a fully supported, live-verified, dedicated noun.)
 - Keep the public-facing code repo free of internal reverse-engineered notes
   (file paths, class names, and schemas sourced from the internal
   control-plane and data-plane runtime repositories) — those stay in local,
@@ -159,11 +164,14 @@ hard part, creating a useful agent is.
 
 1. **Read-write vs. read-only access model per role**, specifically for
    threads/incidents — blocks the start of Priority 1 work.
-2. **Connector consent flow** design — distinct from the already-working ARM
-   connector create call.
-3. Confirm formally dropping `subagents`/`hooks`/`scheduledTasks` runbook
-   authoring from CLI scope (recommended above) rather than carrying it as an
-   open item.
+2. ~~Connector consent flow design~~ — investigated and closed without
+   needing Paul's input: the control plane has no public ARM action to
+   initiate/complete OAuth consent at all, so there is no CLI-side design
+   choice to make. The CLI now surfaces a portal deep-link when it detects
+   `PendingConsent`.
+3. Confirm formally dropping `subagents`/`scheduledTasks` runbook authoring
+   from CLI scope (recommended above) rather than carrying it as an open
+   item. (`hooks` is no longer part of this question — it shipped.)
 
 ## Product evidence
 

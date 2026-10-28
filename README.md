@@ -153,7 +153,7 @@ every architecture decision and its evidence.
 |---|---|
 | [CLI ergonomics reference](docs/cli-reference.md) | Every group, command, exact syntax, option, and default — generated, never drifts |
 | [Operations](docs/operations.md) | Agent lifecycle, RBAC, connectors, and confirmed/unconfirmed runbook extension payload shapes |
-| [Networking](docs/networking.md) | VNet injection, sandbox egress, and safe sequencing for `update-network` |
+| [Networking](docs/networking.md) | VNet injection, sandbox egress, and safe sequencing for `network update` |
 | [Testing](docs/testing.md) | Coverage layers and the live-verification workflow (rebuild/reinstall, throwaway agents, round-trip shape confirmation) |
 | [Development](docs/development.md) | Architecture, local validation, CLI reference regeneration, commit hook |
 | [Source code guide](docs/source-code.md) | Repository layout, generated vs. hand-authored code, how a command flows, security boundaries |
