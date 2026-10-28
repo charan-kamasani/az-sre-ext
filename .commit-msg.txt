@@ -1,0 +1,29 @@
+Default 'agent create' to a system-assigned managed identity when neither --mi-system-assigned nor --mi-user-assigned is given
+
+Real bug found live: 'az sre agent create --name x -g rg -l eastus2 ...'
+with no identity flag reached ARM and failed with
+(ManagedIdentityRequired) "At least one managed identity (SystemAssigned
+or UserAssigned) must be assigned to the agent." The CLI had no
+client-side awareness of this requirement and let every such request go
+all the way to the service before failing.
+
+Per explicit user decision, added _DefaultSystemIdentityMixin to 'sre
+agent create': when neither --mi-system-assigned nor
+--mi-user-assigned is supplied, it now defaults to
+--mi-system-assigned automatically (with a warning explaining why and
+how to override), matching the Azure Portal's own create-flow default.
+An explicit --mi-system-assigned or --mi-user-assigned is always
+respected and never overridden.
+
+193/193 tests passing (5 new tests for the mixin's pre_operations
+logic). Live-verified end-to-end: rebuilt wheel, reinstalled, ran
+'az sre agent create --name mytestagent3 -g ckamasani-publishtest
+-l eastus2 --default-model ...' with no identity flag -- now succeeds
+(SystemAssigned identity applied, agent reaches provisioningState
+Succeeded/runningState Running) instead of failing. Cleaned up the
+throwaway agent afterward. docs/cli-reference.md regenerated, zero
+drift (help text for the identity args is unchanged, only default
+behavior changed).
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+Copilot-Session: dbff2091-1d4b-47d2-b65f-da9353bdd61b

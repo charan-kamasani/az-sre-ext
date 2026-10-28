@@ -332,8 +332,39 @@ class _GrantAccessToMeMixin:
         )
 
 
+class _DefaultSystemIdentityMixin:
+    """Defaults 'agent create' to a system-assigned managed identity when
+    neither --mi-system-assigned nor --mi-user-assigned is given.
+
+    WHY: live-confirmed the service rejects agent creation outright with
+    (ManagedIdentityRequired) "At least one managed identity (SystemAssigned
+    or UserAssigned) must be assigned to the agent" if neither is set --
+    the CLI previously let that request go all the way to ARM before
+    failing. Defaulting to system-assigned (the simplest, no-prerequisite
+    option, and what the Azure Portal's own create flow defaults to) means
+    'az sre agent create --name x -g rg -l eastus2' now succeeds out of the
+    box instead of requiring a second, non-obvious flag.
+    """
+
+    def pre_operations(self):
+        args = self.ctx.args
+        system_assigned = getattr(args, "mi_system_assigned", None)
+        user_assigned = getattr(args, "mi_user_assigned", None)
+        has_system = has_value(system_assigned)
+        has_user = has_value(user_assigned) and len(user_assigned) > 0
+        if not has_system and not has_user:
+            args.mi_system_assigned = "True"
+            logger.warning(
+                "No managed identity specified; defaulting to "
+                "--mi-system-assigned (required by the service). Pass "
+                "--mi-system-assigned or --mi-user-assigned explicitly to "
+                "override."
+            )
+        super().pre_operations()
+
+
 @register_command("sre agent create")
-class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _GeneratedCreate):
+class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
     :example: Create an agent with an Anthropic default model

@@ -20,7 +20,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from azure.cli.core.aaz import AAZCommand
+from azure.cli.core.aaz import AAZCommand, AAZUndefined
 from azure.cli.core.azclierror import CLIError, ResourceNotFoundError
 from azure.cli.core.mock import DummyCli
 from azure.core.exceptions import ResourceExistsError
@@ -80,6 +80,7 @@ from azext_sre.custom import (
     SupportedAgentModelList,
     _ConnectorConvenienceArgsMixin,
     _ConnectorExistenceGuardMixin,
+    _DefaultSystemIdentityMixin,
     _GrantAccessToMeMixin,
     _annotate_connector_consent_status,
     _arg_value,
@@ -2281,6 +2282,46 @@ class GrantAccessToMeTests(unittest.TestCase):
     def test_agent_create_schema_exposes_grant_access_to_me(self):
         schema = Create._build_arguments_schema()
         self.assertIsNotNone(schema.grant_access_to_me)
+
+
+class _TestDefaultSystemIdentity(_DefaultSystemIdentityMixin, _NoOpPreOperationsBase):
+    pass
+
+
+class DefaultSystemIdentityTests(unittest.TestCase):
+    """Real bug found live: 'az sre agent create' with no identity flag at
+    all reached ARM and failed with (ManagedIdentityRequired) "At least one
+    managed identity (SystemAssigned or UserAssigned) must be assigned to
+    the agent." _DefaultSystemIdentityMixin defaults to
+    --mi-system-assigned client-side so creation succeeds out of the box,
+    matching the Portal's own create-flow default, while still honoring an
+    explicit --mi-system-assigned/--mi-user-assigned if the caller gave one."""
+
+    def _run(self, **extra_args):
+        args = {"mi_system_assigned": AAZUndefined, "mi_user_assigned": AAZUndefined}
+        args.update(extra_args)
+        command = _bare_command(_TestDefaultSystemIdentity, **args)
+        command.pre_operations()
+        return command.ctx.args
+
+    def test_defaults_to_system_assigned_when_neither_given(self):
+        args = self._run()
+        self.assertEqual(args.mi_system_assigned, "True")
+
+    def test_leaves_explicit_system_assigned_alone(self):
+        args = self._run(mi_system_assigned="some-explicit-value")
+        self.assertEqual(args.mi_system_assigned, "some-explicit-value")
+
+    def test_leaves_explicit_user_assigned_alone_and_skips_default(self):
+        args = self._run(mi_user_assigned=["/subscriptions/.../userAssignedIdentities/x"])
+        self.assertEqual(args.mi_system_assigned, AAZUndefined)
+
+    def test_empty_user_assigned_list_still_triggers_default(self):
+        args = self._run(mi_user_assigned=[])
+        self.assertEqual(args.mi_system_assigned, "True")
+
+    def test_agent_create_includes_the_default_identity_mixin(self):
+        self.assertTrue(issubclass(Create, _DefaultSystemIdentityMixin))
 
 
 class _NoOpPreOpBase2:
