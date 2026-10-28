@@ -99,6 +99,35 @@ az sre knowledge create -g myrg --agent-name myagent \
   --name my-notes --type text --file-path ./notes.md
 ```
 
+### Per-`--data-connector-type` live-verification status
+
+All 11 real `--data-connector-type` values were probed end-to-end (create →
+show/list → delete) against a real agent on 2026-10-28:
+
+| Type | Status | Notes |
+|---|---|---|
+| `Kusto` | Live-verified | Requires `--data-source`. |
+| `Mcp` | Live-verified | Both `--github true` and `--mcp-endpoint <url>` confirmed. A real server-side check rejects an MCP endpoint that shares a host with an existing `Kusto` connector ("HTTP MCP and Kusto requests on the same host cannot be distinguished safely") — not a CLI bug, pick a distinct host. |
+| `Teams` | Live-verified | No `--data-source` needed in this tenant; `extendedProperties` empty on read-back (write-only, same as other types). |
+| `Icm` | Live-verified | Singleton per agent; service auto-populates `extendedProperties.icmEndpointMode: "ProdOnly"` regardless of `--data-source` passed. |
+| `KustoClient` | Live-verified | Kusto via the `@azure/mcp` server; `--data-source` accepted but not required. |
+| `KnowledgeText` | Live-verified | Use `--extended-properties '{"content": "..."}'` directly, or `sre knowledge create --type text --file-path <path>`. |
+| `KnowledgeFile` | Live-verified | Known service-side gap: `extendedProperties` (fileContent/fileName) always reads back empty — confirmed via the actual request body sent, not a CLI defect. |
+| `KnowledgeWebPage` | Live-verified (bug fixed this pass) | Correct shape is `--extended-properties '{"url": "..."}'` **only** — sending `--data-source` at the same time (the CLI's own prior behavior) made the service return a 500. `sre knowledge create --type webpage --url <url>` was fixed to match and now round-trips correctly. |
+| `KnowledgeRepository` | Live-verified | Use `--extended-properties '{"url": "..."}'`; `sre repo connect` is the dedicated front door for this type. |
+| `Outlook` | Blocked — real server error | `create` consistently returns `(InternalServerError) Internal server error occurred`, with and without `--data-source`. Reproduced twice; not a CLI defect (payload shape matches every other working type) — looks like this connector type isn't provisionable in this tenant/environment yet. Re-verify once a tenant known to support Outlook connectors is available. |
+| `Dgrep` | Blocked — real server error | `create` returns `(InvalidRequestParameter) ... MDS endpoint is not approved.` — a real, environment-specific allowlist check on the service side, not a shape or CLI defect. |
+
+Cosmetic (non-blocking) noise you may see on `connector create`/`update`:
+an `ERROR: Operation returned an invalid status 'Not Found'` line can print
+to stderr even though the command still exits `0` with the correct created
+resource in its JSON output. This comes from the generated AAZ long-running-
+operation poller's final-state GET racing real ARM-proxy replication lag —
+confirmed harmless (the resource exists and `show`/`list` return it
+immediately after) — not something fixable without hand-editing the
+generated recipe, which this project deliberately never does.
+
+
 ## Runbook extension payload shapes
 
 `extension create/show/list/delete` manage a data-plane proxy resource with

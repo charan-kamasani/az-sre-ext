@@ -769,7 +769,7 @@ Add a knowledge source (file or web page) to an SRE Agent.
 | `--name`, `-n` | String | Yes |  |  | Name of this knowledge source. |
 | `--type` | String | Yes |  | `file`, `text`, `webpage`, `repository` | Kind of knowledge source. One of: file, repository, text, webpage. |
 | `--file-path` | String | No |  |  | Local file to ingest. Required for --type file/text. |
-| `--url` | String | No |  |  | Web page URL to ingest. Required for --type webpage. NOTE: this wire shape is not yet live-confirmed -- forwarded as both --data-source and extended-properties url=<url> on a best-effort basis. |
+| `--url` | String | No |  |  | Web page URL to ingest. Required for --type webpage. Live-confirmed wire shape: forwarded as extended-properties url=<url> only (never --data-source, which the service rejects with a 500 for this connector type). |
 | `--data-source` | String | No |  |  | Raw --data-source passthrough, for --type repository or any case --file-path/--url don't cover. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing knowledge source of the same name. |
 

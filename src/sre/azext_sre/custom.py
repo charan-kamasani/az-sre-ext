@@ -1199,12 +1199,9 @@ class ManagedResourceList(AAZCommand):
 #
 # --file-path (KnowledgeFile/KnowledgeText) reuses the already-confirmed
 # _ConnectorConvenienceArgsMixin behavior via 'sre connector create'. --url
-# (KnowledgeWebPage) is NOT a confirmed wire shape in this repo (only
-# KnowledgeFile/KnowledgeText/Mcp's inner JSON have been live-confirmed so
-# far) -- it is forwarded as both --data-source and extended-properties
-# url=<url> as a best-effort convenience; pass --extended-properties
-# yourself via 'sre connector create' directly if the service expects a
-# different field for web pages.
+# (KnowledgeWebPage) is now also live-confirmed: extended-properties
+# url=<url> alone (NOT --data-source) is the correct wire shape -- sending
+# --data-source for this type causes a service-side 500.
 # --------------------------------------------------------------------------------------------
 KNOWLEDGE_TYPES = {
     "file": "KnowledgeFile",
@@ -1262,9 +1259,10 @@ class KnowledgeCreate(AAZCommand):
         )
         schema.url = AAZStrArg(
             options=["--url"],
-            help="Web page URL to ingest. Required for --type webpage. NOTE: this "
-            "wire shape is not yet live-confirmed -- forwarded as both --data-source "
-            "and extended-properties url=<url> on a best-effort basis.",
+            help="Web page URL to ingest. Required for --type webpage. "
+            "Live-confirmed wire shape: forwarded as extended-properties "
+            "url=<url> only (never --data-source, which the service rejects "
+            "with a 500 for this connector type).",
         )
         schema.data_source = AAZStrArg(
             options=["--data-source"],
@@ -1303,7 +1301,16 @@ class KnowledgeCreate(AAZCommand):
         if file_path:
             argv += ["--file-path", file_path]
         if url:
-            argv += ["--data-source", url, "--extended-properties", f"url={url}"]
+            # NOTE: sending --data-source *and* extended-properties together
+            # was live-confirmed to make the service return a 500
+            # (InternalServerError) for KnowledgeWebPage. extended-properties
+            # url=<url> alone is the correct, live-confirmed shape --
+            # KnowledgeWebPage is one of the --data-source-exempt types (see
+            # KNOWLEDGE_DATA_CONNECTOR_TYPES above), so --data-source must
+            # never be sent for it. Passed as JSON, not key=value shorthand --
+            # shorthand syntax mis-parses the "://" in a URL as structure
+            # ("Redundant tail"), live-confirmed.
+            argv += ["--extended-properties", json.dumps({"url": url})]
         elif data_source:
             argv += ["--data-source", data_source]
         if overwrite:

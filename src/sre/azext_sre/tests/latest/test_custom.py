@@ -1687,7 +1687,9 @@ class KnowledgeFacadeTests(unittest.TestCase):
             )
         self.assertIn("--file-path", str(raised.exception))
 
-    def test_create_webpage_forwards_data_source_and_extended_properties(self):
+    def test_create_webpage_forwards_extended_properties_only(self):
+        # NOTE: must NOT also send --data-source -- live-confirmed to cause
+        # a service-side 500 for KnowledgeWebPage when both are present.
         _, calls = self._run(
             KnowledgeCreate,
             agent_name="myagent", resource_group="rg", name="docs",
@@ -1700,8 +1702,7 @@ class KnowledgeFacadeTests(unittest.TestCase):
                 "sre", "connector", "create",
                 "--agent-name", "myagent", "--resource-group", "rg",
                 "--name", "docs", "--data-connector-type", "KnowledgeWebPage",
-                "--data-source", "https://example.com",
-                "--extended-properties", "url=https://example.com",
+                "--extended-properties", '{"url": "https://example.com"}',
                 "--overwrite",
             ),
         )
