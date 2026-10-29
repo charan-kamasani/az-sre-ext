@@ -326,14 +326,13 @@ def render_reference(reference=None) -> str:
         "- `network update` is hand-written against the real "
         "`2026-11-01-preview` api-version; there is no public Swagger for it "
         "yet. See the [networking guide](networking.md).",
-        "- `extension create/show/list/delete` accept a `--value` JSON "
-        "document that is base64-encoded and sent as-is to the agent's data "
-        "plane. Prefer the dedicated front-door nouns (`tool`, `skill`, "
-        "`hook`, `instructions`, `plugin marketplace`/`plugin install`, "
-        "`repo connect`) where one exists; `extension` remains the generic "
-        "escape hatch for `subagents`, `scheduledTasks`, `incidentFilters`, "
-        "`incidentHandlers`, `httpTriggers`, and `globalSettings`. See the "
-        "[operations guide](operations.md).",
+        "- `--value` JSON documents (e.g. `tool create`, `skill create`, "
+        "`agent settings update`) are base64-encoded and sent as-is to the "
+        "agent's data plane. Each extension type has its own dedicated "
+        "front-door noun (`tool`, `skill`, `hook`, `instructions`, "
+        "`plugin marketplace`/`plugin install`, `repo connect`, "
+        "`agent settings`); there is no generic `extension` escape hatch "
+        "anymore. See the [operations guide](operations.md).",
         "- `connector list-secret` is the only command that can return "
         "connector secret material in plain text; everything else "
         "(`connector show`, `connector list`, `connector create`/`update` "

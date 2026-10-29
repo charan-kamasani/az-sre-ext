@@ -10,13 +10,13 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **23 groups** and **71 commands**.
+Public surface: **23 groups** and **69 commands**.
 
 ## Important caveats
 
 - This CLI only talks to the control plane (`Microsoft.App/agents` ARM resource). It never talks to the agent's own data plane (`*.azuresre.ai`) directly. See the [implementation plan](../PLAN.md).
 - `network update` is hand-written against the real `2026-11-01-preview` api-version; there is no public Swagger for it yet. See the [networking guide](networking.md).
-- `extension create/show/list/delete` accept a `--value` JSON document that is base64-encoded and sent as-is to the agent's data plane. Prefer the dedicated front-door nouns (`tool`, `skill`, `hook`, `instructions`, `plugin marketplace`/`plugin install`, `repo connect`) where one exists; `extension` remains the generic escape hatch for `subagents`, `scheduledTasks`, `incidentFilters`, `incidentHandlers`, `httpTriggers`, and `globalSettings`. See the [operations guide](operations.md).
+- `--value` JSON documents (e.g. `tool create`, `skill create`, `agent settings update`) are base64-encoded and sent as-is to the agent's data plane. Each extension type has its own dedicated front-door noun (`tool`, `skill`, `hook`, `instructions`, `plugin marketplace`/`plugin install`, `repo connect`, `agent settings`); there is no generic `extension` escape hatch anymore. See the [operations guide](operations.md).
 - `connector list-secret` is the only command that can return connector secret material in plain text; everything else (`connector show`, `connector list`, `connector create`/`update` responses) redacts secret fields server-side.
 
 ## Global options
@@ -43,7 +43,6 @@ Manage Azure SRE Agent resources -- the agent itself, what it can access, how it
 | `agent` | Manage the core lifecycle of an SRE Agent resource. |
 | `connector` | Connect an SRE Agent to an external data source it can query or act on. |
 | `endpoint` | Resolve the URL used to actually talk to an SRE Agent's data plane. |
-| `extension` | Manage an SRE Agent's low-level 'extension' resources directly. |
 | `hook` | Manage lifecycle hooks that run a prompt or script at a specific agent event. |
 | `identity` | Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls. |
 | `instructions` | Manage the agent's always-on custom instructions. |
@@ -124,6 +123,10 @@ Mirrors 'access grant': thin convenience wrapper over 'az role assignment delete
 Manage the core lifecycle of an SRE Agent resource.
 
 Create, show, list, update, delete, start, and stop an agent.
+
+| Subgroup | Summary |
+| --- | --- |
+| `settings` | Manage an SRE Agent's global settings (preview). |
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -473,83 +476,6 @@ Reads the agent's control-plane resource (ARM), extracts the 'agentEndpoint' pro
 - Resolve and save the data-plane endpoint for an agent
 
   `az sre endpoint show --agent-name myagent --resource-group myrg`
-
-## `az sre extension`
-
-Manage an SRE Agent's low-level 'extension' resources directly.
-
-Extensions are the generic building block behind several higher-level nouns in this CLI -- 'sre tool', 'sre skill', 'sre hook', 'sre instructions', and 'sre plugin marketplace'/'sre plugin install' all use this mechanism under the hood (subagents, tools, skills, scheduled tasks, incident filters/handlers, common prompts, hooks, HTTP triggers, repositories, plugin marketplaces/installations, GitHub/Azure DevOps auths, and global settings (preview)). Prefer the dedicated noun for anything that has one; use 'sre extension' directly only for an extension type that doesn't have its own noun yet.
-
-| Verb | Exact syntax |
-| --- | --- |
-| `create` | `az sre extension create --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value> --value <value> [--overwrite {false,true}]` |
-| `delete` | `az sre extension delete --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value> [--yes]` |
-| `list` | `az sre extension list --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings}` |
-| `show` | `az sre extension show --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value>` |
-
-### `az sre extension create`
-
-Create or update an SRE Agent extension (subagent/tool/skill/etc.).
-
-By default, refuses to silently overwrite an existing extension of the same --extension-type/--extension-name (there is no separate 'extension update' command, so an unguarded PUT here would clobber an existing repo/auth/tool registration with no warning). Pass --overwrite to update an existing one intentionally.
-
-**Syntax**
-
-`az sre extension create --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value> --value <value> [--overwrite {false,true}]`
-
-| Option / aliases | Type | Required | Default | Allowed values | Description |
-| --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
-| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--extension-type`, `--type` | String | Yes |  | `subagents`, `tools`, `skills`, `scheduledTasks`, `incidentFilters`, `commonPrompts`, `hooks`, `incidentHandlers`, `httpTriggers`, `repositories`, `pluginMarketplaces`, `pluginInstallations`, `githubAuths`, `azureDevOpsAuths`, `globalSettings` | Kind of agent extension. One of: subagents, tools, skills, scheduledTasks, incidentFilters, commonPrompts, hooks, incidentHandlers, httpTriggers, repositories, pluginMarketplaces, pluginInstallations, githubAuths, azureDevOpsAuths, globalSettings. |
-| `--extension-name`, `--name`, `-n` | String | Yes |  |  | Name of the extension instance. |
-| `--value` | String | Yes |  |  | Extension configuration as a JSON document (the CLI base64-encodes it for you -- the wire format is properties.value = base64(json), confirmed via the internal control-plane repo's Agents.http examples). For --extension-type commonPrompts, the confirmed shape is a JSON object {"prompt": "..."} (one prompt per ARM resource name, e.g. 'default'). For globalSettings, the confirmed shape is a JSON object with optional toolPermissions/toolStatuses/skillStatuses/customInstructions/approvalExpirationSetting fields. 14 of 15 extension types have confirmed inner shapes (source-cited in custom.py's _validate_*_shape functions; 12 also live-round-tripped against a real agent). 'subagents' is CONFIRMED NOT CREATABLE via this ARM path: the real agent-builder UI applies a raw YAML document (kind: AgentConfiguration) directly to the agent's data-plane 'PUT api/v1/extendedAgent/apply' endpoint, which this ARM-only extension type never reaches -- use the portal or srectl to create subagents instead. See issue #13 for the full findings and evidence. |
-| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing extension of the same --extension-type/--extension-name. Without this flag, 'extension create' refuses to overwrite an existing extension. |
-
-### `az sre extension delete`
-
-Delete an SRE Agent extension.
-
-**Syntax**
-
-`az sre extension delete --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value> [--yes]`
-
-| Option / aliases | Type | Required | Default | Allowed values | Description |
-| --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
-| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--extension-type`, `--type` | String | Yes |  | `subagents`, `tools`, `skills`, `scheduledTasks`, `incidentFilters`, `commonPrompts`, `hooks`, `incidentHandlers`, `httpTriggers`, `repositories`, `pluginMarketplaces`, `pluginInstallations`, `githubAuths`, `azureDevOpsAuths`, `globalSettings` | Kind of agent extension. One of: subagents, tools, skills, scheduledTasks, incidentFilters, commonPrompts, hooks, incidentHandlers, httpTriggers, repositories, pluginMarketplaces, pluginInstallations, githubAuths, azureDevOpsAuths, globalSettings. |
-| `--extension-name`, `--name`, `-n` | String | Yes |  |  | Name of the extension instance. |
-| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
-
-### `az sre extension list`
-
-List an SRE Agent's extensions of a given type.
-
-**Syntax**
-
-`az sre extension list --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings}`
-
-| Option / aliases | Type | Required | Default | Allowed values | Description |
-| --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
-| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--extension-type`, `--type` | String | Yes |  | `subagents`, `tools`, `skills`, `scheduledTasks`, `incidentFilters`, `commonPrompts`, `hooks`, `incidentHandlers`, `httpTriggers`, `repositories`, `pluginMarketplaces`, `pluginInstallations`, `githubAuths`, `azureDevOpsAuths`, `globalSettings` | Kind of agent extension. One of: subagents, tools, skills, scheduledTasks, incidentFilters, commonPrompts, hooks, incidentHandlers, httpTriggers, repositories, pluginMarketplaces, pluginInstallations, githubAuths, azureDevOpsAuths, globalSettings. |
-
-### `az sre extension show`
-
-Show an SRE Agent extension.
-
-**Syntax**
-
-`az sre extension show --agent-name <value> --resource-group <value> --extension-type {subagents,tools,skills,scheduledTasks,incidentFilters,commonPrompts,hooks,incidentHandlers,httpTriggers,repositories,pluginMarketplaces,pluginInstallations,githubAuths,azureDevOpsAuths,globalSettings} --extension-name <value>`
-
-| Option / aliases | Type | Required | Default | Allowed values | Description |
-| --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
-| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--extension-type`, `--type` | String | Yes |  | `subagents`, `tools`, `skills`, `scheduledTasks`, `incidentFilters`, `commonPrompts`, `hooks`, `incidentHandlers`, `httpTriggers`, `repositories`, `pluginMarketplaces`, `pluginInstallations`, `githubAuths`, `azureDevOpsAuths`, `globalSettings` | Kind of agent extension. One of: subagents, tools, skills, scheduledTasks, incidentFilters, commonPrompts, hooks, incidentHandlers, httpTriggers, repositories, pluginMarketplaces, pluginInstallations, githubAuths, azureDevOpsAuths, globalSettings. |
-| `--extension-name`, `--name`, `-n` | String | Yes |  |  | Name of the extension instance. |
 
 ## `az sre hook`
 
@@ -985,7 +911,7 @@ Two separate steps: connecting a marketplace (a GitHub/Azure DevOps/GitLab repo 
 
 Connect a code repository so the agent can read source during investigations.
 
-'sre repo connect' supports GitHub and Azure DevOps in a single step (it wires up both the auth and the repository extension for you). GitLab repos are also supported at the data-plane level (see 'sre extension create --extension-type repositories'), but not yet by this one-step command.
+'sre repo connect' supports GitHub and Azure DevOps in a single step (it wires up both the auth and the repository extension for you). GitLab repos are also supported at the data-plane level (a 'repositories' extension resource, same as GitHub/Azure DevOps), but this CLI doesn't yet expose a path to create one.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -995,7 +921,7 @@ Connect a code repository so the agent can read source during investigations.
 
 Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 
-Mirrors 'az aigateway mcp create --github true': fetches your existing 'gh auth login' credential (GitHub) or mints a fresh PAT via the Azure DevOps REST API (Azure DevOps) and wires up both the auth extension and the repositories extension for you, instead of requiring two manual 'sre extension create' calls with hand-built JSON --value payloads.
+Mirrors 'az aigateway mcp create --github true': fetches your existing 'gh auth login' credential (GitHub) or mints a fresh PAT via the Azure DevOps REST API (Azure DevOps) and wires up both the auth extension and the repositories extension for you, instead of requiring two manual hand-built JSON payloads.
 
 **Syntax**
 
@@ -1213,6 +1139,46 @@ Covers scheduled tasks (run the agent on a timer), HTTP triggers (run the agent 
 | `http-trigger` | Manage HTTP triggers: run the agent against a prompt from an inbound |
 | `incident-filter` | Manage incident filters (portal: "Incident Response Plans"): match |
 | `scheduled-task` | Manage scheduled tasks: run the agent on a timer (cron) against a |
+
+## `az sre agent settings`
+
+Manage an SRE Agent's global settings (preview).
+
+A single, agent-wide settings object covering tool/skill allow-ask-deny permissions, custom instructions, and approval-expiration behavior.
+
+| Verb | Exact syntax |
+| --- | --- |
+| `show` | `az sre agent settings show --agent-name <value> --resource-group <value>` |
+| `update` | `az sre agent settings update --agent-name <value> --resource-group <value> --value <value>` |
+
+### `az sre agent settings show`
+
+Show an SRE Agent's global settings.
+
+**Syntax**
+
+`az sre agent settings show --agent-name <value> --resource-group <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+### `az sre agent settings update`
+
+Create or update an SRE Agent's global settings.
+
+Always targets the agent's single settings object (there is no --name -- an agent has exactly one). Safe to call repeatedly; each call replaces the whole settings object, so include every field you want to keep, not just the one you're changing.
+
+**Syntax**
+
+`az sre agent settings update --agent-name <value> --resource-group <value> --value <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--value` | String | Yes |  |  | Global settings as a JSON document (confirmed via the control plane's own real round-trip integration test, GlobalSettingsExtensionTests.cs). All fields optional: toolPermissions ({"allow": [...], "ask": [...], "deny": [...]} tool-name arrays), toolStatuses/skillStatuses (arrays of {"name": ..., "enabled": true/false}), customInstructions (string), approvalExpirationSetting ({"enabled": true/false, "approvalExpirationInMinutes": <number>}). |
 
 ## `az sre plugin install`
 

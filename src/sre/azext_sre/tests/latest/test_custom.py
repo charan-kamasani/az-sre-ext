@@ -32,12 +32,10 @@ from azext_sre.custom import (
     KNOWLEDGE_TYPES,
     MANAGED_RESOURCE_ROLES,
     Create,
+    AgentSettingsShow,
+    AgentSettingsUpdate,
     ConnectorCreate,
     ConnectorList,
-    ExtensionCreate,
-    ExtensionDelete,
-    ExtensionList,
-    ExtensionShow,
     GrantAccess,
     RevokeAccess,
     ManagedResourceGrant,
@@ -90,7 +88,10 @@ from azext_sre.custom import (
     _decode_extension_envelope,
     _detect_repo_provider,
     _encode_extension_value,
-    _extension_type_arg,
+    _extension_resource_create,
+    _extension_resource_show,
+    _extension_resource_list,
+    _extension_resource_delete,
     _normalize_data_connector_type,
     _normalize_model_provider,
     _parse_skill_md,
@@ -1201,7 +1202,7 @@ class AzureDevOpsAuthsShapeValidationTests(unittest.TestCase):
 
 class RepoProviderDetectionTests(unittest.TestCase):
     """_detect_repo_provider maps a repo's URL host to the provider enum
-    'sre extension create --extension-type repositories' expects."""
+    the 'repositories' extension type expects."""
 
     def test_detects_github(self):
         self.assertEqual(_detect_repo_provider("https://github.com/org/repo"), "GitHub")
@@ -1225,8 +1226,9 @@ class RepoProviderDetectionTests(unittest.TestCase):
 class RepoConnectTests(unittest.TestCase):
     """RepoConnect is the one-command golden path mirroring azext-aigateway's
     'az aigateway mcp create --github true': it must fetch a token itself
-    (never ask the user to paste one) and issue exactly the same two
-    'sre extension create' calls a user would otherwise build by hand.
+    (never ask the user to paste one) and issue the same two
+    _extension_resource_create() calls a user would otherwise build by hand
+    (one for the auth extension, one for the repository extension).
     """
 
     def _run_github(self, repo_url="https://github.com/org/repo", **extra_args):
@@ -1241,12 +1243,14 @@ class RepoConnectTests(unittest.TestCase):
         command = _bare_command(RepoConnect, **args)
         calls = []
 
-        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
-            calls.append(args)
+        def fake_extension_resource_create(
+            cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False
+        ):
+            calls.append((extension_type, extension_name, raw_value, overwrite))
             return {"properties": {"value": "stub"}}
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+             patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create), \
              patch("azext_sre.custom._github_cli_token", lambda account=None: "gh-token-123"):
             result = command._handler({})
         return result, calls
@@ -1255,23 +1259,23 @@ class RepoConnectTests(unittest.TestCase):
         _, calls = self._run_github()
         self.assertEqual(len(calls), 2)
 
-        auth_call = calls[0]
-        self.assertIn("githubAuths", auth_call)
-        self.assertIn("github_com", auth_call)
-        auth_value = json.loads(auth_call[auth_call.index("--value") + 1])
-        self.assertEqual(auth_value, {"authType": "Pat", "pat": "gh-token-123"})
+        ext_type, ext_name, raw_value, overwrite = calls[0]
+        self.assertEqual(ext_type, "githubAuths")
+        self.assertEqual(ext_name, "github_com")
+        self.assertTrue(overwrite)
+        self.assertEqual(json.loads(raw_value), {"authType": "Pat", "pat": "gh-token-123"})
 
-        repo_call = calls[1]
-        self.assertIn("repositories", repo_call)
-        self.assertIn("repo", repo_call)  # default display name from URL tail
-        repo_value = json.loads(repo_call[repo_call.index("--value") + 1])
+        ext_type, ext_name, raw_value, overwrite = calls[1]
+        self.assertEqual(ext_type, "repositories")
+        self.assertEqual(ext_name, "repo")  # default display name from URL tail
+        repo_value = json.loads(raw_value)
         self.assertEqual(repo_value["url"], "https://github.com/org/repo")
         self.assertEqual(repo_value["type"], "GitHub")
         self.assertEqual(repo_value["description"], "repo")
 
     def test_display_name_and_branch_are_passed_through(self):
         _, calls = self._run_github(display_name="my-repo", branch="main")
-        repo_value = json.loads(calls[1][calls[1].index("--value") + 1])
+        repo_value = json.loads(calls[1][2])
         self.assertEqual(repo_value["description"], "my-repo")
         self.assertEqual(repo_value["branch"], "main")
 
@@ -1288,27 +1292,30 @@ class RepoConnectTests(unittest.TestCase):
         command = _bare_command(RepoConnect, **args)
         calls = []
 
-        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
-            calls.append(args)
+        def fake_extension_resource_create(
+            cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False
+        ):
+            calls.append((extension_type, extension_name, raw_value, overwrite))
             return {"properties": {"value": "stub"}}
 
-        return command, calls, fake_cli_invoke
+        return command, calls, fake_extension_resource_create
 
     def test_azure_devops_flow_mints_its_own_pat(self):
-        command, calls, fake_cli_invoke = self._run_devops()
+        command, calls, fake_extension_resource_create = self._run_devops()
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+             patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create), \
              patch("azext_sre.custom._devops_pat_token", lambda cli_ctx, org, name: "ado-pat-xyz"):
             command._handler({})
 
-        auth_value = json.loads(calls[0][calls[0].index("--value") + 1])
-        self.assertEqual(auth_value, {"authType": "Pat", "pat": "ado-pat-xyz"})
-        self.assertIn("contoso", calls[0])  # auth extension-name is the org, not a fixed string
-        repo_value = json.loads(calls[1][calls[1].index("--value") + 1])
+        ext_type, ext_name, raw_value, _overwrite = calls[0]
+        self.assertEqual(json.loads(raw_value), {"authType": "Pat", "pat": "ado-pat-xyz"})
+        self.assertEqual(ext_type, "azureDevOpsAuths")
+        self.assertEqual(ext_name, "contoso")  # auth extension-name is the org, not a fixed string
+        repo_value = json.loads(calls[1][2])
         self.assertEqual(repo_value["type"], "AzureDevOps")
 
     def test_azure_devops_managed_identity_skips_pat_minting_entirely(self):
-        command, calls, fake_cli_invoke = self._run_devops(
+        command, calls, fake_extension_resource_create = self._run_devops(
             devops_auth_type="managed-identity",
             devops_identity="/subscriptions/x/.../userAssignedIdentities/mi",
         )
@@ -1317,68 +1324,70 @@ class RepoConnectTests(unittest.TestCase):
             raise AssertionError("_devops_pat_token must not be called for managed-identity auth")
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+             patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create), \
              patch("azext_sre.custom._devops_pat_token", fail_if_called):
             command._handler({})
 
-        auth_value = json.loads(calls[0][calls[0].index("--value") + 1])
+        auth_value = json.loads(calls[0][2])
         self.assertEqual(
             auth_value,
             {"authType": "ManagedIdentity", "identity": "/subscriptions/x/.../userAssignedIdentities/mi"},
         )
 
     def test_azure_devops_managed_identity_requires_identity(self):
-        command, _calls, fake_cli_invoke = self._run_devops(devops_auth_type="managed-identity")
+        command, _calls, fake_extension_resource_create = self._run_devops(devops_auth_type="managed-identity")
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+             patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create):
             with self.assertRaises(CLIError) as raised:
                 command._handler({})
         self.assertIn("--devops-identity is required", str(raised.exception))
 
     def test_azure_devops_managed_identity_federated_fields_both_or_neither(self):
-        command, _calls, fake_cli_invoke = self._run_devops(
+        command, _calls, fake_extension_resource_create = self._run_devops(
             devops_auth_type="managed-identity",
             devops_identity="/subscriptions/x/.../mi",
             devops_federated_client_id="client-id-only",
         )
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+             patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create):
             with self.assertRaises(CLIError) as raised:
                 command._handler({})
         self.assertIn("must both be provided or both be omitted", str(raised.exception))
 
     def test_pat_policy_violation_suggests_managed_identity(self):
-        command, _calls, fake_cli_invoke = self._run_devops()
+        command, _calls, fake_extension_resource_create = self._run_devops()
 
         def fake_pat_token(cli_ctx, org, name):
             raise CLIError(
-                '\'sre extension create ...\' failed: Bad Request('
+                "'sre repo connect' failed: Bad Request("
                 '{"message":"DisablePatCreationPolicyViolation"})'
             )
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+             patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create), \
              patch("azext_sre.custom._devops_pat_token", fake_pat_token):
             with self.assertRaises(CLIError) as raised:
                 command._handler({})
         self.assertIn("--devops-auth-type managed-identity", str(raised.exception))
 
     def test_azure_devops_pat_is_redacted_in_the_returned_result(self):
-        """Live-confirmed on a real Azure DevOps org: 'extension create'
+        """Live-confirmed on a real Azure DevOps org: extension creation
         redacts a freshly-minted PAT server-side for githubAuths (comes back
         as "******"), but NOT for azureDevOpsAuths -- the real PAT is
         echoed back verbatim. RepoConnect must redact it client-side
         regardless, so this command never prints a live secret.
         """
-        command, _calls, _fake_cli_invoke = self._run_devops()
+        command, _calls, _fake_extension_resource_create = self._run_devops()
 
-        def fake_cli_invoke_with_real_pat(cli_ctx, *args, allow_missing=False):
-            if "azureDevOpsAuths" in args:
+        def fake_extension_resource_create_with_real_pat(
+            cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False
+        ):
+            if extension_type == "azureDevOpsAuths":
                 return {"properties": {"value": {"authType": "Pat", "pat": "ado-pat-xyz"}}}
             return {"properties": {"value": "stub"}}
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", fake_cli_invoke_with_real_pat), \
+             patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create_with_real_pat), \
              patch("azext_sre.custom._devops_pat_token", lambda cli_ctx, org, name: "ado-pat-xyz"):
             result = command._handler({})
 
@@ -1393,13 +1402,15 @@ class RepoConnectTests(unittest.TestCase):
             devops_federated_client_id=None, devops_federated_tenant_id=None,
         )
 
-        def fake_cli_invoke_with_real_pat(cli_ctx, *args, allow_missing=False):
-            if "githubAuths" in args:
+        def fake_extension_resource_create_with_real_pat(
+            cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False
+        ):
+            if extension_type == "githubAuths":
                 return {"properties": {"value": {"authType": "Pat", "pat": "******"}}}
             return {"properties": {"value": "stub"}}
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", fake_cli_invoke_with_real_pat), \
+             patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create_with_real_pat), \
              patch("azext_sre.custom._github_cli_token", lambda account=None: "gh-token-123"):
             result = command._handler({})
 
@@ -1449,24 +1460,22 @@ class ExtensionTypeEnumTests(unittest.TestCase):
             ],
         )
 
-    def test_arg_enum_matches_extension_types(self):
-        arg = _extension_type_arg()
-        self.assertEqual(set(arg.enum.to_choices()), set(EXTENSION_TYPES))
-
 
 class ExtensionCommandResourceIdTests(unittest.TestCase):
-    """Proves each extension command builds the exact
+    """Proves each shared _extension_resource_*() helper builds the exact
     .../agents/{name}/{extensionType}[/{name}] resource ID and wire envelope
     confirmed against AgentExtensionsApiController.cs, without making a real
-    ARM call.
+    ARM call. These helpers back every noun-specific facade (tool/skill/
+    hook/instructions/workflow/plugin/repo connect/agent settings).
     """
 
     _AGENT = {"id": "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"}
 
-    def _run_with_mocks(self, command, cli_responses, arm_response=None):
+    def _run_with_mocks(self, func, *args, cli_responses=None, arm_response=None, **kwargs):
+        cli_responses = list(cli_responses or [])
         arm_calls = []
 
-        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
+        def fake_cli_invoke(cli_ctx, *a, allow_missing=False):
             return cli_responses.pop(0)
 
         def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
@@ -1475,24 +1484,16 @@ class ExtensionCommandResourceIdTests(unittest.TestCase):
             )
             return arm_response
 
-        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+        with patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
              patch("azext_sre.custom._arm_request", fake_arm_request):
-            result = command._handler({})
+            result = func(*args, **kwargs)
         return result, arm_calls
 
     def test_create_builds_proxy_envelope_and_resource_id(self):
-        command = _bare_command(
-            ExtensionCreate,
-            agent_name="myagent",
-            resource_group="rg",
-            extension_type="tools",
-            extension_name="mytool",
-            value='{"kind": "ToolList"}',
-            overwrite=True,
-        )
         _, arm_calls = self._run_with_mocks(
-            command,
+            _extension_resource_create,
+            None, "myagent", "rg", "tools", "mytool", '{"kind": "ToolList"}',
+            overwrite=True,
             cli_responses=[self._AGENT],
             arm_response={"properties": {"value": _encode_extension_value('{"kind": "ToolList"}')}},
         )
@@ -1510,27 +1511,17 @@ class ExtensionCommandResourceIdTests(unittest.TestCase):
         )
 
     def test_create_without_overwrite_blocks_when_already_exists(self):
-        command = _bare_command(
-            ExtensionCreate,
-            agent_name="myagent", resource_group="rg",
-            extension_type="tools", extension_name="mytool",
-            value='{"kind": "ToolList"}', overwrite=None,
-        )
         with self.assertRaises(ResourceExistsError) as raised:
             self._run_with_mocks(
-                command,
+                _extension_resource_create,
+                None, "myagent", "rg", "tools", "mytool", '{"kind": "ToolList"}',
+                overwrite=False,
                 cli_responses=[self._AGENT],
                 arm_response={"properties": {"value": _encode_extension_value('{"kind": "ToolList"}')}},
             )
         self.assertIn("--overwrite", str(raised.exception))
 
     def test_create_without_overwrite_proceeds_when_missing(self):
-        command = _bare_command(
-            ExtensionCreate,
-            agent_name="myagent", resource_group="rg",
-            extension_type="tools", extension_name="mytool",
-            value='{"kind": "ToolList"}', overwrite=None,
-        )
         arm_calls = []
         responses = [None, {"properties": {"value": _encode_extension_value('{"kind": "ToolList"}')}}]
 
@@ -1538,28 +1529,26 @@ class ExtensionCommandResourceIdTests(unittest.TestCase):
             arm_calls.append(method)
             return responses.pop(0)
 
-        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", lambda cli_ctx, *a, allow_missing=False: self._AGENT), \
+        with patch("azext_sre.custom._cli_invoke", lambda cli_ctx, *a, allow_missing=False: self._AGENT), \
              patch("azext_sre.custom._arm_request", fake_arm_request):
-            command._handler({})
+            _extension_resource_create(
+                None, "myagent", "rg", "tools", "mytool", '{"kind": "ToolList"}', overwrite=False,
+            )
         self.assertEqual(arm_calls, ["GET", "PUT"])
 
     def test_show_uses_missing_ok_and_raises_not_found_on_none(self):
-        command = _bare_command(
-            ExtensionShow,
-            agent_name="myagent", resource_group="rg",
-            extension_type="skills", extension_name="myskill",
-        )
         with self.assertRaises(ResourceNotFoundError):
-            self._run_with_mocks(command, cli_responses=[self._AGENT], arm_response=None)
+            self._run_with_mocks(
+                _extension_resource_show,
+                None, "myagent", "rg", "skills", "myskill",
+                cli_responses=[self._AGENT], arm_response=None,
+            )
 
     def test_list_decodes_every_item_in_the_value_array(self):
-        command = _bare_command(
-            ExtensionList, agent_name="myagent", resource_group="rg", extension_type="tools",
-        )
         encoded = _encode_extension_value('{"n": 1}')
         result, arm_calls = self._run_with_mocks(
-            command,
+            _extension_resource_list,
+            None, "myagent", "rg", "tools",
             cli_responses=[self._AGENT],
             arm_response={"value": [{"properties": {"value": encoded}}]},
         )
@@ -1570,12 +1559,11 @@ class ExtensionCommandResourceIdTests(unittest.TestCase):
         self.assertEqual(result["value"][0]["properties"]["value"], {"n": 1})
 
     def test_delete_passes_missing_ok_true(self):
-        command = _bare_command(
-            ExtensionDelete,
-            agent_name="myagent", resource_group="rg",
-            extension_type="hooks", extension_name="myhook",
+        _, arm_calls = self._run_with_mocks(
+            _extension_resource_delete,
+            None, "myagent", "rg", "hooks", "myhook",
+            cli_responses=[self._AGENT], arm_response={},
         )
-        _, arm_calls = self._run_with_mocks(command, cli_responses=[self._AGENT], arm_response={})
         self.assertEqual(arm_calls[0]["method"], "DELETE")
         self.assertEqual(
             arm_calls[0]["resource_id"],
@@ -1587,38 +1575,44 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
     """'sre tool'/'sre skill'/'sre hook'/'sre instructions'/
     'sre plugin marketplace'/'sre plugin install' are thin noun-specific
     front doors, modeled on the portal's own Extensions nav (Tools/Skills/
-    Hooks/Custom instructions/Plugins), that must self-invoke the generic
-    'sre extension ...' commands with --extension-type pinned to the right
-    value -- never reimplement the ARM call themselves.
+    Hooks/Custom instructions/Plugins), that must call the shared
+    _extension_resource_create/show/list/delete() helpers with the
+    extension type pinned to the right value -- never reimplement the ARM
+    call themselves.
     """
 
-    def _assert_forwards(self, command_cls, extension_type, expected_argv_tail,
+    def _assert_forwards(self, command_cls, extension_type, expected_call,
                           args_kwargs, fake_result=None):
-        calls = []
+        calls = {"create": [], "show": [], "list": [], "delete": []}
 
-        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
-            calls.append(args)
-            return fake_result
+        def make_fake(name, *, needs_name=True):
+            def fake(cli_ctx, agent_name, resource_group, ext_type, *rest, **kwargs):
+                calls[name].append((agent_name, resource_group, ext_type, *rest, kwargs))
+                return fake_result
+            return fake
 
         command = _bare_command(command_cls, **args_kwargs)
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+             patch("azext_sre.custom._extension_resource_create", make_fake("create")), \
+             patch("azext_sre.custom._extension_resource_show", make_fake("show")), \
+             patch("azext_sre.custom._extension_resource_list", make_fake("list")), \
+             patch("azext_sre.custom._extension_resource_delete", make_fake("delete")):
             result = command._handler({})
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0], expected_argv_tail)
-        self.assertIn(extension_type, calls[0])
+
+        verb, call_args = expected_call
+        self.assertEqual(len(calls[verb]), 1)
+        actual = calls[verb][0]
+        self.assertEqual(actual[0], "myagent")
+        self.assertEqual(actual[1], "rg")
+        self.assertEqual(actual[2], extension_type)
+        self.assertEqual(actual[3:], call_args)
+        self.assertEqual(sum(len(v) for v in calls.values()), 1)
         self.assertEqual(result, fake_result)
 
     def test_tool_create_pins_extension_type_tools(self):
         self._assert_forwards(
             ToolCreate, "tools",
-            (
-                "sre", "extension", "create",
-                "--agent-name", "myagent", "--resource-group", "rg",
-                "--extension-type", "tools",
-                "--extension-name", "mytool", "--value", '{"toolType": "LinkTool"}',
-                "--overwrite",
-            ),
+            ("create", ("mytool", '{"toolType": "LinkTool"}', {"overwrite": True})),
             {
                 "agent_name": "myagent", "resource_group": "rg",
                 "extension_name": "mytool", "value": '{"toolType": "LinkTool"}',
@@ -1629,12 +1623,7 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
     def test_tool_create_omits_overwrite_flag_when_falsy(self):
         self._assert_forwards(
             ToolCreate, "tools",
-            (
-                "sre", "extension", "create",
-                "--agent-name", "myagent", "--resource-group", "rg",
-                "--extension-type", "tools",
-                "--extension-name", "mytool", "--value", '{"toolType": "LinkTool"}',
-            ),
+            ("create", ("mytool", '{"toolType": "LinkTool"}', {"overwrite": False})),
             {
                 "agent_name": "myagent", "resource_group": "rg",
                 "extension_name": "mytool", "value": '{"toolType": "LinkTool"}',
@@ -1645,11 +1634,7 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
     def test_skill_show_pins_extension_type_skills(self):
         self._assert_forwards(
             SkillShow, "skills",
-            (
-                "sre", "extension", "show",
-                "--agent-name", "myagent", "--resource-group", "rg",
-                "--extension-type", "skills", "--extension-name", "myskill",
-            ),
+            ("show", ("myskill", {})),
             {"agent_name": "myagent", "resource_group": "rg", "extension_name": "myskill"},
             fake_result={"properties": {"value": {}}},
         )
@@ -1657,11 +1642,7 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
     def test_hook_list_pins_extension_type_hooks(self):
         self._assert_forwards(
             HookList, "hooks",
-            (
-                "sre", "extension", "list",
-                "--agent-name", "myagent", "--resource-group", "rg",
-                "--extension-type", "hooks",
-            ),
+            ("list", ({},)),
             {"agent_name": "myagent", "resource_group": "rg"},
             fake_result={"value": []},
         )
@@ -1669,24 +1650,14 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
     def test_instructions_delete_pins_extension_type_common_prompts(self):
         self._assert_forwards(
             InstructionsDelete, "commonPrompts",
-            (
-                "sre", "extension", "delete",
-                "--agent-name", "myagent", "--resource-group", "rg",
-                "--extension-type", "commonPrompts", "--extension-name", "default",
-                "--yes",
-            ),
+            ("delete", ("default", {})),
             {"agent_name": "myagent", "resource_group": "rg", "extension_name": "default"},
         )
 
     def test_plugin_marketplace_create_pins_extension_type(self):
         self._assert_forwards(
             PluginMarketplaceCreate, "pluginMarketplaces",
-            (
-                "sre", "extension", "create",
-                "--agent-name", "myagent", "--resource-group", "rg",
-                "--extension-type", "pluginMarketplaces",
-                "--extension-name", "mp", "--value", '{"sourceType": "github"}',
-            ),
+            ("create", ("mp", '{"sourceType": "github"}', {"overwrite": False})),
             {
                 "agent_name": "myagent", "resource_group": "rg",
                 "extension_name": "mp", "value": '{"sourceType": "github"}',
@@ -1697,14 +1668,71 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
     def test_plugin_install_show_pins_extension_type(self):
         self._assert_forwards(
             PluginInstallShow, "pluginInstallations",
-            (
-                "sre", "extension", "show",
-                "--agent-name", "myagent", "--resource-group", "rg",
-                "--extension-type", "pluginInstallations", "--extension-name", "myplugin",
-            ),
+            ("show", ("myplugin", {})),
             {"agent_name": "myagent", "resource_group": "rg", "extension_name": "myplugin"},
             fake_result={"properties": {"value": {}}},
         )
+
+
+class AgentSettingsTests(unittest.TestCase):
+    """'sre agent settings' is the one noun exposed directly for the
+    'globalSettings' extension type -- a true ARM singleton (always name
+    'default'), confirmed via GlobalSettingsExtensionTests.cs. Unlike the
+    other noun facades, it does not self-invoke anything -- it calls the
+    shared _extension_resource_show/create() helpers directly.
+    """
+
+    def test_show_returns_settings_when_present(self):
+        command = _bare_command(
+            AgentSettingsShow, agent_name="myagent", resource_group="rg",
+        )
+        calls = []
+
+        def fake_show(cli_ctx, agent_name, resource_group, extension_type, extension_name):
+            calls.append((agent_name, resource_group, extension_type, extension_name))
+            return {"properties": {"value": {"customInstructions": "be terse"}}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._extension_resource_show", fake_show):
+            result = command._handler({})
+
+        self.assertEqual(calls, [("myagent", "rg", "globalSettings", "default")])
+        self.assertEqual(result, {"properties": {"value": {"customInstructions": "be terse"}}})
+
+    def test_show_falls_back_to_friendly_defaults_when_not_found(self):
+        command = _bare_command(
+            AgentSettingsShow, agent_name="myagent", resource_group="rg",
+        )
+
+        def fake_show(cli_ctx, agent_name, resource_group, extension_type, extension_name):
+            raise ResourceNotFoundError("not found")
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._extension_resource_show", fake_show):
+            result = command._handler({})
+
+        self.assertEqual(result, {"toolPermissions": {}, "toolStatuses": [], "skillStatuses": []})
+
+    def test_update_always_overwrites_the_singleton(self):
+        command = _bare_command(
+            AgentSettingsUpdate, agent_name="myagent", resource_group="rg",
+            value='{"customInstructions": "be terse"}',
+        )
+        calls = []
+
+        def fake_create(cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False):
+            calls.append((agent_name, resource_group, extension_type, extension_name, raw_value, overwrite))
+            return {"properties": {"value": {"customInstructions": "be terse"}}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._extension_resource_create", fake_create):
+            result = command._handler({})
+
+        self.assertEqual(
+            calls,
+            [("myagent", "rg", "globalSettings", "default", '{"customInstructions": "be terse"}', True)],
+        )
+        self.assertEqual(result, {"properties": {"value": {"customInstructions": "be terse"}}})
 
 
 class KnowledgeFacadeTests(unittest.TestCase):
@@ -1908,8 +1936,7 @@ class CommandRegistrationTests(unittest.TestCase):
             "sre identity assign", "sre identity remove", "sre identity show",
             "sre agent list-models",
             "sre managed-resource grant", "sre managed-resource revoke", "sre managed-resource list",
-            "sre extension create", "sre extension show",
-            "sre extension list", "sre extension delete",
+            "sre agent settings show", "sre agent settings update",
             "sre repo connect",
             "sre tool create", "sre tool show", "sre tool list", "sre tool delete",
             "sre skill create", "sre skill show", "sre skill list", "sre skill delete",
@@ -1931,7 +1958,12 @@ class CommandRegistrationTests(unittest.TestCase):
         duplicates of the real top-level nouns ('sre connector', the new
         'sre identity', and the new 'sre connector list-secret') -- they
         must stay gone, not silently reappear if commands.py's generated-
-        recipe auto-discovery is ever refactored."""
+        recipe auto-discovery is ever refactored. 'sre extension ...' was
+        removed outright in a later round (manager feedback: confusing
+        generic ARM-proxy surface with no portal equivalent) -- its
+        internal logic now lives in plain _extension_resource_*() helper
+        functions shared by every noun-specific facade, not a public
+        command."""
         retired = [
             "sre agent connector create", "sre agent connector show",
             "sre agent connector list", "sre agent connector update",
@@ -1939,6 +1971,8 @@ class CommandRegistrationTests(unittest.TestCase):
             "sre agent identity assign", "sre agent identity remove",
             "sre agent identity show",
             "sre agent list-connectors-with-secret",
+            "sre extension create", "sre extension show",
+            "sre extension list", "sre extension delete",
         ]
         still_present = [name for name in retired if name in self.command_table]
         self.assertEqual(still_present, [], f"Retired duplicate commands still registered: {still_present}")

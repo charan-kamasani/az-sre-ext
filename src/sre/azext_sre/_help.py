@@ -85,11 +85,13 @@ GROUP_EXAMPLES = {
         {"name": "Show one connector's details.",
          "text": "az sre connector show -g myrg --agent-name myagent -n conn-kusto"},
     ],
-    "sre extension": [
-        {"name": "List an agent's extensions of a given type.",
-         "text": "az sre extension list -g myrg --agent-name myagent --extension-type subAgent"},
-        {"name": "Show one extension.",
-         "text": "az sre extension show -g myrg --agent-name myagent --extension-type subAgent -n myextension"},
+    "sre agent settings": [
+        {"name": "Show an agent's global settings.",
+         "text": "az sre agent settings show -g myrg --agent-name myagent"},
+        {"name": "Allow a tool, deny another, and set custom instructions.",
+         "text": 'az sre agent settings update -g myrg --agent-name myagent --value '
+                 '\'{"toolPermissions": {"allow": ["ReadFile"], "deny": ["DeleteFile"]}, '
+                 '"customInstructions": "Investigate carefully."}\''},
     ],
     "sre hook": [
         {"name": "List an agent's hooks.",

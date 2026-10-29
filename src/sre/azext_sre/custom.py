@@ -974,6 +974,117 @@ class SupportedAgentModelList(_GeneratedSupportedAgentModelList):
 
 
 # --------------------------------------------------------------------------------------------
+# "sre agent settings" -- the agent-wide 'globalSettings' extension type
+# (portal: Build + setup > Settings, preview). This is a true ARM singleton
+# -- always extension type "globalSettings", always name "default"
+# (confirmed via the control plane's own real round-trip integration test,
+# GlobalSettingsExtensionTests.cs: `envelope = { name = "default", type =
+# "GlobalSettings", properties }`, and its GET/PUT/list all operate on that
+# one fixed name) -- so, unlike 'sre tool'/'sre skill'/etc., there is no
+# --name to pass: show/update always target the one settings object this
+# agent has. This is the only extension type exposed as its own noun
+# without going through the generic _Pinned* self-invoke pattern used
+# elsewhere, since it's nested two levels under 'agent' rather than being a
+# top-level noun.
+# --------------------------------------------------------------------------------------------
+@register_command_group("sre agent settings")
+class _AgentSettingsGroup(AAZCommandGroup):
+    """Manage an SRE Agent's global settings (preview).
+
+    A single, agent-wide settings object covering tool/skill allow-ask-deny
+    permissions, custom instructions, and approval-expiration behavior.
+    """
+
+
+@register_command("sre agent settings show")
+class AgentSettingsShow(AAZCommand):
+    """Show an SRE Agent's global settings."""
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.agent_name = AAZStrArg(
+            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+
+        try:
+            return _extension_resource_show(
+                self.cli_ctx, agent_name, resource_group, "globalSettings", "default",
+            )
+        except ResourceNotFoundError:
+            logger.warning(
+                "Agent '%s' has no custom global settings configured yet "
+                "(all fields default). Use 'az sre agent settings update' "
+                "to set some.",
+                agent_name,
+            )
+            return {"toolPermissions": {}, "toolStatuses": [], "skillStatuses": []}
+
+
+@register_command("sre agent settings update")
+class AgentSettingsUpdate(AAZCommand):
+    """Create or update an SRE Agent's global settings.
+
+    Always targets the agent's single settings object (there is no --name --
+    an agent has exactly one). Safe to call repeatedly; each call replaces
+    the whole settings object, so include every field you want to keep, not
+    just the one you're changing.
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.agent_name = AAZStrArg(
+            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        schema.value = AAZStrArg(
+            options=["--value"],
+            help=(
+                "Global settings as a JSON document (confirmed via the "
+                "control plane's own real round-trip integration test, "
+                "GlobalSettingsExtensionTests.cs). All fields optional: "
+                "toolPermissions ({\"allow\": [...], \"ask\": [...], "
+                "\"deny\": [...]} tool-name arrays), toolStatuses/"
+                "skillStatuses (arrays of {\"name\": ..., \"enabled\": "
+                "true/false}), customInstructions (string), "
+                "approvalExpirationSetting ({\"enabled\": true/false, "
+                "\"approvalExpirationInMinutes\": <number>})."
+            ),
+            required=True,
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        raw_value = _arg_value(self.ctx.args.value)
+
+        return _extension_resource_create(
+            self.cli_ctx, agent_name, resource_group, "globalSettings", "default",
+            raw_value, overwrite=True,
+        )
+
+
+# --------------------------------------------------------------------------------------------
 # "sre managed-resource" -- matches the portal's Build + setup > Context >
 # Managed resources page (tabs: Management groups / Subscriptions /
 # Resource groups). Confirmed directly from the portal's "Add management
@@ -1746,9 +1857,9 @@ class _RepoGroup(AAZCommandGroup):
 
     'sre repo connect' supports GitHub and Azure DevOps in a single step (it
     wires up both the auth and the repository extension for you). GitLab
-    repos are also supported at the data-plane level (see 'sre extension
-    create --extension-type repositories'), but not yet by this one-step
-    command.
+    repos are also supported at the data-plane level (a 'repositories'
+    extension resource, same as GitHub/Azure DevOps), but this CLI doesn't
+    yet expose a path to create one.
     """
 
 
@@ -2109,15 +2220,6 @@ EXTENSION_TYPES = [
     "azureDevOpsAuths",
     "globalSettings",
 ]
-
-
-def _extension_type_arg():
-    return AAZStrArg(
-        options=["--extension-type", "--type"],
-        help="Kind of agent extension. One of: " + ", ".join(EXTENSION_TYPES) + ".",
-        required=True,
-        enum={t: t for t in EXTENSION_TYPES},
-    )
 
 
 # Per-extension-type inner JSON shape, confirmed where noted. The control-
@@ -2691,314 +2793,136 @@ def _decode_extension_envelope(envelope):
     return envelope
 
 
-@register_command_group("sre extension")
-class _ExtensionGroup(AAZCommandGroup):
-    """Manage an SRE Agent's low-level 'extension' resources directly.
+# There is intentionally no public "sre extension ..." command group. There
+# used to be one (a direct, flat mirror of the ARM resource shape,
+# Microsoft.App/agents/<extensionType>/<name>), but it was removed per
+# design-review feedback ("I find it confusing there is both plugin and
+# extension -- why? what is the main concept in the portal?"): the portal
+# has no "extension" concept at all, it was purely this CLI's internal ARM-
+# proxy abstraction leaking into the user-facing surface. The functions
+# below are the same logic, kept as plain internal helpers that every
+# noun-specific facade (tool/skill/hook/instructions/workflow/plugin/repo/
+# agent settings) calls directly -- there is no user-reachable path to an
+# arbitrary --extension-type anymore. The only extension types left with no
+# dedicated noun are 'incidentHandlers' (legacy, intentionally not exposed)
+# and 'subagents' (confirmed not creatable via ARM at all, see _WorkflowGroup
+# above); 'globalSettings' is exposed via 'sre agent settings' below instead.
+EXTENSION_TYPE_CREATE_NOUN = {
+    "tools": "az sre tool create",
+    "skills": "az sre skill create",
+    "hooks": "az sre hook create",
+    "commonPrompts": "az sre instructions create",
+    "scheduledTasks": "az sre workflow scheduled-task create",
+    "httpTriggers": "az sre workflow http-trigger create",
+    "incidentFilters": "az sre workflow incident-filter create",
+    "pluginMarketplaces": "az sre plugin marketplace create",
+    "pluginInstallations": "az sre plugin install create",
+    "repositories": "az sre repo connect",
+    "githubAuths": "az sre repo connect",
+    "azureDevOpsAuths": "az sre repo connect",
+    "globalSettings": "az sre agent settings update",
+}
 
-    Extensions are the generic building block behind several higher-level
-    nouns in this CLI -- 'sre tool', 'sre skill', 'sre hook', 'sre
-    instructions', and 'sre plugin marketplace'/'sre plugin install' all use
-    this mechanism under the hood (subagents, tools, skills, scheduled
-    tasks, incident filters/handlers, common prompts, hooks, HTTP triggers,
-    repositories, plugin marketplaces/installations, GitHub/Azure DevOps
-    auths, and global settings (preview)). Prefer the dedicated noun for
-    anything that has one; use 'sre extension' directly only for an
-    extension type that doesn't have its own noun yet.
-    """
 
-
-@register_command("sre extension create")
-class ExtensionCreate(AAZCommand):
-    """Create or update an SRE Agent extension (subagent/tool/skill/etc.).
-
-    By default, refuses to silently overwrite an existing extension of the
-    same --extension-type/--extension-name (there is no separate 'extension
-    update' command, so an unguarded PUT here would clobber an existing
-    repo/auth/tool registration with no warning). Pass --overwrite to update
-    an existing one intentionally.
-    """
-
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        schema.agent_name = AAZStrArg(
-            options=["--agent-name"],
-            help="Name of the SRE Agent.",
-            required=True,
+def _resolve_agent_resource_id(cli_ctx, agent_name, resource_group):
+    invoke = partial(_cli_invoke, cli_ctx)
+    agent = invoke(
+        "sre", "agent", "show", "--name", agent_name, "--resource-group", resource_group,
+    )
+    if not isinstance(agent, dict):
+        raise ResourceNotFoundError(
+            f"Could not resolve SRE Agent '{agent_name}' in resource group '{resource_group}'."
         )
-        schema.resource_group = AAZResourceGroupNameArg(required=True)
-        schema.extension_type = _extension_type_arg()
-        schema.extension_name = AAZStrArg(
-            options=["--extension-name", "--name", "-n"],
-            help="Name of the extension instance.",
-            required=True,
-        )
-        schema.value = AAZStrArg(
-            options=["--value"],
-            help=(
-                "Extension configuration as a JSON document (the CLI "
-                "base64-encodes it for you -- the wire format is "
-                "properties.value = base64(json), confirmed via the "
-                "internal control-plane repo's Agents.http examples). For "
-                "--extension-type commonPrompts, the confirmed shape is a "
-                "JSON object {\"prompt\": \"...\"} (one prompt per ARM "
-                "resource name, e.g. 'default'). "
-                "For globalSettings, the confirmed shape is a JSON object "
-                "with optional toolPermissions/toolStatuses/skillStatuses/"
-                "customInstructions/approvalExpirationSetting fields. "
-                "14 of 15 extension types have confirmed inner shapes "
-                "(source-cited in custom.py's _validate_*_shape functions; "
-                "12 also live-round-tripped against a real agent). "
-                "'subagents' is CONFIRMED NOT CREATABLE via this ARM path: "
-                "the real agent-builder UI applies a raw YAML document "
-                "(kind: AgentConfiguration) directly to the agent's "
-                "data-plane 'PUT api/v1/extendedAgent/apply' endpoint, "
-                "which this ARM-only extension type never reaches -- use "
-                "the portal or srectl to create subagents instead. See "
-                "issue #13 for the full findings and evidence."
-            ),
-            required=True,
-        )
-        schema.overwrite = AAZBoolArg(
-            options=["--overwrite"],
-            help="Allow replacing an existing extension of the same "
-            "--extension-type/--extension-name. Without this flag, "
-            "'extension create' refuses to overwrite an existing extension.",
-        )
-        cls._args_schema = schema
-        return schema
+    agent_resource_id = agent.get("id")
+    if not agent_resource_id:
+        raise CLIError(f"Could not resolve the resource ID of agent '{agent_name}'.")
+    return agent_resource_id
 
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name = _arg_value(self.ctx.args.agent_name)
-        resource_group = _arg_value(self.ctx.args.resource_group)
-        extension_type = _arg_value(self.ctx.args.extension_type)
-        extension_name = _arg_value(self.ctx.args.extension_name)
-        raw_value = _arg_value(self.ctx.args.value)
-        overwrite = _arg_value(getattr(self.ctx.args, "overwrite", None))
 
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        agent = invoke(
-            "sre", "agent", "show", "--name", agent_name, "--resource-group", resource_group,
-        )
-        if not isinstance(agent, dict):
-            raise ResourceNotFoundError(
-                f"Could not resolve SRE Agent '{agent_name}' in resource group '{resource_group}'."
+def _extension_resource_create(
+    cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False
+):
+    """Create or update an agent extension resource. Shared by every noun-
+    specific 'create'/'update' facade (tool/skill/hook/instructions/
+    workflow/plugin/repo connect/agent settings)."""
+    agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
+    resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    if not overwrite:
+        existing = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+        if existing is not None:
+            raise ResourceExistsError(
+                f"An extension named '{extension_name}' of type "
+                f"'{extension_type}' already exists on agent '{agent_name}'. "
+                "Pass --overwrite to replace it intentionally, or choose "
+                "another name."
             )
-        agent_resource_id = agent.get("id")
-        if not agent_resource_id:
-            raise CLIError(f"Could not resolve the resource ID of agent '{agent_name}'.")
+    body = {
+        "type": f"microsoft.app/agents/{extension_type}",
+        "properties": {"value": _encode_extension_value(raw_value, extension_type)},
+    }
+    result = _arm_request(cli_ctx, "PUT", resource_id, EXTENSION_API_VERSION, body=body)
+    return _decode_extension_envelope(result)
 
-        resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
-        if not overwrite:
-            existing = _arm_request(
-                self.cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True
+
+def _extension_resource_show(cli_ctx, agent_name, resource_group, extension_type, extension_name):
+    """Show an agent extension resource. Shared by every noun-specific
+    'show' facade."""
+    agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
+    resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    result = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+    if result is None:
+        raise ResourceNotFoundError(
+            f"Extension '{extension_name}' of type '{extension_type}' not found on agent '{agent_name}'."
+        )
+    return _decode_extension_envelope(result)
+
+
+def _extension_resource_list(cli_ctx, agent_name, resource_group, extension_type):
+    """List an agent's extension resources of a given type. Shared by every
+    noun-specific 'list' facade."""
+    agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
+    resource_id = f"{agent_resource_id}/{extension_type}"
+    result = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION)
+    if isinstance(result, dict) and isinstance(result.get("value"), list):
+        result["value"] = [_decode_extension_envelope(item) for item in result["value"]]
+        if not result["value"]:
+            create_noun = EXTENSION_TYPE_CREATE_NOUN.get(extension_type)
+            hint = f" Add one with '{create_noun}'." if create_noun else ""
+            logger.warning(
+                "No '%s' extensions found on agent '%s'.%s",
+                extension_type, agent_name, hint,
             )
-            if existing is not None:
-                raise ResourceExistsError(
-                    f"An extension named '{extension_name}' of type "
-                    f"'{extension_type}' already exists on agent '{agent_name}'. "
-                    "Pass --overwrite to replace it intentionally, or choose "
-                    "another --extension-name."
-                )
-        body = {
-            "type": f"microsoft.app/agents/{extension_type}",
-            "properties": {"value": _encode_extension_value(raw_value, extension_type)},
-        }
-        result = _arm_request(self.cli_ctx, "PUT", resource_id, EXTENSION_API_VERSION, body=body)
-        return _decode_extension_envelope(result)
+    return result
 
 
-@register_command("sre extension show")
-class ExtensionShow(AAZCommand):
-    """Show an SRE Agent extension."""
-
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        schema.agent_name = AAZStrArg(
-            options=["--agent-name"],
-            help="Name of the SRE Agent.",
-            required=True,
-        )
-        schema.resource_group = AAZResourceGroupNameArg(required=True)
-        schema.extension_type = _extension_type_arg()
-        schema.extension_name = AAZStrArg(
-            options=["--extension-name", "--name", "-n"],
-            help="Name of the extension instance.",
-            required=True,
-        )
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name = _arg_value(self.ctx.args.agent_name)
-        resource_group = _arg_value(self.ctx.args.resource_group)
-        extension_type = _arg_value(self.ctx.args.extension_type)
-        extension_name = _arg_value(self.ctx.args.extension_name)
-
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        agent = invoke(
-            "sre", "agent", "show", "--name", agent_name, "--resource-group", resource_group,
-        )
-        if not isinstance(agent, dict):
-            raise ResourceNotFoundError(
-                f"Could not resolve SRE Agent '{agent_name}' in resource group '{resource_group}'."
-            )
-        agent_resource_id = agent.get("id")
-        if not agent_resource_id:
-            raise CLIError(f"Could not resolve the resource ID of agent '{agent_name}'.")
-
-        resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
-        result = _arm_request(
-            self.cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True
-        )
-        if result is None:
-            raise ResourceNotFoundError(
-                f"Extension '{extension_name}' of type '{extension_type}' not found on agent '{agent_name}'."
-            )
-        return _decode_extension_envelope(result)
-
-
-@register_command("sre extension list")
-class ExtensionList(AAZCommand):
-    """List an SRE Agent's extensions of a given type."""
-
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        schema.agent_name = AAZStrArg(
-            options=["--agent-name"],
-            help="Name of the SRE Agent.",
-            required=True,
-        )
-        schema.resource_group = AAZResourceGroupNameArg(required=True)
-        schema.extension_type = _extension_type_arg()
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name = _arg_value(self.ctx.args.agent_name)
-        resource_group = _arg_value(self.ctx.args.resource_group)
-        extension_type = _arg_value(self.ctx.args.extension_type)
-
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        agent = invoke(
-            "sre", "agent", "show", "--name", agent_name, "--resource-group", resource_group,
-        )
-        if not isinstance(agent, dict):
-            raise ResourceNotFoundError(
-                f"Could not resolve SRE Agent '{agent_name}' in resource group '{resource_group}'."
-            )
-        agent_resource_id = agent.get("id")
-        if not agent_resource_id:
-            raise CLIError(f"Could not resolve the resource ID of agent '{agent_name}'.")
-
-        resource_id = f"{agent_resource_id}/{extension_type}"
-        result = _arm_request(self.cli_ctx, "GET", resource_id, EXTENSION_API_VERSION)
-        if isinstance(result, dict) and isinstance(result.get("value"), list):
-            result["value"] = [_decode_extension_envelope(item) for item in result["value"]]
-            if not result["value"]:
-                if extension_type in ("repositories", "githubAuths", "azureDevOpsAuths"):
-                    hint = " (or 'az sre repo connect' for a one-step connect)"
-                else:
-                    hint = ""
-                logger.warning(
-                    "No '%s' extensions found on agent '%s'. Add one with "
-                    "'az sre extension create --extension-type %s "
-                    "--extension-name <name> --value <json>'%s.",
-                    extension_type, agent_name, extension_type, hint,
-                )
-        return result
-
-
-@register_command(
-    "sre extension delete",
-    confirmation="Are you sure you want to perform this operation?",
-)
-class ExtensionDelete(AAZCommand):
-    """Delete an SRE Agent extension."""
-
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        schema.agent_name = AAZStrArg(
-            options=["--agent-name"],
-            help="Name of the SRE Agent.",
-            required=True,
-        )
-        schema.resource_group = AAZResourceGroupNameArg(required=True)
-        schema.extension_type = _extension_type_arg()
-        schema.extension_name = AAZStrArg(
-            options=["--extension-name", "--name", "-n"],
-            help="Name of the extension instance.",
-            required=True,
-        )
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name = _arg_value(self.ctx.args.agent_name)
-        resource_group = _arg_value(self.ctx.args.resource_group)
-        extension_type = _arg_value(self.ctx.args.extension_type)
-        extension_name = _arg_value(self.ctx.args.extension_name)
-
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        agent = invoke(
-            "sre", "agent", "show", "--name", agent_name, "--resource-group", resource_group,
-        )
-        if not isinstance(agent, dict):
-            raise ResourceNotFoundError(
-                f"Could not resolve SRE Agent '{agent_name}' in resource group '{resource_group}'."
-            )
-        agent_resource_id = agent.get("id")
-        if not agent_resource_id:
-            raise CLIError(f"Could not resolve the resource ID of agent '{agent_name}'.")
-
-        resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
-        return _arm_request(self.cli_ctx, "DELETE", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+def _extension_resource_delete(cli_ctx, agent_name, resource_group, extension_type, extension_name):
+    """Delete an agent extension resource. Shared by every noun-specific
+    'delete' facade."""
+    agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
+    resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    return _arm_request(cli_ctx, "DELETE", resource_id, EXTENSION_API_VERSION, missing_ok=True)
 
 
 # --------------------------------------------------------------------------------------------
 # Noun-specific extension facades -- "sre tool", "sre skill", "sre hook",
 # "sre instructions", "sre plugin marketplace"/"sre plugin install".
 #
-# WHY: the generic "sre extension create/show/list/delete --extension-type
-# X" surface above is a direct, flat mirror of the ARM resource shape
-# (Microsoft.App/agents/<extensionType>/<name>). That matches the backend,
-# but it does NOT match the Azure SRE Agent portal's own navigation, which
-# splits these extension types into separate first-class pages under
-# Build + setup > Extensions: Connectors, Tools, Skills, Skill builder,
-# Plugins, Hooks, Custom instructions (each with its own "Add"/"Create"
-# button, not a shared "pick a type" dropdown). Confirmed directly from the
-# portal's left nav (SRE Agent product, Build + setup section).
+# WHY: the raw ARM resource shape behind all of these is a direct, flat
+# mirror (Microsoft.App/agents/<extensionType>/<name>). That matches the
+# backend, but it does NOT match the Azure SRE Agent portal's own
+# navigation, which splits these extension types into separate first-class
+# pages under Build + setup > Extensions: Connectors, Tools, Skills, Skill
+# builder, Plugins, Hooks, Custom instructions (each with its own "Add"/
+# "Create" button, not a shared "pick a type" dropdown). Confirmed directly
+# from the portal's left nav (SRE Agent product, Build + setup section).
 #
-# Each command below is a thin front door that pins --extension-type to the
-# matching value and self-invokes the already-registered generic "sre
-# extension ..." command -- same internal self-invoke pattern already used
-# by RepoConnect and _GrantAccessToMeMixin elsewhere in this file. There is
-# no new ARM logic here: this only renames the noun so a user who has seen
-# the portal's "Tools" page can type "az sre tool create" instead of having
-# to already know the extension type string "tools".
+# Each command below is a thin front door that pins the extension type to
+# the matching value and calls the shared _extension_resource_create/show/
+# list/delete() helpers above directly (no "sre extension ..." command
+# exists anymore -- see the comment above those helpers for why). This
+# only renames the noun so a user who has seen the portal's "Tools" page
+# can type "az sre tool create" instead of having to know the internal
+# extension type string "tools".
 # --------------------------------------------------------------------------------------------
 class _PinnedExtensionCreate(AAZCommand):
     """Base for a noun-specific 'create' facade. Subclasses set
@@ -3046,18 +2970,12 @@ class _PinnedExtensionCreate(AAZCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         extension_name = _arg_value(self.ctx.args.extension_name)
         raw_value = _arg_value(self.ctx.args.value)
-        overwrite = _arg_value(getattr(self.ctx.args, "overwrite", None))
+        overwrite = bool(_arg_value(getattr(self.ctx.args, "overwrite", None)))
 
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        argv = [
-            "sre", "extension", "create",
-            "--agent-name", agent_name, "--resource-group", resource_group,
-            "--extension-type", self._EXTENSION_TYPE,
-            "--extension-name", extension_name, "--value", raw_value,
-        ]
-        if overwrite:
-            argv.append("--overwrite")
-        return invoke(*argv)
+        return _extension_resource_create(
+            self.cli_ctx, agent_name, resource_group, self._EXTENSION_TYPE,
+            extension_name, raw_value, overwrite=overwrite,
+        )
 
 
 class _PinnedExtensionShow(AAZCommand):
@@ -3089,11 +3007,8 @@ class _PinnedExtensionShow(AAZCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         extension_name = _arg_value(self.ctx.args.extension_name)
 
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        return invoke(
-            "sre", "extension", "show",
-            "--agent-name", agent_name, "--resource-group", resource_group,
-            "--extension-type", self._EXTENSION_TYPE, "--extension-name", extension_name,
+        return _extension_resource_show(
+            self.cli_ctx, agent_name, resource_group, self._EXTENSION_TYPE, extension_name,
         )
 
 
@@ -3120,11 +3035,8 @@ class _PinnedExtensionList(AAZCommand):
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
 
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        return invoke(
-            "sre", "extension", "list",
-            "--agent-name", agent_name, "--resource-group", resource_group,
-            "--extension-type", self._EXTENSION_TYPE,
+        return _extension_resource_list(
+            self.cli_ctx, agent_name, resource_group, self._EXTENSION_TYPE,
         )
 
 
@@ -3158,16 +3070,9 @@ class _PinnedExtensionDelete(AAZCommand):
         extension_name = _arg_value(self.ctx.args.extension_name)
 
         # The user already confirmed via this command's own confirmation
-        # prompt (see its @register_command(confirmation=...)); pass --yes
-        # through to the inner "sre extension delete" self-invocation so it
-        # doesn't prompt a second time (and so this doesn't hang/fail when
-        # re-invoked programmatically with no real tty).
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        return invoke(
-            "sre", "extension", "delete",
-            "--agent-name", agent_name, "--resource-group", resource_group,
-            "--extension-type", self._EXTENSION_TYPE, "--extension-name", extension_name,
-            "--yes",
+        # prompt (see its @register_command(confirmation=...)).
+        return _extension_resource_delete(
+            self.cli_ctx, agent_name, resource_group, self._EXTENSION_TYPE, extension_name,
         )
 
 
@@ -3853,8 +3758,8 @@ class PluginInstallDelete(_PinnedExtensionDelete):
 # credential available (gh auth token) and a canonical payload shape it can
 # build for the user.
 #
-# Before this command, connecting one repo required two raw
-# "sre extension create" calls the user had to build by hand:
+# Before this command, connecting one repo required two raw extension
+# creates the user had to build by hand:
 #   1. githubAuths/azureDevOpsAuths, with a manually-pasted PAT
 #   2. repositories, with a hand-written JSON --value
 # This command does both, using a token it fetches itself -- `gh auth token`
@@ -3862,8 +3767,8 @@ class PluginInstallDelete(_PinnedExtensionDelete):
 # Azure DevOps PAT via the vssps.dev.azure.com REST API for Azure DevOps
 # (ADO PAT creation has no `az devops` command; see running notes section on
 # ADO PAT generation). Nothing here bypasses the real extension model --
-# it is sugar that calls "sre extension create" twice with payloads it
-# builds instead of asking the user to build them.
+# it is sugar that calls _extension_resource_create() twice with payloads
+# it builds instead of asking the user to build them.
 # --------------------------------------------------------------------------------------------
 
 ADO_PAT_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
@@ -3969,7 +3874,7 @@ class RepoConnect(AAZCommand):
     'gh auth login' credential (GitHub) or mints a fresh PAT via the Azure
     DevOps REST API (Azure DevOps) and wires up both the auth extension and
     the repositories extension for you, instead of requiring two manual
-    'sre extension create' calls with hand-built JSON --value payloads.
+    hand-built JSON payloads.
     """
 
     _args_schema = None
@@ -4064,19 +3969,15 @@ class RepoConnect(AAZCommand):
         devops_federated_client_id = _arg_value(self.ctx.args.devops_federated_client_id)
         devops_federated_tenant_id = _arg_value(self.ctx.args.devops_federated_tenant_id)
 
-        invoke = partial(_cli_invoke, self.cli_ctx)
-
         if provider == "GitHub":
             token = _github_cli_token(github_account)
             try:
                 auth_value = json.dumps({"authType": "Pat", "pat": token})
             finally:
                 token = None
-            auth_result = invoke(
-                "sre", "extension", "create",
-                "--agent-name", agent_name, "--resource-group", resource_group,
-                "--extension-type", "githubAuths", "--extension-name", "github_com",
-                "--value", auth_value, "--overwrite", "true",
+            auth_result = _extension_resource_create(
+                self.cli_ctx, agent_name, resource_group, "githubAuths", "github_com",
+                auth_value, overwrite=True,
             )
             repo_type = "GitHub"
         else:
@@ -4121,21 +4022,17 @@ class RepoConnect(AAZCommand):
                     auth_value = json.dumps({"authType": "Pat", "pat": pat})
                 finally:
                     pat = None
-            auth_result = invoke(
-                "sre", "extension", "create",
-                "--agent-name", agent_name, "--resource-group", resource_group,
-                "--extension-type", "azureDevOpsAuths", "--extension-name", organization,
-                "--value", auth_value, "--overwrite", "true",
+            auth_result = _extension_resource_create(
+                self.cli_ctx, agent_name, resource_group, "azureDevOpsAuths", organization,
+                auth_value, overwrite=True,
             )
             repo_type = "AzureDevOps"
 
         repo_body = {"url": repo_url, "type": repo_type, "description": display_name}
         if branch:
             repo_body["branch"] = branch
-        repo_result = invoke(
-            "sre", "extension", "create",
-            "--agent-name", agent_name, "--resource-group", resource_group,
-            "--extension-type", "repositories", "--extension-name", display_name,
-            "--value", json.dumps(repo_body), "--overwrite", "true",
+        repo_result = _extension_resource_create(
+            self.cli_ctx, agent_name, resource_group, "repositories", display_name,
+            json.dumps(repo_body), overwrite=True,
         )
         return {"auth": _redact_auth_result(auth_result), "repository": repo_result}

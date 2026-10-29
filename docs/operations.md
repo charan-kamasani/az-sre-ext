@@ -150,22 +150,25 @@ generated recipe, which this project deliberately never does.
 
 ## Runbook extension payload shapes
 
-`extension create/show/list/delete` manage a data-plane proxy resource with
-**no ARM Swagger** — every payload shape must be confirmed by live probing,
-not by reading a spec. Prefer a dedicated front-door noun where one exists
-(`tool`, `skill`, `hook`, `instructions`, `knowledge`, `repo connect`,
-`plugin marketplace`/`plugin install`) — `extension` itself is only needed
-for the six extension types with no dedicated noun yet. Status as of the
-last live-verification pass (12 of 15 extension types confirmed live):
+Every extension type is backed by a data-plane proxy resource with **no ARM
+Swagger** — every payload shape had to be confirmed by live probing, not by
+reading a spec. There is no longer a generic `az sre extension` escape
+hatch: every extension type now has a dedicated front-door noun (`tool`,
+`skill`, `hook`, `instructions`, `knowledge`, `repo connect`,
+`plugin marketplace`/`plugin install`, `agent settings`, `workflow
+scheduled-task`/`http-trigger`/`incident-filter`). The one remaining
+generic command group, `az sre managed-resource`, is unrelated RBAC
+plumbing, not an extension-type front door. Status as of the last
+live-verification pass (12 of 15 extension types confirmed live):
 
 | Extension type | Confirmed shape | Status |
 | --- | --- | --- |
 | `commonPrompts` (`instructions`) | `{"prompt": "<string>"}`, one prompt per ARM resource name (e.g. `commonPrompts/default`) | Live-verified |
-| `globalSettings` | `{}` plus optional `toolPermissions`/`toolStatuses`/`skillStatuses`/`customInstructions`/`approvalExpirationSetting` | Shape-confirmed from the control-plane team's own integration tests — true ARM singleton, `DELETE` unsupported, reset via `PUT {}` |
+| `globalSettings` (`agent settings`) | `{}` plus optional `toolPermissions`/`toolStatuses`/`skillStatuses`/`customInstructions`/`approvalExpirationSetting` | Shape-confirmed from the control-plane team's own integration tests — true ARM singleton, `DELETE` unsupported, reset via `agent settings update --value '{}'` |
 | `pluginMarketplaces` (`plugin marketplace`), `pluginInstallations` (`plugin install`) | See `PLAN.md` | Create/show live-verified; K8s-backed install provisioning not exercised in this sandbox |
 | `tools` (`tool`), `skills` (`skill`), `hooks` (`hook`), `repositories` (`repo connect`) | Confirmed | Live-verified end to end (PUT + GET round-trip against a real agent) |
-| `incidentFilters`, `incidentHandlers` | Shape-confirmed from authoritative source | Live-create is environment-blocked (sandbox tenant lacks real IcM team-identity resolution), not a shape defect |
-| `githubAuths`, `azureDevOpsAuths` | Shape-confirmed from authoritative source | Live-create rejected by real credential/token validation on the service side, not a shape defect |
+| `incidentFilters` (`workflow incident-filter`), `incidentHandlers` (legacy, intentionally not exposed) | Shape-confirmed from authoritative source | Live-create is environment-blocked (sandbox tenant lacks real IcM team-identity resolution), not a shape defect |
+| `githubAuths`, `azureDevOpsAuths` (both wired up for you by `repo connect`) | Shape-confirmed from authoritative source | Live-create rejected by real credential/token validation on the service side, not a shape defect |
 | `subagents` | No model found | Believed server-managed / Agent-Canvas-only, not CLI-creatable |
 
 A universal constraint applies to every extension type: the decoded
@@ -208,12 +211,9 @@ shell=False)` in Python. Avoid `&&`/`|`/`<`/`>` inside a hook's `command`
 field value on Windows for the same reason.
 
 ```bash
-az sre extension create -g myrg --agent-name myagent \
-  --extension-type globalSettings --extension-name default --value '{}'
+az sre agent settings update -g myrg --agent-name myagent --value '{}'
 
-az sre extension list -g myrg --agent-name myagent --extension-type globalSettings
-az sre extension delete -g myrg --agent-name myagent \
-  --extension-type globalSettings --extension-name default
+az sre agent settings show -g myrg --agent-name myagent
 ```
 
 See [docs/testing.md](testing.md#live-verification-workflow) for the
@@ -250,7 +250,7 @@ now matches the validator and the real API.
 ### `globalSettings.toolStatuses` is accepted but doesn't round-trip; `toolPermissions`/`approvalExpirationSetting` do
 
 Live-verified all three `globalSettings` fields on `mytestagent` via
-`az sre extension create --extension-type globalSettings`:
+`az sre agent settings update`:
 
 - `toolPermissions` (`allow`/`ask`/`deny` arrays) -- **persists correctly**,
   confirmed via `show` after `create`.
@@ -274,9 +274,9 @@ live-resolved scope at *read* time is silently dropped from the response,
 even though the write passed an equivalent scope check moments earlier
 and was saved. This is a service-side behavior, not a CLI bug -- the CLI
 sends/validates the shape correctly. Net effect: **enabling/disabling
-built-in tools via `az sre extension create --extension-type
-globalSettings` is unreliable today**; use the portal's Built-in tools tab
-for that until confirmed fixed server-side.
+built-in tools via `az sre agent settings update` is unreliable today**;
+use the portal's Built-in tools tab for that until confirmed fixed
+server-side.
 
 ### `repo connect` fixes: stale `--repo-type` example, misleading GitLab claim, and a real PAT-leak bug
 
@@ -287,9 +287,9 @@ Three issues found while live-testing `az sre repo connect`:
 2. **Misleading docstring**: `_RepoGroup` claimed "Supports GitHub, Azure
    DevOps, and GitLab", but `repo connect`'s `--provider` enum only allows
    `GitHub`/`AzureDevOps` -- GitLab isn't wired up for this one-step
-   command (it IS supported at the raw `sre extension create
-   --extension-type repositories` level). Docstring corrected to be
-   precise about the split.
+   command, and (since the generic `extension` command group was removed)
+   there is no longer any CLI path at all to create a `repositories`
+   extension for GitLab. Docstring corrected to be precise about the gap.
 3. **Security bug (the serious one)**: live-tested against a real Azure
    DevOps org (`dev.azure.com/devdiv`) -- `repo connect` mints a PAT via
    the vssps REST API and echoes the full `auth` result back to the user.
