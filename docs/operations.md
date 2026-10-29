@@ -173,6 +173,19 @@ A universal constraint applies to every extension type: the decoded
 always rejected with `"request body contains an invalid or unrecognized
 property"`.
 
+### `hook` eventType has 4 values, not 2
+
+The official docs (`sre.azure.com/docs/capabilities/agent-hooks`) confirm
+hooks fire on one of **four** lifecycle events: `Start`, `PreToolUse`,
+`PostToolUse`, `Stop` — all usable via the REST API v2 this CLI calls
+directly. The portal's own "Create hook" dialog currently only exposes
+`PostToolUse`/`Stop` in its UI picker, but that's a portal UI limitation,
+not an API one. `az sre hook create`'s client-side shape validator used to
+incorrectly restrict `eventType` to only `("Stop", "PostToolUse")`
+(matching the portal's UI subset), which would have wrongly rejected valid
+`Start`/`PreToolUse` payloads before they ever reached ARM. Fixed to accept
+all four values.
+
 ```bash
 az sre extension create -g myrg --agent-name myagent \
   --extension-type globalSettings --extension-name default --value '{}'

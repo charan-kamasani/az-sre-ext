@@ -44,7 +44,7 @@ Manage Azure SRE Agent resources -- the agent itself, what it can access, how it
 | `connector` | Connect an SRE Agent to an external data source it can query or act on. |
 | `endpoint` | Resolve the URL used to actually talk to an SRE Agent's data plane. |
 | `extension` | Manage an SRE Agent's low-level 'extension' resources directly. |
-| `hook` | Manage lifecycle hooks that inject a prompt at a specific agent event. |
+| `hook` | Manage lifecycle hooks that run a prompt or script at a specific agent event. |
 | `identity` | Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls. |
 | `instructions` | Manage the agent's always-on custom instructions. |
 | `knowledge` | Add files or web pages the agent can read and reason over. |
@@ -552,9 +552,9 @@ Show an SRE Agent extension.
 
 ## `az sre hook`
 
-Manage lifecycle hooks that inject a prompt at a specific agent event.
+Manage lifecycle hooks that run a prompt or script at a specific agent event.
 
-For example, running a prompt automatically when the agent is stopped.
+Fires on one of four lifecycle events -- Start, PreToolUse, PostToolUse, Stop -- and runs either an LLM prompt (nuanced validation) or a bash/ Python command/script (deterministic checks, policy enforcement, auditing). For example, blocking a dangerous shell command on PreToolUse, or validating response completeness on Stop. The portal's own "Create hook" dialog currently only exposes PostToolUse/Stop and prompt/command as a "Hook type" picker; Start/PreToolUse are API/YAML-only today (see sre.azure.com/docs/capabilities/agent-hooks), but this CLI supports all four since it talks to the same REST API v2.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -576,7 +576,7 @@ Create or update a hook.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Hook configuration as a JSON document, e.g. {"eventType": "Stop", "activationMode": "always", "description": "...", "hook": {"type": "prompt", "prompt": "..."}} -- top-level fields: eventType ("Stop" or "PostToolUse")/activationMode ("always" or "onDemand", lowercase)/description, plus a nested "hook" object: type ("prompt" or "command")/prompt/command/script/matcher/model/timeout/failMode/maxRejections/sources. Live-confirmed shape -- do not put hookType/prompt at the top level, they must be nested under "hook". |
+| `--value` | String | Yes |  |  | Hook configuration as a JSON document, e.g. {"eventType": "Stop", "activationMode": "always", "description": "...", "hook": {"type": "prompt", "prompt": "..."}} -- top-level fields: eventType ("Start", "PreToolUse", "PostToolUse", or "Stop")/activationMode ("always" or "onDemand", lowercase)/description, plus a nested "hook" object: type ("prompt" or "command")/prompt/command/script/matcher/model/timeout/failMode/maxRejections/sources. Live-confirmed shape -- do not put hookType/prompt at the top level, they must be nested under "hook". |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 ### `az sre hook delete`

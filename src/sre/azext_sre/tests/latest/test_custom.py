@@ -1024,7 +1024,12 @@ class SkillsShapeValidationTests(unittest.TestCase):
 class HooksShapeValidationTests(unittest.TestCase):
     """--extension-type hooks' inner shape is confirmed via sreagent-runtime
     Agent.Cli/Models/HookV2.cs's HookSpecV2/HookDefinitionModel, which carry
-    explicit JsonPropertyName wire-field attributes."""
+    explicit JsonPropertyName wire-field attributes. eventType's full set of
+    4 values (Start/PreToolUse/PostToolUse/Stop) is confirmed via the public
+    docs (sre.azure.com/docs/capabilities/agent-hooks) -- the portal UI only
+    exposes PostToolUse/Stop today, but the REST API v2 this CLI calls
+    supports all four, so client-side validation must not be narrower than
+    the real API."""
 
     def test_accepts_the_real_confirmed_example_payload(self):
         raw = json.dumps({
@@ -1041,6 +1046,12 @@ class HooksShapeValidationTests(unittest.TestCase):
         })
         encoded = _encode_extension_value(raw, "hooks")
         self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_accepts_start_and_pretooluse_event_types(self):
+        for event_type in ("Start", "PreToolUse"):
+            raw = json.dumps({"eventType": event_type})
+            encoded = _encode_extension_value(raw, "hooks")
+            self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
 
     def test_rejects_invalid_event_type(self):
         raw = json.dumps({"eventType": "NotAnEvent"})

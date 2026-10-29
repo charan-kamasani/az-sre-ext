@@ -2396,6 +2396,14 @@ def _validate_skills_shape(parsed):
 # [JsonPropertyName] attributes confirming camelCase wire field names
 # distinct from (but matching) the YAML aliases, the strongest evidence
 # available for any type this session.
+#
+# eventType: the official docs (sre.azure.com/docs/capabilities/agent-hooks)
+# confirm FOUR lifecycle events -- Start, PreToolUse, PostToolUse, Stop --
+# all configurable via the REST API v2 (which is what this CLI calls). The
+# portal UI currently only exposes PostToolUse/Stop in its own "Create hook"
+# dialog, but that's a portal UI limitation, not an API one -- restricting
+# this CLI's client-side validation to match the portal's subset would
+# incorrectly reject valid Start/PreToolUse hooks that the API accepts.
 def _validate_hooks_shape(parsed):
     if not isinstance(parsed, dict):
         raise CLIError(
@@ -2404,8 +2412,13 @@ def _validate_hooks_shape(parsed):
             "which carry explicit JsonPropertyName wire-field attributes)."
         )
     if "eventType" in parsed:
-        if not isinstance(parsed["eventType"], str) or parsed["eventType"] not in ("Stop", "PostToolUse"):
-            raise CLIError("--value.eventType must be \"Stop\" or \"PostToolUse\".")
+        if not isinstance(parsed["eventType"], str) or parsed["eventType"] not in (
+            "Start", "PreToolUse", "PostToolUse", "Stop",
+        ):
+            raise CLIError(
+                "--value.eventType must be one of \"Start\", \"PreToolUse\", "
+                "\"PostToolUse\", \"Stop\"."
+            )
     if "activationMode" in parsed:
         if not isinstance(parsed["activationMode"], str) or parsed["activationMode"] not in ("always", "onDemand"):
             raise CLIError("--value.activationMode must be \"always\" or \"onDemand\".")
@@ -3316,9 +3329,17 @@ class SkillDelete(_PinnedExtensionDelete):
 # ---- sre hook (portal: Extensions > Hooks) ----
 @register_command_group("sre hook")
 class _HookGroup(AAZCommandGroup):
-    """Manage lifecycle hooks that inject a prompt at a specific agent event.
+    """Manage lifecycle hooks that run a prompt or script at a specific agent event.
 
-    For example, running a prompt automatically when the agent is stopped.
+    Fires on one of four lifecycle events -- Start, PreToolUse, PostToolUse,
+    Stop -- and runs either an LLM prompt (nuanced validation) or a bash/
+    Python command/script (deterministic checks, policy enforcement,
+    auditing). For example, blocking a dangerous shell command on
+    PreToolUse, or validating response completeness on Stop. The portal's
+    own "Create hook" dialog currently only exposes PostToolUse/Stop and
+    prompt/command as a "Hook type" picker; Start/PreToolUse are
+    API/YAML-only today (see sre.azure.com/docs/capabilities/agent-hooks),
+    but this CLI supports all four since it talks to the same REST API v2.
     """
 
 
@@ -3332,13 +3353,13 @@ class HookCreate(_PinnedExtensionCreate):
         "Hook configuration as a JSON document, e.g. "
         "{\"eventType\": \"Stop\", \"activationMode\": \"always\", "
         "\"description\": \"...\", \"hook\": {\"type\": \"prompt\", "
-        "\"prompt\": \"...\"}} -- top-level fields: eventType (\"Stop\" or "
-        "\"PostToolUse\")/activationMode (\"always\" or \"onDemand\", "
-        "lowercase)/description, plus a nested \"hook\" object: type "
-        "(\"prompt\" or \"command\")/prompt/command/script/matcher/model/"
-        "timeout/failMode/maxRejections/sources. Live-confirmed shape -- "
-        "do not put hookType/prompt at the top level, they must be nested "
-        "under \"hook\"."
+        "\"prompt\": \"...\"}} -- top-level fields: eventType (\"Start\", "
+        "\"PreToolUse\", \"PostToolUse\", or \"Stop\")/activationMode "
+        "(\"always\" or \"onDemand\", lowercase)/description, plus a nested "
+        "\"hook\" object: type (\"prompt\" or \"command\")/prompt/command/"
+        "script/matcher/model/timeout/failMode/maxRejections/sources. "
+        "Live-confirmed shape -- do not put hookType/prompt at the top "
+        "level, they must be nested under \"hook\"."
     )
 
 
