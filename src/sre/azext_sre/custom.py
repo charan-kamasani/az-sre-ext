@@ -3253,6 +3253,135 @@ class ToolDelete(_PinnedExtensionDelete):
     _args_schema = None
 
 
+# ---- sre workflow (portal: Workflows tab) ----
+@register_command_group("sre workflow")
+class _WorkflowGroup(AAZCommandGroup):
+    """Manage agent workflow automations.
+
+    Covers scheduled tasks (run the agent on a timer) and HTTP triggers
+    (run the agent from an inbound webhook). Incident filters are a
+    separate, more complex extension type not yet wrapped here -- use
+    'az sre extension create --extension-type incidentFilters' directly
+    in the meantime. Incident handlers are a legacy predecessor to
+    incident filters that the service itself is migrating away from
+    (confirmed via its own 'DeleteLegacyIncidentHandlerDocument'/
+    'MigrateLegacyIncidentHandler' admin actions) -- intentionally not
+    exposed here to avoid steering anyone onto a deprecated path.
+    """
+
+
+@register_command_group("sre workflow scheduled-task")
+class _WorkflowScheduledTaskGroup(AAZCommandGroup):
+    """Manage scheduled tasks: run the agent on a timer (cron) against a
+    prompt, optionally bounded to a time window or a maximum run count."""
+
+
+@register_command("sre workflow scheduled-task create")
+class WorkflowScheduledTaskCreate(_PinnedExtensionCreate):
+    """Create or update a scheduled task."""
+
+    _EXTENSION_TYPE = "scheduledTasks"
+    _args_schema = None
+    _VALUE_HELP = (
+        "Scheduled task configuration as a JSON document. Fields: "
+        "\"cronExpression\" (standard 5-field cron, e.g. \"0 */6 * * *\" "
+        "for every 6 hours), \"agentPrompt\" (what to ask the agent each "
+        "run), \"description\", \"agent\" (name of a connected sub-agent "
+        "to target instead of the primary agent), \"threadId\" (continue "
+        "an existing conversation thread instead of starting a new one "
+        "each run -- confirmed via sreagent-runtime: leaving this unset "
+        "lets each run get its own thread, pinning it to a fixed value "
+        "reuses that one thread across every run (the portal's "
+        "\"Message grouping for updates\" dropdown is UI sugar over "
+        "this same field)), \"startTime\"/\"endTime\" (ISO 8601, bound the "
+        "schedule's active window), \"maxExecutions\" (stop after N "
+        "runs), \"notificationChannel\", \"modelTier\", \"agentMode\". "
+        "Example: {\"cronExpression\": \"0 9 * * 1-5\", \"agentPrompt\": "
+        "\"Summarize overnight alerts\", \"description\": \"Daily alert "
+        "digest\"}."
+    )
+
+
+@register_command("sre workflow scheduled-task show")
+class WorkflowScheduledTaskShow(_PinnedExtensionShow):
+    """Show a scheduled task."""
+
+    _EXTENSION_TYPE = "scheduledTasks"
+    _args_schema = None
+
+
+@register_command("sre workflow scheduled-task list")
+class WorkflowScheduledTaskList(_PinnedExtensionList):
+    """List scheduled tasks."""
+
+    _EXTENSION_TYPE = "scheduledTasks"
+    _args_schema = None
+
+
+@register_command(
+    "sre workflow scheduled-task delete",
+    confirmation="Are you sure you want to perform this operation?",
+)
+class WorkflowScheduledTaskDelete(_PinnedExtensionDelete):
+    """Delete a scheduled task."""
+
+    _EXTENSION_TYPE = "scheduledTasks"
+    _args_schema = None
+
+
+@register_command_group("sre workflow http-trigger")
+class _WorkflowHttpTriggerGroup(AAZCommandGroup):
+    """Manage HTTP triggers: run the agent against a prompt from an inbound
+    webhook call instead of a schedule."""
+
+
+@register_command("sre workflow http-trigger create")
+class WorkflowHttpTriggerCreate(_PinnedExtensionCreate):
+    """Create or update an HTTP trigger."""
+
+    _EXTENSION_TYPE = "httpTriggers"
+    _args_schema = None
+    _VALUE_HELP = (
+        "HTTP trigger configuration as a JSON document. Fields: "
+        "\"agentPrompt\" (what to ask the agent when the webhook fires), "
+        "\"description\", \"agent\" (name of a connected sub-agent to "
+        "target instead of the primary agent), \"threadId\" (continue an "
+        "existing conversation thread instead of starting a new one each "
+        "call -- same unset-vs-pinned behavior as scheduled-task's "
+        "threadId above), \"modelTier\", \"agentMode\". Example: "
+        "{\"agentPrompt\": "
+        "\"Investigate the attached alert payload\", \"description\": "
+        "\"Webhook from external monitor\"}."
+    )
+
+
+@register_command("sre workflow http-trigger show")
+class WorkflowHttpTriggerShow(_PinnedExtensionShow):
+    """Show an HTTP trigger."""
+
+    _EXTENSION_TYPE = "httpTriggers"
+    _args_schema = None
+
+
+@register_command("sre workflow http-trigger list")
+class WorkflowHttpTriggerList(_PinnedExtensionList):
+    """List HTTP triggers."""
+
+    _EXTENSION_TYPE = "httpTriggers"
+    _args_schema = None
+
+
+@register_command(
+    "sre workflow http-trigger delete",
+    confirmation="Are you sure you want to perform this operation?",
+)
+class WorkflowHttpTriggerDelete(_PinnedExtensionDelete):
+    """Delete an HTTP trigger."""
+
+    _EXTENSION_TYPE = "httpTriggers"
+    _args_schema = None
+
+
 # ---- sre skill (portal: Extensions > Skills / Skill builder) ----
 @register_command_group("sre skill")
 class _SkillGroup(AAZCommandGroup):

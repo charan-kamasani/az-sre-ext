@@ -309,6 +309,52 @@ az sre repo connect -g myrg --agent-name myagent \
   --repo-url https://dev.azure.com/myorg/myproject/_git/myrepo --provider AzureDevOps
 ```
 
+### `az sre workflow`: new group for scheduled tasks and HTTP triggers
+
+The portal's "Automation" tab (previously "Workflows" in an older nav)
+exposes four things: Scheduled tasks, HTTP triggers, Subagents, and
+Incident filters/handlers. All four turned out to already be generic
+`az sre extension` resource types (`scheduledTasks`, `httpTriggers`,
+`subagents`, `incidentFilters`/`incidentHandlers`), confirmed by reading
+`AgentExtensionsApiServiceExtensionTypesTests.cs`'s
+type-name-to-C#-model table in `AAPT-SREAgent-ControlPlane`.
+
+Added noun-specific wrappers (mirroring the `tool`/`repo` pattern) for
+the two simplest, well-defined, actively-supported types:
+
+- `az sre workflow scheduled-task create/show/list/delete` -- run the
+  agent on a cron schedule against a prompt.
+- `az sre workflow http-trigger create/show/list/delete` -- run the
+  agent from an inbound webhook call.
+
+Both live-verified end-to-end against `mytestagent`: created via CLI,
+confirmed showing up correctly in the portal's Automation tab (status,
+type, and for HTTP triggers the real `triggerUrl`), then deleted via
+CLI and confirmed gone from the portal.
+
+**Intentionally not wrapped (yet):**
+- `incidentFilters` -- a real, actively-developed type, but with a much
+  larger spec (20+ fields, nested ICM/AzMonitor settings) -- deferred to
+  a follow-up.
+- `incidentHandlers` -- confirmed **legacy/deprecated**: the control
+  plane has its own migration tooling
+  (`DeleteLegacyIncidentHandlerDocument`, `MigrateLegacyIncidentHandler`)
+  moving everyone onto `incidentFilters` instead. Deliberately not
+  exposed as a CLI create path so the CLI doesn't steer anyone onto a
+  deprecated pattern.
+- `subagents` -- the largest of the five: a full nested agent definition
+  (instructions, handoffs, tools, mcpTools, connectors, hooks, etc.),
+  essentially the same scope as `az sre agent create` itself. Deferred
+  to its own follow-up project.
+
+```bash
+az sre workflow scheduled-task create -g myrg --agent-name myagent \
+  -n daily-digest --value '{"cronExpression":"0 9 * * 1-5","agentPrompt":"Summarize overnight alerts"}'
+
+az sre workflow http-trigger create -g myrg --agent-name myagent \
+  -n alert-webhook --value '{"agentPrompt":"Investigate the attached alert payload"}'
+```
+
 ## Networking
 
 See [docs/networking.md](networking.md) for VNet injection and sandbox

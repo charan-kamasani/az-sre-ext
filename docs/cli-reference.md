@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **19 groups** and **59 commands**.
+Public surface: **22 groups** and **67 commands**.
 
 ## Important caveats
 
@@ -55,6 +55,7 @@ Manage Azure SRE Agent resources -- the agent itself, what it can access, how it
 | `skill` | Manage custom skills -- specialized capabilities the agent can use. |
 | `tool` | Manage custom tools the agent can call. |
 | `usage` | Read an SRE Agent's usage and billing stats. |
+| `workflow` | Manage agent workflow automations. |
 
 ## `az sre access`
 
@@ -1201,6 +1202,17 @@ Wraps the dedicated 'usages'/'dailyusages' read-only ARM child collections (conf
 
   `az sre usage list --agent-name myagent --resource-group myrg`
 
+## `az sre workflow`
+
+Manage agent workflow automations.
+
+Covers scheduled tasks (run the agent on a timer) and HTTP triggers (run the agent from an inbound webhook). Incident filters are a separate, more complex extension type not yet wrapped here -- use 'az sre extension create --extension-type incidentFilters' directly in the meantime. Incident handlers are a legacy predecessor to incident filters that the service itself is migrating away from (confirmed via its own 'DeleteLegacyIncidentHandlerDocument'/ 'MigrateLegacyIncidentHandler' admin actions) -- intentionally not exposed here to avoid steering anyone onto a deprecated path.
+
+| Subgroup | Summary |
+| --- | --- |
+| `http-trigger` | Manage HTTP triggers: run the agent against a prompt from an inbound |
+| `scheduled-task` | Manage scheduled tasks: run the agent on a timer (cron) against a |
+
 ## `az sre plugin install`
 
 Install a specific plugin from an already-connected marketplace.
@@ -1336,6 +1348,148 @@ Show a connected plugin marketplace.
 **Syntax**
 
 `az sre plugin marketplace show --agent-name <value> --resource-group <value> --name <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+
+## `az sre workflow http-trigger`
+
+Manage HTTP triggers: run the agent against a prompt from an inbound
+
+webhook call instead of a schedule.
+
+| Verb | Exact syntax |
+| --- | --- |
+| `create` | `az sre workflow http-trigger create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
+| `delete` | `az sre workflow http-trigger delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
+| `list` | `az sre workflow http-trigger list --agent-name <value> --resource-group <value>` |
+| `show` | `az sre workflow http-trigger show --agent-name <value> --resource-group <value> --name <value>` |
+
+### `az sre workflow http-trigger create`
+
+Create or update an HTTP trigger.
+
+**Syntax**
+
+`az sre workflow http-trigger create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--value` | String | Yes |  |  | HTTP trigger configuration as a JSON document. Fields: "agentPrompt" (what to ask the agent when the webhook fires), "description", "agent" (name of a connected sub-agent to target instead of the primary agent), "threadId" (continue an existing conversation thread instead of starting a new one each call -- same unset-vs-pinned behavior as scheduled-task's threadId above), "modelTier", "agentMode". Example: {"agentPrompt": "Investigate the attached alert payload", "description": "Webhook from external monitor"}. |
+| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
+
+### `az sre workflow http-trigger delete`
+
+Delete an HTTP trigger.
+
+**Syntax**
+
+`az sre workflow http-trigger delete --agent-name <value> --resource-group <value> --name <value> [--yes]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
+
+### `az sre workflow http-trigger list`
+
+List HTTP triggers.
+
+**Syntax**
+
+`az sre workflow http-trigger list --agent-name <value> --resource-group <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+### `az sre workflow http-trigger show`
+
+Show an HTTP trigger.
+
+**Syntax**
+
+`az sre workflow http-trigger show --agent-name <value> --resource-group <value> --name <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+
+## `az sre workflow scheduled-task`
+
+Manage scheduled tasks: run the agent on a timer (cron) against a
+
+prompt, optionally bounded to a time window or a maximum run count.
+
+| Verb | Exact syntax |
+| --- | --- |
+| `create` | `az sre workflow scheduled-task create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
+| `delete` | `az sre workflow scheduled-task delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
+| `list` | `az sre workflow scheduled-task list --agent-name <value> --resource-group <value>` |
+| `show` | `az sre workflow scheduled-task show --agent-name <value> --resource-group <value> --name <value>` |
+
+### `az sre workflow scheduled-task create`
+
+Create or update a scheduled task.
+
+**Syntax**
+
+`az sre workflow scheduled-task create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--value` | String | Yes |  |  | Scheduled task configuration as a JSON document. Fields: "cronExpression" (standard 5-field cron, e.g. "0 */6 * * *" for every 6 hours), "agentPrompt" (what to ask the agent each run), "description", "agent" (name of a connected sub-agent to target instead of the primary agent), "threadId" (continue an existing conversation thread instead of starting a new one each run -- confirmed via sreagent-runtime: leaving this unset lets each run get its own thread, pinning it to a fixed value reuses that one thread across every run (the portal's "Message grouping for updates" dropdown is UI sugar over this same field)), "startTime"/"endTime" (ISO 8601, bound the schedule's active window), "maxExecutions" (stop after N runs), "notificationChannel", "modelTier", "agentMode". Example: {"cronExpression": "0 9 * * 1-5", "agentPrompt": "Summarize overnight alerts", "description": "Daily alert digest"}. |
+| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
+
+### `az sre workflow scheduled-task delete`
+
+Delete a scheduled task.
+
+**Syntax**
+
+`az sre workflow scheduled-task delete --agent-name <value> --resource-group <value> --name <value> [--yes]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
+
+### `az sre workflow scheduled-task list`
+
+List scheduled tasks.
+
+**Syntax**
+
+`az sre workflow scheduled-task list --agent-name <value> --resource-group <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+### `az sre workflow scheduled-task show`
+
+Show a scheduled task.
+
+**Syntax**
+
+`az sre workflow scheduled-task show --agent-name <value> --resource-group <value> --name <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |

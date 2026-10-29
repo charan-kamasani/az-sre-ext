@@ -166,6 +166,22 @@ GROUP_EXAMPLES = {
         {"name": "List an agent's usage for the current month.",
          "text": "az sre usage list -g myrg --agent-name myagent"},
     ],
+    "sre workflow scheduled-task": [
+        {"name": "Run the agent on a timer against a prompt.",
+         "text": "az sre workflow scheduled-task create -g myrg --agent-name myagent "
+                 "-n daily-digest --value \"{cronExpression:'0 9 * * 1-5',agentPrompt:"
+                 "'Summarize overnight alerts'}\""},
+        {"name": "List an agent's scheduled tasks.",
+         "text": "az sre workflow scheduled-task list -g myrg --agent-name myagent"},
+    ],
+    "sre workflow http-trigger": [
+        {"name": "Create a webhook that runs the agent against a prompt.",
+         "text": "az sre workflow http-trigger create -g myrg --agent-name myagent "
+                 "-n alert-webhook --value \"{agentPrompt:'Investigate the attached "
+                 "alert payload'}\""},
+        {"name": "List an agent's HTTP triggers.",
+         "text": "az sre workflow http-trigger list -g myrg --agent-name myagent"},
+    ],
 }
 
 
