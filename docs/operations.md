@@ -247,6 +247,37 @@ the correct `type`/`template` fields; only the `--value` help text's
 example was stale and contradicted it. Fixed so the documented example
 now matches the validator and the real API.
 
+### `globalSettings.toolStatuses` is accepted but doesn't round-trip; `toolPermissions`/`approvalExpirationSetting` do
+
+Live-verified all three `globalSettings` fields on `mytestagent` via
+`az sre extension create --extension-type globalSettings`:
+
+- `toolPermissions` (`allow`/`ask`/`deny` arrays) -- **persists correctly**,
+  confirmed via `show` after `create`.
+- `approvalExpirationSetting` (`enabled`/`approvalExpirationInMinutes`) --
+  **persists correctly**, confirmed via `show` after `create`.
+- `toolStatuses` (`[{"name": ..., "enabled": ...}]`, enable/disable a
+  built-in tool) -- the PUT is accepted, unknown tool names are rejected
+  (`InvalidRequestParameterWithDetails: Unknown or custom built-in tool
+  name`, confirming real server-side name validation runs), but a
+  subsequent `show`/`list` always comes back with `toolStatuses: []`
+  regardless of what was sent, even for a known-valid name
+  (`AddTagToIncident` tested).
+
+Root cause (confirmed by reading `sreagent-runtime`'s
+`GlobalSettingsExtensionService.cs`): the real Cosmos document stores this
+under `toolConfigurations.toolOverrides` (not the ARM-facing
+`toolStatuses` name), and the read path (`MapSettings`) re-filters
+`toolOverrides` through a freshly-resolved "current built-in tool scope"
+set (`GetBuiltInScopeAsync`) -- any override whose tool name isn't in that
+live-resolved scope at *read* time is silently dropped from the response,
+even though the write passed an equivalent scope check moments earlier
+and was saved. This is a service-side behavior, not a CLI bug -- the CLI
+sends/validates the shape correctly. Net effect: **enabling/disabling
+built-in tools via `az sre extension create --extension-type
+globalSettings` is unreliable today**; use the portal's Built-in tools tab
+for that until confirmed fixed server-side.
+
 ## Networking
 
 See [docs/networking.md](networking.md) for VNet injection and sandbox
