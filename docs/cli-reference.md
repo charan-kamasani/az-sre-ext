@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **22 groups** and **67 commands**.
+Public surface: **23 groups** and **71 commands**.
 
 ## Important caveats
 
@@ -1206,11 +1206,12 @@ Wraps the dedicated 'usages'/'dailyusages' read-only ARM child collections (conf
 
 Manage agent workflow automations.
 
-Covers scheduled tasks (run the agent on a timer) and HTTP triggers (run the agent from an inbound webhook). Incident filters are a separate, more complex extension type not yet wrapped here -- use 'az sre extension create --extension-type incidentFilters' directly in the meantime. Incident handlers are a legacy predecessor to incident filters that the service itself is migrating away from (confirmed via its own 'DeleteLegacyIncidentHandlerDocument'/ 'MigrateLegacyIncidentHandler' admin actions) -- intentionally not exposed here to avoid steering anyone onto a deprecated path.
+Covers scheduled tasks (run the agent on a timer), HTTP triggers (run the agent from an inbound webhook), and incident filters (route matching incidents to a handling agent -- portal: "Incident Response Plans"). Subagents are a separate, much larger extension type (same scope as 'az sre agent create') not yet wrapped here -- use 'az sre extension create --extension-type subagents' directly in the meantime. Incident handlers are a legacy predecessor to incident filters that the service itself is migrating away from (confirmed via its own 'DeleteLegacyIncidentHandlerDocument'/ 'MigrateLegacyIncidentHandler' admin actions) -- intentionally not exposed here to avoid steering anyone onto a deprecated path. Release triggers, S360 triggers, and incident retrospectives are data-plane-only features of the agent's own runtime (confirmed via sreagent-runtime's Agent.Web v1 controllers) with no corresponding ARM resource -- they are out of scope for this ARM-based control-plane CLI entirely.
 
 | Subgroup | Summary |
 | --- | --- |
 | `http-trigger` | Manage HTTP triggers: run the agent against a prompt from an inbound |
+| `incident-filter` | Manage incident filters (portal: "Incident Response Plans"): match |
 | `scheduled-task` | Manage scheduled tasks: run the agent on a timer (cron) against a |
 
 ## `az sre plugin install`
@@ -1419,6 +1420,77 @@ Show an HTTP trigger.
 **Syntax**
 
 `az sre workflow http-trigger show --agent-name <value> --resource-group <value> --name <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+
+## `az sre workflow incident-filter`
+
+Manage incident filters (portal: "Incident Response Plans"): match
+
+incoming incidents by platform/title/team/etc. and route matches to a handling agent. Note: live create against a fresh sandbox agent was rejected in our testing with a generic "extension configuration is invalid" error even with a matching data connector configured -- this is consistent with needing real IcM/PagerDuty team-identity resolution the sandbox tenant doesn't have, not a shape problem (the same payload shape is used successfully by the service's own PagerDutySetupFixture.cs/ IcmSetupFixture.cs E2E tests). See _validate_incident_filters_shape in this file for the shape-level validation that does run locally.
+
+| Verb | Exact syntax |
+| --- | --- |
+| `create` | `az sre workflow incident-filter create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
+| `delete` | `az sre workflow incident-filter delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
+| `list` | `az sre workflow incident-filter list --agent-name <value> --resource-group <value>` |
+| `show` | `az sre workflow incident-filter show --agent-name <value> --resource-group <value> --name <value>` |
+
+### `az sre workflow incident-filter create`
+
+Create or update an incident filter.
+
+**Syntax**
+
+`az sre workflow incident-filter create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--value` | String | Yes |  |  | Incident filter configuration as a JSON document. Fields: "incidentPlatform" ("Icm", "AzMonitor", "PagerDuty", "ServiceNow"), "impactedService", "priorities" (array), "incidentTypes" (array; singular "incidentType" still accepted for compatibility), "alertId", "titleContains" (a single substring) OR "titleContainsAll"/"titleContainsAny" (arrays, AND/OR logic -- mutually exclusive with titleContains), "titleNotContains" (array; excludes a match even if other criteria hit, useful for a catch-all filter that should skip incidents already handled by a more specific filter), "agentMode", "handlingAgents" (array; singular "handlingAgent" still accepted), "owningTeamIds" (array; singular "owningTeamId" still accepted), "maxAutomatedInvestigationAttempts" (int -- after this many failed automated RCA attempts on a recurring alert, the agent asks the user for input instead of retrying forever), "mergeEnabled"/"mergeWindowHours" (AzMonitor-only: re-firing alerts merge into the existing thread instead of starting a new investigation, within a 1-24 hour cooldown window), "isEnabled", "icmFilterSettings" (Icm-only object: "monitorIds" (array), "createdBys" (array), "customField": {"customFieldId": <int>, "stringValue": <string>}, "assignableOnly"/"withOnCallRotationsOnly" (bool), "triggerEvents" (array, e.g. "IncidentCreatedOrTransferred", "DiscussionEntry", "IncidentMitigated", "IncidentReactivated", "IncidentResolved", "HitCountIncreased", "IncidentSeverityChanged" -- defaults to ["IncidentCreatedOrTransferred"]), "discussionEntryAuth" ("OnCallOnly" default, "TeamMembers", "AllowlistOnly"), "discussionEntryAllowlist" (array, additive on top of discussionEntryAuth)), "azMonitorFilterSettings" (AzMonitor-only object: "targetResourceType", "targetResource"). Example: {"incidentPlatform": "Icm", "titleContains": "disk space", "handlingAgents": ["storage-oncall-agent"], "isEnabled": true}. |
+| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
+
+### `az sre workflow incident-filter delete`
+
+Delete an incident filter.
+
+**Syntax**
+
+`az sre workflow incident-filter delete --agent-name <value> --resource-group <value> --name <value> [--yes]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
+
+### `az sre workflow incident-filter list`
+
+List incident filters.
+
+**Syntax**
+
+`az sre workflow incident-filter list --agent-name <value> --resource-group <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+### `az sre workflow incident-filter show`
+
+Show an incident filter.
+
+**Syntax**
+
+`az sre workflow incident-filter show --agent-name <value> --resource-group <value> --name <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |

@@ -182,6 +182,15 @@ GROUP_EXAMPLES = {
         {"name": "List an agent's HTTP triggers.",
          "text": "az sre workflow http-trigger list -g myrg --agent-name myagent"},
     ],
+    "sre workflow incident-filter": [
+        {"name": "Route incidents mentioning 'disk space' to a handling agent.",
+         "text": "az sre workflow incident-filter create -g myrg --agent-name myagent "
+                 "-n disk-space-filter --value \"{incidentPlatform:'Icm',"
+                 "titleContains:'disk space',handlingAgents:['storage-oncall-agent'],"
+                 "isEnabled:true}\""},
+        {"name": "List an agent's incident filters.",
+         "text": "az sre workflow incident-filter list -g myrg --agent-name myagent"},
+    ],
 }
 
 

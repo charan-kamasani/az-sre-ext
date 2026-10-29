@@ -3258,15 +3258,21 @@ class ToolDelete(_PinnedExtensionDelete):
 class _WorkflowGroup(AAZCommandGroup):
     """Manage agent workflow automations.
 
-    Covers scheduled tasks (run the agent on a timer) and HTTP triggers
-    (run the agent from an inbound webhook). Incident filters are a
-    separate, more complex extension type not yet wrapped here -- use
-    'az sre extension create --extension-type incidentFilters' directly
-    in the meantime. Incident handlers are a legacy predecessor to
-    incident filters that the service itself is migrating away from
-    (confirmed via its own 'DeleteLegacyIncidentHandlerDocument'/
+    Covers scheduled tasks (run the agent on a timer), HTTP triggers (run
+    the agent from an inbound webhook), and incident filters (route
+    matching incidents to a handling agent -- portal: "Incident Response
+    Plans"). Subagents are a separate, much larger extension type (same
+    scope as 'az sre agent create') not yet wrapped here -- use
+    'az sre extension create --extension-type subagents' directly in the
+    meantime. Incident handlers are a legacy predecessor to incident
+    filters that the service itself is migrating away from (confirmed via
+    its own 'DeleteLegacyIncidentHandlerDocument'/
     'MigrateLegacyIncidentHandler' admin actions) -- intentionally not
-    exposed here to avoid steering anyone onto a deprecated path.
+    exposed here to avoid steering anyone onto a deprecated path. Release
+    triggers, S360 triggers, and incident retrospectives are data-plane-only
+    features of the agent's own runtime (confirmed via sreagent-runtime's
+    Agent.Web v1 controllers) with no corresponding ARM resource -- they are
+    out of scope for this ARM-based control-plane CLI entirely.
     """
 
 
@@ -3379,6 +3385,95 @@ class WorkflowHttpTriggerDelete(_PinnedExtensionDelete):
     """Delete an HTTP trigger."""
 
     _EXTENSION_TYPE = "httpTriggers"
+    _args_schema = None
+
+
+@register_command_group("sre workflow incident-filter")
+class _WorkflowIncidentFilterGroup(AAZCommandGroup):
+    """Manage incident filters (portal: "Incident Response Plans"): match
+    incoming incidents by platform/title/team/etc. and route matches to a
+    handling agent.
+
+    Note: live create against a fresh sandbox agent was rejected in our
+    testing with a generic "extension configuration is invalid" error even
+    with a matching data connector configured -- this is consistent with
+    needing real IcM/PagerDuty team-identity resolution the sandbox tenant
+    doesn't have, not a shape problem (the same payload shape is used
+    successfully by the service's own PagerDutySetupFixture.cs/
+    IcmSetupFixture.cs E2E tests). See _validate_incident_filters_shape in
+    this file for the shape-level validation that does run locally.
+    """
+
+
+@register_command("sre workflow incident-filter create")
+class WorkflowIncidentFilterCreate(_PinnedExtensionCreate):
+    """Create or update an incident filter."""
+
+    _EXTENSION_TYPE = "incidentFilters"
+    _args_schema = None
+    _VALUE_HELP = (
+        "Incident filter configuration as a JSON document. Fields: "
+        "\"incidentPlatform\" (\"Icm\", \"AzMonitor\", \"PagerDuty\", "
+        "\"ServiceNow\"), \"impactedService\", \"priorities\" (array), "
+        "\"incidentTypes\" (array; singular \"incidentType\" still accepted "
+        "for compatibility), \"alertId\", \"titleContains\" (a single "
+        "substring) OR \"titleContainsAll\"/\"titleContainsAny\" (arrays, "
+        "AND/OR logic -- mutually exclusive with titleContains), "
+        "\"titleNotContains\" (array; excludes a match even if other "
+        "criteria hit, useful for a catch-all filter that should skip "
+        "incidents already handled by a more specific filter), "
+        "\"agentMode\", \"handlingAgents\" (array; singular "
+        "\"handlingAgent\" still accepted), \"owningTeamIds\" (array; "
+        "singular \"owningTeamId\" still accepted), "
+        "\"maxAutomatedInvestigationAttempts\" (int -- after this many "
+        "failed automated RCA attempts on a recurring alert, the agent "
+        "asks the user for input instead of retrying forever), "
+        "\"mergeEnabled\"/\"mergeWindowHours\" (AzMonitor-only: re-firing "
+        "alerts merge into the existing thread instead of starting a new "
+        "investigation, within a 1-24 hour cooldown window), \"isEnabled\", "
+        "\"icmFilterSettings\" (Icm-only object: \"monitorIds\" (array), "
+        "\"createdBys\" (array), \"customField\": {\"customFieldId\": "
+        "<int>, \"stringValue\": <string>}, \"assignableOnly\"/"
+        "\"withOnCallRotationsOnly\" (bool), \"triggerEvents\" (array, "
+        "e.g. \"IncidentCreatedOrTransferred\", \"DiscussionEntry\", "
+        "\"IncidentMitigated\", \"IncidentReactivated\", "
+        "\"IncidentResolved\", \"HitCountIncreased\", "
+        "\"IncidentSeverityChanged\" -- defaults to "
+        "[\"IncidentCreatedOrTransferred\"]), \"discussionEntryAuth\" "
+        "(\"OnCallOnly\" default, \"TeamMembers\", \"AllowlistOnly\"), "
+        "\"discussionEntryAllowlist\" (array, additive on top of "
+        "discussionEntryAuth)), \"azMonitorFilterSettings\" (AzMonitor-only "
+        "object: \"targetResourceType\", \"targetResource\"). Example: "
+        "{\"incidentPlatform\": \"Icm\", \"titleContains\": \"disk space\", "
+        "\"handlingAgents\": [\"storage-oncall-agent\"], \"isEnabled\": "
+        "true}."
+    )
+
+
+@register_command("sre workflow incident-filter show")
+class WorkflowIncidentFilterShow(_PinnedExtensionShow):
+    """Show an incident filter."""
+
+    _EXTENSION_TYPE = "incidentFilters"
+    _args_schema = None
+
+
+@register_command("sre workflow incident-filter list")
+class WorkflowIncidentFilterList(_PinnedExtensionList):
+    """List incident filters."""
+
+    _EXTENSION_TYPE = "incidentFilters"
+    _args_schema = None
+
+
+@register_command(
+    "sre workflow incident-filter delete",
+    confirmation="Are you sure you want to perform this operation?",
+)
+class WorkflowIncidentFilterDelete(_PinnedExtensionDelete):
+    """Delete an incident filter."""
+
+    _EXTENSION_TYPE = "incidentFilters"
     _args_schema = None
 
 

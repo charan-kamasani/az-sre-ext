@@ -309,7 +309,7 @@ az sre repo connect -g myrg --agent-name myagent \
   --repo-url https://dev.azure.com/myorg/myproject/_git/myrepo --provider AzureDevOps
 ```
 
-### `az sre workflow`: new group for scheduled tasks and HTTP triggers
+### `az sre workflow`: group for scheduled tasks, HTTP triggers, and incident filters
 
 The portal's "Automation" tab (previously "Workflows" in an older nav)
 exposes four things: Scheduled tasks, HTTP triggers, Subagents, and
@@ -320,22 +320,32 @@ Incident filters/handlers. All four turned out to already be generic
 type-name-to-C#-model table in `AAPT-SREAgent-ControlPlane`.
 
 Added noun-specific wrappers (mirroring the `tool`/`repo` pattern) for
-the two simplest, well-defined, actively-supported types:
+three of the five types:
 
 - `az sre workflow scheduled-task create/show/list/delete` -- run the
   agent on a cron schedule against a prompt.
 - `az sre workflow http-trigger create/show/list/delete` -- run the
   agent from an inbound webhook call.
+- `az sre workflow incident-filter create/show/list/delete` -- match
+  incoming incidents (by platform/title/team/etc.) and route matches to
+  a handling agent (portal: "Incident Response Plans").
 
-Both live-verified end-to-end against `mytestagent`: created via CLI,
-confirmed showing up correctly in the portal's Automation tab (status,
-type, and for HTTP triggers the real `triggerUrl`), then deleted via
-CLI and confirmed gone from the portal.
+Scheduled task and HTTP trigger were live-verified end-to-end against
+`mytestagent`: created via CLI, confirmed showing up correctly in the
+portal's Automation tab (status, type, and for HTTP triggers the real
+`triggerUrl`), then deleted via CLI and confirmed gone from the portal.
+
+Incident filter's local shape validation was live-verified (both a
+successful shape passing through to the server and a negative case
+rejected locally before any network call), but a full create round-trip
+against our sandbox agent was rejected server-side with a generic
+"The extension configuration is invalid" error. This is consistent with
+needing real IcM/PagerDuty team-identity resolution the sandbox tenant
+doesn't have -- not a shape problem: the same payload shape is used
+successfully by the service's own `PagerDutySetupFixture.cs`/
+`IcmSetupFixture.cs` E2E tests.
 
 **Intentionally not wrapped (yet):**
-- `incidentFilters` -- a real, actively-developed type, but with a much
-  larger spec (20+ fields, nested ICM/AzMonitor settings) -- deferred to
-  a follow-up.
 - `incidentHandlers` -- confirmed **legacy/deprecated**: the control
   plane has its own migration tooling
   (`DeleteLegacyIncidentHandlerDocument`, `MigrateLegacyIncidentHandler`)
@@ -347,12 +357,26 @@ CLI and confirmed gone from the portal.
   essentially the same scope as `az sre agent create` itself. Deferred
   to its own follow-up project.
 
+**Confirmed out of scope entirely (not ARM resources):** the portal's
+Release triggers, S360 triggers, and Incident Retrospective Response
+Plans are data-plane-only features of the agent's own runtime --
+confirmed via `sreagent-runtime`'s `Agent.Web` v1 controllers
+(`ReleaseTriggerController`, `S360Controller`) and the absence of any
+matching type in `AAPT-SREAgent-ControlPlane`'s extension-type table.
+`release-trigger` already has its own first-party CLI support in
+`srectl` (`Agent.Cli`'s `CommandBuilder.ReleaseTrigger.cs`), which talks
+to the data plane directly -- this ARM-based control-plane CLI
+correctly does not and should not add equivalents for any of these three.
+
 ```bash
 az sre workflow scheduled-task create -g myrg --agent-name myagent \
   -n daily-digest --value '{"cronExpression":"0 9 * * 1-5","agentPrompt":"Summarize overnight alerts"}'
 
 az sre workflow http-trigger create -g myrg --agent-name myagent \
   -n alert-webhook --value '{"agentPrompt":"Investigate the attached alert payload"}'
+
+az sre workflow incident-filter create -g myrg --agent-name myagent \
+  -n disk-space-filter --value '{"incidentPlatform":"Icm","titleContains":"disk space","handlingAgents":["storage-oncall-agent"],"isEnabled":true}'
 ```
 
 ## Networking
