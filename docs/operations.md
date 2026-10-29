@@ -186,6 +186,27 @@ incorrectly restrict `eventType` to only `("Stop", "PostToolUse")`
 `Start`/`PreToolUse` payloads before they ever reached ARM. Fixed to accept
 all four values.
 
+### `hook.failMode` is "Allow"/"Block", not "Allow"/"Deny"
+
+Live-probed against a real agent (`mytestagent`): `failMode` governs what
+happens if the **hook itself** errors or times out — it is not the hook's
+allow/deny decision output (that's returned separately by the hook's
+prompt/script). Confirmed accepted values are `"Allow"`/`"Block"`
+(case-insensitive); `"Deny"`, `"fail"`, and `"continue"` all look
+plausible but are rejected by the real API with a generic `"The extension
+configuration is invalid"` error that gives no hint about which field is
+wrong. The CLI now validates `failMode` client-side against the confirmed
+enum so this is caught immediately instead of surfacing as an opaque
+400 from ARM.
+
+**PowerShell note**: `az.cmd` on Windows mangles `--value '{"..."}'` JSON
+passed directly in PowerShell (quotes get eaten, and shell metacharacters
+like `&&` inside a `command` field get interpreted by cmd.exe before the
+JSON reaches the CLI). Reliable options: write the JSON to a file and pass
+`--value (Get-Content hook.json -Raw)`, or invoke via `subprocess.run([...],
+shell=False)` in Python. Avoid `&&`/`|`/`<`/`>` inside a hook's `command`
+field value on Windows for the same reason.
+
 ```bash
 az sre extension create -g myrg --agent-name myagent \
   --extension-type globalSettings --extension-name default --value '{}'

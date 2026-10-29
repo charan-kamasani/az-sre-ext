@@ -94,8 +94,10 @@ GROUP_EXAMPLES = {
     "sre hook": [
         {"name": "List an agent's hooks.",
          "text": "az sre hook list -g myrg --agent-name myagent"},
-        {"name": "Create a hook that runs on stop.",
-         "text": 'az sre hook create -g myrg --agent-name myagent -n on-stop --event Stop --prompt "Summarize this session"'},
+        {"name": "Create a prompt hook that runs on stop.",
+         "text": 'az sre hook create -g myrg --agent-name myagent -n on-stop --value '
+                 '\'{"eventType": "Stop", "activationMode": "always", "hook": '
+                 '{"type": "prompt", "prompt": "Summarize this session"}}\''},
     ],
     "sre identity": [
         {"name": "Show the managed identity assigned to an agent.",

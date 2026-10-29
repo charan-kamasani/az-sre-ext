@@ -1065,6 +1065,24 @@ class HooksShapeValidationTests(unittest.TestCase):
             _encode_extension_value(raw, "hooks")
         self.assertIn("--value.hook.type must be", str(raised.exception))
 
+    def test_accepts_allow_and_block_fail_modes(self):
+        # Live-probed against a real agent: failMode governs what happens
+        # if the hook itself errors/times out (not its allow/deny
+        # decision). Only "Allow"/"Block" (case-insensitive) are accepted.
+        for fail_mode in ("Allow", "allow", "Block", "block"):
+            raw = json.dumps({"hook": {"type": "command", "command": "exit 1", "failMode": fail_mode}})
+            encoded = _encode_extension_value(raw, "hooks")
+            self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_invalid_fail_mode(self):
+        # "Deny"/"fail"/"continue" look plausible but are rejected by the
+        # real API with a generic "extension configuration is invalid"
+        # error -- confirmed via live probing against a real agent.
+        raw = json.dumps({"hook": {"type": "command", "command": "exit 1", "failMode": "Deny"}})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "hooks")
+        self.assertIn("--value.hook.failMode must be", str(raised.exception))
+
 
 class ScheduledTasksShapeValidationTests(unittest.TestCase):
     """--extension-type scheduledTasks' inner shape is confirmed via

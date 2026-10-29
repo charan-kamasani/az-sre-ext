@@ -2429,7 +2429,15 @@ def _validate_hooks_shape(parsed):
             raise CLIError("--value.hook must be a JSON object.")
         if "type" in hook and (not isinstance(hook["type"], str) or hook["type"] not in ("prompt", "command")):
             raise CLIError("--value.hook.type must be \"prompt\" or \"command\".")
-        for str_field in ("prompt", "command", "script", "matcher", "model", "failMode"):
+        # failMode governs what happens if the hook itself errors/times out
+        # (NOT the hook's allow/deny decision output) -- live-probed against
+        # a real agent: "Allow"/"Block" (case-insensitive) are accepted,
+        # "Deny"/"fail"/"continue" are rejected by the real API with a
+        # generic "extension configuration is invalid" error.
+        if "failMode" in hook:
+            if not isinstance(hook["failMode"], str) or hook["failMode"].lower() not in ("allow", "block"):
+                raise CLIError("--value.hook.failMode must be \"Allow\" or \"Block\".")
+        for str_field in ("prompt", "command", "script", "matcher", "model"):
             _require_str(hook, str_field, "--value.hook")
         if "timeout" in hook and not isinstance(hook["timeout"], (int, float)):
             raise CLIError("--value.hook.timeout must be a number.")
@@ -3352,7 +3360,9 @@ class HookCreate(_PinnedExtensionCreate):
         "offers the latter two today)/activationMode "
         "(\"always\" or \"onDemand\", lowercase)/description, plus a nested "
         "\"hook\" object: type (\"prompt\" or \"command\")/prompt/command/"
-        "script/matcher/model/timeout/failMode/maxRejections/sources. "
+        "script/matcher/model/timeout/failMode (\"Allow\" or \"Block\" -- "
+        "what happens if the hook itself errors/times out, not its "
+        "decision)/maxRejections/sources. "
         "Live-confirmed shape -- do not put hookType/prompt at the top "
         "level, they must be nested under \"hook\"."
     )
