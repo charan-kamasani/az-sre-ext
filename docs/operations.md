@@ -220,6 +220,33 @@ See [docs/testing.md](testing.md#live-verification-workflow) for the
 round-trip (PUT then GET) technique used to confirm a shape, and why
 checking only for a 200 response is not sufficient proof.
 
+### `tool` discriminator is `type`, not `toolType`; `LinkTool` uses `template`, not `url`
+
+An earlier, now-fixed `az sre tool create --value` example suggested
+`{"toolType": "LinkTool", "url": "https://..."}`. That shape reaches ARM
+fine but fails downstream with an opaque `InternalServerError: Failed to
+create or update extension in Kubernetes` -- both field names are wrong.
+Confirmed against `sreagent-runtime`'s `ExtendedAgentToolApiModel`/
+`LinkToolApiModel` (the real agent runtime's wire models, a stricter
+source than the ARM control-plane proxy) and live-verified by creating a
+real `LinkTool` on `mytestagent`:
+
+- The polymorphic discriminator field is **`type`** (values: `KustoTool`,
+  `LinkTool`, `PythonTool`, `HttpClientTool`), not `toolType`.
+- `LinkTool`'s link field is **`template`**, not `url`. `url` is a real
+  field, but only on `HttpClientTool`.
+
+```bash
+az sre tool create -g myrg --agent-name myagent -n my-link-tool --value \
+  '{"type": "LinkTool", "name": "my-link-tool", "description": "Opens the docs", \
+    "template": "https://example.com/docs"}'
+```
+
+The CLI's `_validate_tools_shape` client-side validator already enforced
+the correct `type`/`template` fields; only the `--value` help text's
+example was stale and contradicted it. Fixed so the documented example
+now matches the validator and the real API.
+
 ## Networking
 
 See [docs/networking.md](networking.md) for VNet injection and sandbox

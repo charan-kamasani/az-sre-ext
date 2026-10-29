@@ -3187,8 +3187,19 @@ class ToolCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "tools"
     _args_schema = None
     _VALUE_HELP = (
-        "Tool configuration as a JSON document, e.g. "
-        "{\"toolType\": \"LinkTool\", \"url\": \"https://...\"}."
+        "Tool configuration as a JSON document. Discriminator field is "
+        "\"type\" (not \"toolType\"), one of: KustoTool/LinkTool/PythonTool/"
+        "HttpClientTool. Common fields: type/name/description/connector/"
+        "toolMode/parameters. Per-type fields -- LinkTool: \"template\" "
+        "(not \"url\") e.g. {\"type\": \"LinkTool\", \"name\": \"docs\", "
+        "\"description\": \"...\", \"template\": \"https://...\"}; "
+        "KustoTool: database/query/clusterHint; HttpClientTool: url/method/"
+        "body/headers/auth (this is the one type that really does use "
+        "\"url\"); PythonTool: functionCode/timeoutSeconds/dependencies/"
+        "authEnabled/authScopes. Live-confirmed shape -- "
+        "\"toolType\"/\"url\" at the top level (an earlier, now-fixed "
+        "example) silently fails server-side with an opaque "
+        "InternalServerError, only \"type\"/\"template\" works for LinkTool."
     )
 
 
