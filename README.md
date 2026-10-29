@@ -27,11 +27,12 @@ intentionally out of scope and why.
 
 ## Quick use
 
-Every noun below is a flat top-level group directly under `az sre` — there is
-no `az sre agent connector ...`-style nesting except where a resource
-genuinely only exists inside another one (`az sre plugin marketplace`/
-`az sre plugin install`). See [docs/cli-reference.md](docs/cli-reference.md)
-for the complete, always-current list.
+Every noun below is a flat top-level group directly under `az sre` — the only
+nesting is where a resource genuinely only exists inside another one
+(`az sre plugin marketplace`/`az sre plugin install`, `az sre workflow
+scheduled-task`/`http-trigger`/`incident-filter`, and `az sre agent
+settings`). See [docs/cli-reference.md](docs/cli-reference.md) for the
+complete, always-current list.
 
 The shortest useful walkthrough creates a disposable agent, grants a
 collaborator RBAC access to it, inspects its connection details, then removes
@@ -90,7 +91,8 @@ az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
 | `repo` | `connect` — one-step GitHub/Azure DevOps repo connect | Done, live-verified |
 | `tool` / `skill` / `hook` / `instructions` | `create`/`show`/`list`/`delete` (`skill create` also supports `--file-path SKILL.md`) | Done, live-verified |
 | `plugin marketplace` / `plugin install` | `create`/`show`/`list`/`delete` | Create/show live-verified; K8s-backed install provisioning not exercised in this sandbox |
-| `extension` | `create`/`show`/`list`/`delete --extension-type {...}` | Generic escape hatch behind every noun above plus `subagents`, `scheduledTasks`, `incidentFilters`, `incidentHandlers`, `httpTriggers`, `globalSettings` (no dedicated noun yet) |
+| `agent settings` | `show`/`update` — the agent's global settings (tool/skill permissions, custom instructions, approval-expiration) | Done, live-verified |
+| `workflow scheduled-task` / `workflow http-trigger` / `workflow incident-filter` | `create`/`show`/`list`/`delete` | Scheduled task and HTTP trigger live-verified end to end against the portal; incident filter shape-confirmed, live-create blocked by sandbox tenant limits (see [operations guide](docs/operations.md)) |
 
 Everything in this table is backed by the unit test suite described below, and
 most rows have also been exercised against real Azure resources by hand. The
