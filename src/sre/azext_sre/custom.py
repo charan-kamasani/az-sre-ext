@@ -2126,8 +2126,19 @@ def _extension_type_arg():
 # a payload is malformed until the data-plane cluster rejects it. We
 # tighten client-side only for shapes we've actually confirmed from real
 # source (see issue #13 -- 14 of 15 extension types confirmed via
-# sreagent-runtime authoritative source + live round-trips; only
-# 'subagents' remains unconfirmed, believed server/portal-managed).
+# sreagent-runtime authoritative source + live round-trips; 'subagents' is
+# now CONFIRMED not creatable this way: the portal's real "Create a custom
+# agent" dialog does not call this ARM-proxied ExtendedAgentView route at
+# all -- it PUTs a raw kubectl-apply-style YAML document (api_version:
+# azuresre.ai/v1, kind: AgentConfiguration, snake_case spec fields like
+# system_prompt/agent_type) directly to sreagent-runtime's
+# Agent.Web/Controllers/v1/ExtendedAgentController.cs's PUT api/v1/
+# extendedAgent/apply -- a data-plane-only endpoint this ARM-only CLI
+# cannot and should not call directly. A live test against mytestagent via
+# 'extension create --extension-type subagents' confirmed this: the
+# request does reach the data plane's ExtendedAgentView-shaped v2 route,
+# but is rejected with a generic error, consistent with that being the
+# wrong/unsupported schema for subagent creation).
 #
 # commonPrompts: CORRECTED after live verification against the real
 # mytestagent data-plane (2026-10-25). The earlier reading of
@@ -2739,12 +2750,16 @@ class ExtensionCreate(AAZCommand):
                 "For globalSettings, the confirmed shape is a JSON object "
                 "with optional toolPermissions/toolStatuses/skillStatuses/"
                 "customInstructions/approvalExpirationSetting fields. "
-                "14 of 15 extension types now have confirmed inner shapes "
+                "14 of 15 extension types have confirmed inner shapes "
                 "(source-cited in custom.py's _validate_*_shape functions; "
-                "12 also live-round-tripped against a real agent) -- only "
-                "'subagents' remains unconfirmed (believed server/portal-"
-                "managed, not CLI-creatable). See issue #13 for the full "
-                "findings and evidence."
+                "12 also live-round-tripped against a real agent). "
+                "'subagents' is CONFIRMED NOT CREATABLE via this ARM path: "
+                "the real agent-builder UI applies a raw YAML document "
+                "(kind: AgentConfiguration) directly to the agent's "
+                "data-plane 'PUT api/v1/extendedAgent/apply' endpoint, "
+                "which this ARM-only extension type never reaches -- use "
+                "the portal or srectl to create subagents instead. See "
+                "issue #13 for the full findings and evidence."
             ),
             required=True,
         )
@@ -3261,12 +3276,17 @@ class _WorkflowGroup(AAZCommandGroup):
     Covers scheduled tasks (run the agent on a timer), HTTP triggers (run
     the agent from an inbound webhook), and incident filters (route
     matching incidents to a handling agent -- portal: "Incident Response
-    Plans"). Subagents are a separate, much larger extension type (same
-    scope as 'az sre agent create') not yet wrapped here -- use
-    'az sre extension create --extension-type subagents' directly in the
-    meantime. Incident handlers are a legacy predecessor to incident
-    filters that the service itself is migrating away from (confirmed via
-    its own 'DeleteLegacyIncidentHandlerDocument'/
+    Plans"). Subagents are CONFIRMED NOT buildable here: the portal's real
+    "Create a custom agent" dialog bypasses the ARM extensions proxy
+    entirely and PUTs a raw YAML document (kind: AgentConfiguration)
+    straight to the agent's data-plane 'api/v1/extendedAgent/apply'
+    endpoint -- a route this ARM-only CLI never reaches (confirmed live:
+    'extension create --extension-type subagents' does reach the data
+    plane's ARM-proxied ExtendedAgentView route, but that is the wrong/
+    unsupported schema and is rejected). Use the portal or srectl to
+    create subagents instead. Incident handlers are a legacy predecessor
+    to incident filters that the service itself is migrating away from
+    (confirmed via its own 'DeleteLegacyIncidentHandlerDocument'/
     'MigrateLegacyIncidentHandler' admin actions) -- intentionally not
     exposed here to avoid steering anyone onto a deprecated path. Release
     triggers, S360 triggers, and incident retrospectives are data-plane-only

@@ -352,10 +352,19 @@ successfully by the service's own `PagerDutySetupFixture.cs`/
   moving everyone onto `incidentFilters` instead. Deliberately not
   exposed as a CLI create path so the CLI doesn't steer anyone onto a
   deprecated pattern.
-- `subagents` -- the largest of the five: a full nested agent definition
-  (instructions, handoffs, tools, mcpTools, connectors, hooks, etc.),
-  essentially the same scope as `az sre agent create` itself. Deferred
-  to its own follow-up project.
+- `subagents` -- **confirmed not buildable this way**: the portal's real
+  "Create a custom agent" dialog bypasses the ARM extensions proxy
+  entirely. Switching its UI to YAML view shows it PUTs a raw
+  `kubectl apply`-style YAML document (`kind: AgentConfiguration`,
+  snake_case fields like `system_prompt`/`agent_type`) directly to
+  `sreagent-runtime`'s `Agent.Web` `PUT api/v1/extendedAgent/apply` --
+  a data-plane-only endpoint this ARM-only CLI never reaches. A live
+  test confirmed `az sre extension create --extension-type subagents`
+  *does* reach the data plane (via the ARM-proxied `ExtendedAgentView`
+  v2 route), but is rejected -- consistent with that being the wrong,
+  unsupported schema for subagent creation. Use the portal or `srectl`
+  to create subagents instead; this is permanently out of scope for
+  `az sre workflow`, not merely deferred.
 
 **Confirmed out of scope entirely (not ARM resources):** the portal's
 Release triggers, S360 triggers, and Incident Retrospective Response
