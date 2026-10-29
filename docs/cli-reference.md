@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **20 groups** and **59 commands**.
+Public surface: **19 groups** and **59 commands**.
 
 ## Important caveats
 
@@ -41,8 +41,8 @@ Manage Azure SRE Agent resources -- the agent itself, what it can access, how it
 | --- | --- |
 | `access` | Control who can manage or use an SRE Agent. |
 | `agent` | Manage the core lifecycle of an SRE Agent resource. |
-| `connection` | Resolve the URL used to actually talk to an SRE Agent's data plane. |
 | `connector` | Connect an SRE Agent to an external data source it can query or act on. |
+| `endpoint` | Resolve the URL used to actually talk to an SRE Agent's data plane. |
 | `extension` | Manage an SRE Agent's low-level 'extension' resources directly. |
 | `hook` | Manage lifecycle hooks that inject a prompt at a specific agent event. |
 | `identity` | Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls. |
@@ -53,7 +53,6 @@ Manage Azure SRE Agent resources -- the agent itself, what it can access, how it
 | `plugin` | Manage community plugins that add skills, tools, and integrations. |
 | `repo` | Connect a code repository so the agent can read source during investigations. |
 | `skill` | Manage custom skills -- specialized capabilities the agent can use. |
-| `supported-agent-model` | List which AI model providers/names are available in a region. |
 | `tool` | Manage custom tools the agent can call. |
 | `usage` | Read an SRE Agent's usage and billing stats. |
 
@@ -130,6 +129,7 @@ Create, show, list, update, delete, start, and stop an agent.
 | `create` | `az sre agent create [--no-wait] --name <value> --resource-group <value> [--system-assigned <value>] [--user-assigned <json-or-@file>] [--action-configuration <json-or-@file>] [--agent-identity <json-or-@file>] [--default-model <json-or-@file>] [--incident-management-configuration <json-or-@file>] [--knowledge-graph-configuration <json-or-@file>] [--log-configuration <json-or-@file>] [--upgrade-channel {Preview,Stable}] --location <value> [--tags <json-or-@file>] [--grant-access-to-me {admin,user,author,reader}]` |
 | `delete` | `az sre agent delete [--no-wait] --name <value> --resource-group <value> [--yes]` |
 | `list` | `az sre agent list [--next-token <value>] [--max-items <value>] [--resource-group <value>]` |
+| `list-models` | `az sre agent list-models [--next-token <value>] [--max-items <value>] --location <value>` |
 | `show` | `az sre agent show --name <value> --resource-group <value>` |
 | `start` | `az sre agent start [--no-wait] --agent-name <value> --resource-group <value>` |
 | `stop` | `az sre agent stop [--no-wait] --agent-name <value> --resource-group <value>` |
@@ -196,6 +196,28 @@ List SRE Agents in a subscription or resource group.
 | `--next-token` | String | No |  |  | Token to specify where to start paginating. This is the token value from a previously truncated response. |
 | `--max-items` | String | No |  |  | Total number of items to return in the command's output. If the total number of items available is more than the value specified, a token is provided in the command's output. To resume pagination, provide the token value in `--next-token` argument of a subsequent command. |
 | `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+### `az sre agent list-models`
+
+List the model providers/names supported for new SRE Agents in a region.
+
+Use this before 'sre agent create' to confirm --default-model is supported in the region you're deploying to.
+
+**Syntax**
+
+`az sre agent list-models [--next-token <value>] [--max-items <value>] --location <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--next-token` | String | No |  |  | Token to specify where to start paginating. This is the token value from a previously truncated response. |
+| `--max-items` | String | No |  |  | Total number of items to return in the command's output. If the total number of items available is more than the value specified, a token is provided in the command's output. To resume pagination, provide the token value in `--next-token` argument of a subsequent command. |
+| `--location`, `-l` | String | Yes |  |  | Location. Values from: `az account list-locations`. You can configure the default location using `az configure --defaults location=<location>`. |
+
+**Examples**
+
+- See which models are available in East US
+
+  `az sre agent list-models --location eastus`
 
 ### `az sre agent show`
 
@@ -276,38 +298,6 @@ Place the CLI in a waiting state until a condition is met.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-
-## `az sre connection`
-
-Resolve the URL used to actually talk to an SRE Agent's data plane.
-
-Every agent has a control-plane (ARM) resource and a separate data-plane endpoint it runs on. Use 'sre connection show' to look up and save that live endpoint -- for example, before calling the agent directly or configuring another tool to talk to it.
-
-| Verb | Exact syntax |
-| --- | --- |
-| `show` | `az sre connection show --name <value> --resource-group <value> [--data-plane-audience <value>]` |
-
-### `az sre connection show`
-
-Resolve and save an SRE Agent's data-plane connection.
-
-Reads the agent's control-plane resource (ARM), extracts the 'agentEndpoint' property (the data-plane base URL, pattern 'https://{name}--{id}.{hash}.{region}.azuresre.ai' -- see running notes section 1a), and writes it to a local connections file for the separate, standalone data-plane 'sre' CLI to read. Mirrors 'az aks get-credentials' writing kubeconfig for kubectl: the control plane and data plane are two different CLIs/binaries by design (see running notes section 1), and this command is their only bridge.
-
-**Syntax**
-
-`az sre connection show --name <value> --resource-group <value> [--data-plane-audience <value>]`
-
-| Option / aliases | Type | Required | Default | Allowed values | Description |
-| --- | --- | --- | --- | --- | --- |
-| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent to connect to. |
-| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-plane-audience` | String | No | https://azuresre.dev |  | Audience used to request the data-plane access token. The data plane uses a separate token from the control plane -- see running notes section 1a. |
-
-**Examples**
-
-- Resolve and save the data-plane endpoint for an agent
-
-  `az sre connection show --agent-name myagent --resource-group myrg`
 
 ## `az sre connector`
 
@@ -450,6 +440,38 @@ Update an Agent Connector.
 | `--endpoint` | String | No |  |  | Endpoint of the connector |
 | `--extended-properties` | Dictionary | No |  |  | Additional properties for the data connector which can be used to store custom key-value pairs |
 | `--identity` | String | No |  |  | Identity used to access the data source |
+
+## `az sre endpoint`
+
+Resolve the URL used to actually talk to an SRE Agent's data plane.
+
+Every agent has a control-plane (ARM) resource and a separate data-plane endpoint it runs on. Use 'sre endpoint show' to look up and save that live endpoint -- for example, before calling the agent directly or configuring another tool to talk to it.
+
+| Verb | Exact syntax |
+| --- | --- |
+| `show` | `az sre endpoint show --name <value> --resource-group <value> [--data-plane-audience <value>]` |
+
+### `az sre endpoint show`
+
+Resolve and save an SRE Agent's data-plane connection.
+
+Reads the agent's control-plane resource (ARM), extracts the 'agentEndpoint' property (the data-plane base URL, pattern 'https://{name}--{id}.{hash}.{region}.azuresre.ai' -- see running notes section 1a), and writes it to a local connections file for the separate, standalone data-plane 'sre' CLI to read. Mirrors 'az aks get-credentials' writing kubeconfig for kubectl: the control plane and data plane are two different CLIs/binaries by design (see running notes section 1), and this command is their only bridge. Renamed from 'sre connection show' to 'sre endpoint show' per live naming feedback: seeing 'connection' and 'connector' listed next to each other in the command reference was a guaranteed source of confusion, and this command is really just resolving the agent's endpoint URL.
+
+**Syntax**
+
+`az sre endpoint show --name <value> --resource-group <value> [--data-plane-audience <value>]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent to connect to. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--data-plane-audience` | String | No | https://azuresre.dev |  | Audience used to request the data-plane access token. The data plane uses a separate token from the control plane -- see running notes section 1a. |
+
+**Examples**
+
+- Resolve and save the data-plane endpoint for an agent
+
+  `az sre endpoint show --agent-name myagent --resource-group myrg`
 
 ## `az sre extension`
 
@@ -1075,36 +1097,6 @@ Show a custom skill.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-
-## `az sre supported-agent-model`
-
-List which AI model providers/names are available in a region.
-
-Use this before 'sre agent create' to confirm --default-model-provider/--default-model-name is supported in the region you're deploying to.
-
-| Verb | Exact syntax |
-| --- | --- |
-| `list` | `az sre supported-agent-model list [--next-token <value>] [--max-items <value>] --location <value>` |
-
-### `az sre supported-agent-model list`
-
-List the model providers/names supported for new SRE Agents in a region.
-
-**Syntax**
-
-`az sre supported-agent-model list [--next-token <value>] [--max-items <value>] --location <value>`
-
-| Option / aliases | Type | Required | Default | Allowed values | Description |
-| --- | --- | --- | --- | --- | --- |
-| `--next-token` | String | No |  |  | Token to specify where to start paginating. This is the token value from a previously truncated response. |
-| `--max-items` | String | No |  |  | Total number of items to return in the command's output. If the total number of items available is more than the value specified, a token is provided in the command's output. To resume pagination, provide the token value in `--next-token` argument of a subsequent command. |
-| `--location`, `-l` | String | Yes |  |  | Location. Values from: `az account list-locations`. You can configure the default location using `az configure --defaults location=<location>`. |
-
-**Examples**
-
-- See which models are available in East US
-
-  `az sre supported-agent-model list --location eastus`
 
 ## `az sre tool`
 

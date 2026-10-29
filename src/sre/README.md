@@ -21,8 +21,8 @@ az sre agent create --resource-group <rg> --name <agent> --location eastus2
 az sre access grant --resource-group <rg> --agent-name <agent> \
   --role user --assignee someone@example.com
 
-# inspect connection details
-az sre connection show --resource-group <rg> --name <agent>
+# inspect endpoint details
+az sre endpoint show --resource-group <rg> --name <agent>
 
 # manage data connectors
 az sre connector create --resource-group <rg> --agent-name <agent> \

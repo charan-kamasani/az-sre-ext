@@ -922,11 +922,13 @@ class IdentityShow(_GeneratedIdentityShow):
 
 
 # --------------------------------------------------------------------------------------------
-# "sre supported-agent-model" -- lists which default-model providers/names
-# are available in a given Azure region, i.e. the real values accepted by
-# 'sre agent create --default-model-provider/--default-model-name'. Kept
-# as its own top-level noun (not folded into 'sre agent') since it is a
-# read-only region/location lookup, not an agent-lifecycle operation.
+# "sre agent list-models" -- lists which default-model providers/names are
+# available in a given Azure region, i.e. the real values accepted by
+# 'sre agent create --default-model'. Originally its own top-level
+# 'sre supported-agent-model' noun; folded into 'sre agent' and renamed to
+# 'list-models' per live naming feedback ("supported-agent-model" read as
+# too long/awkward, and the command is really just "what models can I use
+# when creating an agent" -- same pattern as 'az account list-locations').
 # Registered here (rather than left as the raw generated
 # 'app supported-agent-model' recipe) purely to fix a real, observed bug:
 # commands.py's blanket "app " -> "sre " rename only touches the command/
@@ -936,22 +938,15 @@ class IdentityShow(_GeneratedIdentityShow):
 # blank, unhelpful '--help' (confirmed live: 'az sre supported-agent-model
 # -h' showed no description at all before this fix).
 # --------------------------------------------------------------------------------------------
-@register_command_group("sre supported-agent-model")
-class _SupportedAgentModelGroup(AAZCommandGroup):
-    """List which AI model providers/names are available in a region.
-
-    Use this before 'sre agent create' to confirm
-    --default-model-provider/--default-model-name is supported in the
-    region you're deploying to.
-    """
-
-
-@register_command("sre supported-agent-model list")
+@register_command("sre agent list-models")
 class SupportedAgentModelList(_GeneratedSupportedAgentModelList):
     """List the model providers/names supported for new SRE Agents in a region.
 
+    Use this before 'sre agent create' to confirm --default-model is
+    supported in the region you're deploying to.
+
     :example: See which models are available in East US
-        az sre supported-agent-model list --location eastus
+        az sre agent list-models --location eastus
     """
 
     _args_schema = None
@@ -1500,7 +1495,7 @@ class Stop(_GeneratedStop):
     """Stop a running SRE Agent."""
 
 
-@register_command("sre connection show")
+@register_command("sre endpoint show")
 class GetConnection(AAZCommand):
     """Resolve and save an SRE Agent's data-plane connection.
 
@@ -1513,8 +1508,14 @@ class GetConnection(AAZCommand):
     plane and data plane are two different CLIs/binaries by design (see
     running notes section 1), and this command is their only bridge.
 
+    Renamed from 'sre connection show' to 'sre endpoint show' per live
+    naming feedback: seeing 'connection' and 'connector' listed next to
+    each other in the command reference was a guaranteed source of
+    confusion, and this command is really just resolving the agent's
+    endpoint URL.
+
     :example: Resolve and save the data-plane endpoint for an agent
-        az sre connection show --agent-name myagent --resource-group myrg
+        az sre endpoint show --agent-name myagent --resource-group myrg
     """
 
     _args_schema = None
@@ -1687,12 +1688,12 @@ class _AccessGroup(AAZCommandGroup):
     """
 
 
-@register_command_group("sre connection")
-class _ConnectionGroup(AAZCommandGroup):
+@register_command_group("sre endpoint")
+class _EndpointGroup(AAZCommandGroup):
     """Resolve the URL used to actually talk to an SRE Agent's data plane.
 
     Every agent has a control-plane (ARM) resource and a separate
-    data-plane endpoint it runs on. Use 'sre connection show' to look up
+    data-plane endpoint it runs on. Use 'sre endpoint show' to look up
     and save that live endpoint -- for example, before calling the agent
     directly or configuring another tool to talk to it.
     """

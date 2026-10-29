@@ -1830,12 +1830,12 @@ class CommandRegistrationTests(unittest.TestCase):
         expected = [
             "sre agent create", "sre agent update", "sre agent show",
             "sre agent list", "sre agent delete", "sre agent start",
-            "sre agent stop", "sre connection show", "sre usage list",
+            "sre agent stop", "sre endpoint show", "sre usage list",
             "sre access grant", "sre access revoke", "sre network update",
             "sre connector create", "sre connector show", "sre connector list",
             "sre connector update", "sre connector delete", "sre connector list-secret",
             "sre identity assign", "sre identity remove", "sre identity show",
-            "sre supported-agent-model list",
+            "sre agent list-models",
             "sre managed-resource grant", "sre managed-resource revoke", "sre managed-resource list",
             "sre extension create", "sre extension show",
             "sre extension list", "sre extension delete",
@@ -2121,9 +2121,9 @@ class ConnectorListSecretAliasTests(unittest.TestCase):
 
 
 class IdentityAndSupportedAgentModelRegistrationTests(unittest.TestCase):
-    """'sre identity'/'sre supported-agent-model' are thin re-registrations
+    """'sre identity'/'sre agent list-models' are thin re-registrations
     of generated recipes (promoted out of the retired 'sre agent identity'
-    subgroup / fixed-up from the raw 'app supported-agent-model' group) --
+    subgroup / 'sre supported-agent-model list' folded into 'sre agent') --
     just confirms their schemas build without error under the new names."""
 
     def test_identity_assign_schema_builds(self):
@@ -2326,7 +2326,7 @@ class DefaultSystemIdentityTests(unittest.TestCase):
 
 
 class ConnectionShowDefaultAudienceTests(unittest.TestCase):
-    """Real bug found live: 'az sre connection show' (no --data-plane-audience
+    """Real bug found live: 'az sre endpoint show' (no --data-plane-audience
     override) rendered 'dataPlaneAudience' in its JSON output as
     '{"isDefault": true}' instead of the actual URL string. Root cause: an
     unset AAZStrArg with a declared `default=` resolves through

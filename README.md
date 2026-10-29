@@ -65,10 +65,10 @@ az sre access grant \
   --assignee someone@example.com
 ```
 
-Inspect the agent's connection info and clean up:
+Inspect the agent's endpoint info and clean up:
 
 ```bash
-az sre connection show --resource-group "$RG" --name "$AGENT"
+az sre endpoint show --resource-group "$RG" --name "$AGENT"
 
 az sre agent delete --resource-group "$RG" --name "$AGENT" --yes
 az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
@@ -78,11 +78,11 @@ az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
 
 | Group | Example commands | Status |
 |---|---|---|
-| `agent` | `create`/`show`/`list`/`update`/`delete`/`start`/`stop`/`wait` | Done, live-verified |
+| `agent` | `create`/`show`/`list`/`update`/`delete`/`start`/`stop`/`wait`/`list-models --location <value>` | Done, live-verified |
 | `access` | `grant`/`revoke --role admin\|user\|author\|reader [--assignee\|--assignee-me]` | Done, live-verified, regression-tested |
 | `managed-resource` | `grant`/`revoke`/`list` — grants the agent's own identity Reader + Monitoring Contributor on an external scope | Done, live-verified |
 | `identity` | `assign`/`show`/`remove` (system/user-assigned) | Done, live-verified |
-| `connection` | `show` — resolves the agent's data-plane URL | Done, live-verified |
+| `endpoint` | `show` — resolves the agent's data-plane URL | Done, live-verified |
 | `usage` | `list [--daily]` — token/request usage stats | Done, live-verified |
 | `network` | `update` (VNet injection, sandbox egress) | Done — hand-written against the real `2026-11-01-preview` api-version, no public Swagger exists for it yet |
 | `connector` | `create`/`update`/`delete`/`list`/`show`/`list-secret` | Done, live-verified against a real Kusto cluster + Mcp/Knowledge connector types |
@@ -91,7 +91,6 @@ az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
 | `tool` / `skill` / `hook` / `instructions` | `create`/`show`/`list`/`delete` (`skill create` also supports `--file-path SKILL.md`) | Done, live-verified |
 | `plugin marketplace` / `plugin install` | `create`/`show`/`list`/`delete` | Create/show live-verified; K8s-backed install provisioning not exercised in this sandbox |
 | `extension` | `create`/`show`/`list`/`delete --extension-type {...}` | Generic escape hatch behind every noun above plus `subagents`, `scheduledTasks`, `incidentFilters`, `incidentHandlers`, `httpTriggers`, `globalSettings` (no dedicated noun yet) |
-| `supported-agent-model` | `list --location <value>` | Done, live-verified |
 
 Everything in this table is backed by the unit test suite described below, and
 most rows have also been exercised against real Azure resources by hand. The

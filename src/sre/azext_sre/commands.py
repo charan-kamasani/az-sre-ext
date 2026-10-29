@@ -72,14 +72,19 @@ def load_command_table(self, _):  # pylint: disable=unused-argument
     # flagged directly in manager feedback: 'sre agent connector *'
     # duplicates the top-level 'sre connector' noun, 'sre agent identity *'
     # has been promoted to the top-level 'sre identity' noun instead (see
-    # custom.py), and 'sre agent list-connectors-with-secret' is replaced
-    # by the top-level 'sre connector list-secret'. Every one of these was
-    # confirmed, live, to render with a *blank* '--help' description too
-    # (see custom.py's '_SupportedAgentModelGroup' comment for why), so
+    # custom.py), 'sre agent list-connectors-with-secret' is replaced by the
+    # top-level 'sre connector list-secret', and 'sre supported-agent-model
+    # list' is replaced by 'sre agent list-models' (folded into the 'agent'
+    # group per live naming feedback). Every one of these was confirmed,
+    # live, to render with a *blank* '--help' description too (a generated
+    # group/command that is blanket-renamed from 'app ' to 'sre ' above but
+    # never re-registered under its new name via @register_command/
+    # @register_command_group never gets a help-registry entry), so
     # removing them also removes a second, independent source of confusion.
     _retired_command_prefixes = (
         "sre agent connector",
         "sre agent identity",
+        "sre supported-agent-model",
     )
     _retired_commands = (
         "sre agent list-connectors-with-secret",

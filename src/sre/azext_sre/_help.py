@@ -72,10 +72,12 @@ GROUP_EXAMPLES = {
                    '--default-model "{provider:anthropic,name:claude-sonnet-4-5}"')},
         {"name": "Show one agent's details.",
          "text": "az sre agent show -g myrg -n myagent"},
+        {"name": "List supported model providers/names in a region.",
+         "text": "az sre agent list-models -l eastus2"},
     ],
-    "sre connection": [
+    "sre endpoint": [
         {"name": "Resolve and save an agent's data-plane endpoint.",
-         "text": "az sre connection show -g myrg --agent-name myagent"},
+         "text": "az sre endpoint show -g myrg --agent-name myagent"},
     ],
     "sre connector": [
         {"name": "List an agent's connectors, including OAuth consent status.",
@@ -151,10 +153,6 @@ GROUP_EXAMPLES = {
          "text": "az sre skill list -g myrg --agent-name myagent"},
         {"name": "Author a custom skill from an SKILL.md file.",
          "text": "az sre skill create -g myrg --agent-name myagent -n triage-skill --file-path ./SKILL.md"},
-    ],
-    "sre supported-agent-model": [
-        {"name": "List supported model providers/names in a region.",
-         "text": "az sre supported-agent-model list -l eastus2"},
     ],
     "sre tool": [
         {"name": "List an agent's custom tools.",
