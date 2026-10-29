@@ -95,9 +95,12 @@ az sre connector list-secret -g myrg --agent-name myagent \
 az sre connector delete -g myrg --agent-name myagent --name my-kusto-connector -y
 ```
 
-`--data-source` is required for `Kusto` connectors (learned from a real
-server error, not documented in the generated help). `dataSource` and
-`identity` are write-only on the wire — they never come back on `show`/
+`--data-connector-type` also accepts the product's own friendly names
+(`"Azure Data Explorer"`, `"Custom MCP"`, `"Office 365 Outlook"`, etc. — see
+the friendly-names table below), case-insensitively, as an alias for the
+raw wire value. `--data-source` is required for `Kusto` connectors (learned
+from a real server error, not documented in the generated help). `dataSource`
+and `identity` are write-only on the wire — they never come back on `show`/
 `list`/`list-secret`, even for the connector that owns them; this is
 confirmed server behavior, not a CLI omission.
 
@@ -118,6 +121,54 @@ az sre connector create -g myrg --agent-name myagent \
 az sre knowledge create -g myrg --agent-name myagent \
   --name my-notes --type text --file-path ./notes.md
 ```
+
+### Friendly names
+
+Each `--data-connector-type` value also has an official product name (from
+the portal's own i18n strings, `sreagent-runtime`'s
+`Agent.Web/Client/src/src/Strings/SREAgentResources.ts`) that the CLI now
+accepts as an alias, case-insensitively, alongside the raw wire value:
+
+| Wire value (`--data-connector-type`) | Friendly name (also accepted) |
+|---|---|
+| `Kusto` | Azure Data Explorer |
+| `KustoClient` | Azure Data Explorer (via the Azure MCP server) — product UX shows the same "Azure Data Explorer" name as plain `Kusto`; disambiguated here as "Azure Data Explorer MCP" since the CLI needs one alias per wire value |
+| `Mcp` | Custom MCP / User provided connector |
+| `Outlook` | Office 365 Outlook |
+| `Teams` | Microsoft Teams |
+| `Icm` | Microsoft IcM |
+| `Dgrep` | Microsoft DGrep |
+
+`KnowledgeText`/`KnowledgeFile`/`KnowledgeWebPage`/`KnowledgeRepository`
+have no separate portal-facing connector name — they're reached through the
+dedicated `sre knowledge create`/`sre repo connect` nouns instead, not typed
+in directly by most users.
+
+### Connector Gateway: what this CLI can and can't reach
+
+The agent genuinely integrates with Azure's real **Connector Namespace /
+Connector Gateway** platform (`connectors.azure.com`) — confirmed by reading
+`sreagent-runtime`'s own source (`ConnectorGatewayArmClient.cs`,
+`ConnectorGatewayMcpSyncService.cs`, `ConnectorType.ts`), not assumed. That
+platform's catalog is much larger than the list above: 30+ managed
+connectors (Jira, Slack, SharePoint, SQL Server, Key Vault, Service Bus,
+Confluence, GitLab, GitHub, Azure DevOps, and more, each suffixed `*CG` in
+the runtime's `ConnectorType` enum), each exposed to the agent as an MCP
+tool once configured.
+
+**None of those `*CG` connectors are reachable through the ARM control
+plane this CLI talks to.** The 7 types in the table above (plus the 4
+knowledge types) are the complete, confirmed set the real swagger/ARM-proxy
+route accepts (`KnownDataConnectorTypes.cs`/`DataConnectorValidator.cs`).
+The larger Connector Gateway catalog is wired up entirely through the
+agent's own data-plane connector wizard in the portal — there is no public
+ARM action to create, list, or manage a Connector-Gateway-backed connector
+today. This is a real, confirmed platform boundary, not a CLI gap to be
+fixed by renaming or adding more `--data-connector-type` values: adding
+`Jira`/`Slack`/`SharePoint` etc. as CLI-accepted values today would
+immediately fail server-side, because the ARM-exposed resource genuinely
+doesn't support them yet. Revisit this once/if the Connector Gateway
+control plane grows a public ARM surface.
 
 ### Per-`--data-connector-type` live-verification status
 

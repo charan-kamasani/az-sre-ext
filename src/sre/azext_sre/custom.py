@@ -452,6 +452,39 @@ DATA_CONNECTOR_TYPES = {
     "knowledgerepository": "KnowledgeRepository",
 }
 
+# Friendly-name aliases for the same wire values above, so users can type
+# the name the portal/product actually shows instead of memorizing internal
+# enum casing (Paul's shape-review feedback: "the developer should choose
+# the backend they want to use, not decode implementation terminology").
+# Confirmed against sreagent-runtime's own portal i18n strings (the
+# authoritative source for what the product calls each connector), not
+# invented: `Agent.Web/Client/src/src/Strings/SREAgentResources.ts` ->
+# azureDataExplorer/azureMcpKusto: "Azure Data Explorer",
+# userProvidedConnector: "User provided connector" (shown for the generic
+# "Mcp" type -- Paul's suggested "Custom MCP" label), office365Outlook:
+# "Office 365 Outlook", microsoftTeams: "Microsoft Teams", microsoftIcm:
+# "Microsoft IcM", microsoftDGrep: "Microsoft DGrep". Also confirmed via
+# `ConnectorType.ts`'s `getEffectiveConnectorType`: "KustoClient" is the
+# wire value the service persists for what the portal UX presents as
+# "Azure Data Explorer" reached through the Azure MCP server -- same
+# product-facing name as plain "Kusto", disambiguated here by an "mcp"
+# suffix since the CLI needs one alias per wire value.
+DATA_CONNECTOR_TYPE_ALIASES = {
+    "azure data explorer": "Kusto",
+    "azuredataexplorer": "Kusto",
+    "azure data explorer mcp": "KustoClient",
+    "azure data explorer (mcp)": "KustoClient",
+    "custom mcp": "Mcp",
+    "custom mcp server": "Mcp",
+    "user provided connector": "Mcp",
+    "office 365 outlook": "Outlook",
+    "microsoft outlook": "Outlook",
+    "microsoft teams": "Teams",
+    "microsoft icm": "Icm",
+    "incident manager": "Icm",
+    "microsoft dgrep": "Dgrep",
+}
+
 # Connector types that do not require --data-source at all (the data-plane
 # validator exempts them -- see DataConnectorValidator.cs
 # IsKnowledgeConnectorType). Used only to keep --help accurate; the CLI
@@ -468,11 +501,15 @@ KNOWLEDGE_DATA_CONNECTOR_TYPES = {
 def _normalize_data_connector_type(value):
     if value is None:
         return value
-    normalized = DATA_CONNECTOR_TYPES.get(str(value).strip().lower())
+    key = str(value).strip().lower()
+    normalized = DATA_CONNECTOR_TYPES.get(key) or DATA_CONNECTOR_TYPE_ALIASES.get(key)
     if normalized is None:
         raise CLIError(
             "--data-connector-type must be one of: "
             + ", ".join(sorted(DATA_CONNECTOR_TYPES))
+            + " (friendly names like 'Azure Data Explorer', 'Custom MCP', "
+            "'Office 365 Outlook', 'Microsoft Teams', 'Microsoft IcM', "
+            "'Microsoft DGrep' also accepted)"
             + f" (got '{value}')."
         )
     return normalized
@@ -482,12 +519,21 @@ def _normalize_data_connector_type(value):
 class _ConnectorGroup(AAZCommandGroup):
     """Connect an SRE Agent to an external data source it can query or act on.
 
-    Supports Kusto/Azure Data Explorer, MCP servers (GitHub, PagerDuty,
-    ServiceNow, Datadog, Splunk, and other custom MCP servers), Outlook,
-    Teams, ICM (incident management), Dgrep, and knowledge sources
-    (text/file/web page/repository). Use 'sre connector create' to add one,
-    'sre connector list'/'sre connector show' to see what's connected
-    (including OAuth consent status for connectors that need a sign-in).
+    Supports Azure Data Explorer/Kusto (direct or via the Azure MCP server),
+    Custom MCP servers (GitHub, PagerDuty, ServiceNow, Datadog, Splunk, and
+    other MCP-compatible endpoints), Office 365 Outlook, Microsoft Teams,
+    Microsoft IcM (incident management), Microsoft DGrep, and knowledge
+    sources (text/file/web page/repository). Use 'sre connector create' to
+    add one, 'sre connector list'/'sre connector show' to see what's
+    connected (including OAuth consent status for connectors that need a
+    sign-in).
+
+    Note: this only covers the fixed, ARM-reachable connector catalog listed
+    above. The portal's much larger Connector Gateway catalog (Jira, Slack,
+    SharePoint, SQL Server, Key Vault, and 30+ others at connectors.azure.com)
+    is a real, separate platform the agent also integrates with, but it has
+    no public control-plane API yet -- those connectors can only be created
+    through the portal today, not this CLI. See docs/operations.md.
     """
 
 
@@ -509,18 +555,22 @@ class _DataConnectorTypeArgMixin:
         # existing ._help dict rather than replace it.
         if data_connector_type is not None and isinstance(getattr(data_connector_type, "_help", None), dict):
             data_connector_type._help["short-summary"] = (
-                "Type of the data connector. Real API values: 'Kusto' "
-                "(covers Azure Data Explorer, App Insights, and Log "
-                "Analytics -- differentiated by --data-source, not a "
-                "separate type), 'Mcp' (PagerDuty/ServiceNow/Datadog/Splunk/"
-                "S360/Ev2/etc. -- differentiated by endpoint, not a "
-                "separate type), 'Outlook', 'Teams', 'Icm' (singleton per "
-                "agent), 'KustoClient' (Kusto via the @azure/mcp server; "
-                "no --data-source needed), 'Dgrep' (singleton per agent), "
-                "and four knowledge-item types that need --extended-"
-                "properties instead of --data-source: 'KnowledgeText', "
-                "'KnowledgeFile', 'KnowledgeWebPage', 'KnowledgeRepository'."
-                " Case-insensitive."
+                "Type of the data connector. Real API values (friendly "
+                "product name in parentheses, both accepted): 'Kusto' "
+                "(Azure Data Explorer -- also covers App Insights/Log "
+                "Analytics, differentiated by --data-source, not a "
+                "separate type), 'Mcp' (Custom MCP -- PagerDuty/ServiceNow/"
+                "Datadog/Splunk/S360/Ev2/etc., differentiated by endpoint, "
+                "not a separate type), 'Outlook' (Office 365 Outlook), "
+                "'Teams' (Microsoft Teams), 'Icm' (Microsoft IcM, singleton "
+                "per agent), 'KustoClient' (Azure Data Explorer via the "
+                "Azure MCP server; no --data-source needed), 'Dgrep' "
+                "(Microsoft DGrep, singleton per agent), and four "
+                "knowledge-item types that need --extended-properties "
+                "instead of --data-source: 'KnowledgeText', 'KnowledgeFile', "
+                "'KnowledgeWebPage', 'KnowledgeRepository'. Case-insensitive; "
+                "friendly names (e.g. 'Azure Data Explorer', 'Custom MCP') "
+                "also accepted."
             )
         return schema
 

@@ -184,6 +184,21 @@ class DataConnectorTypeNormalizationTests(unittest.TestCase):
             "--data-connector-type must be one of", str(raised.exception)
         )
 
+    def test_accepts_friendly_product_names_case_insensitively(self):
+        # Friendly names confirmed against sreagent-runtime's own portal
+        # i18n strings (SREAgentResources.ts), not invented -- see
+        # DATA_CONNECTOR_TYPE_ALIASES docstring. Lets users type what the
+        # product calls the connector instead of the raw wire enum casing.
+        self.assertEqual(_normalize_data_connector_type("Azure Data Explorer"), "Kusto")
+        self.assertEqual(_normalize_data_connector_type("AZURE DATA EXPLORER"), "Kusto")
+        self.assertEqual(_normalize_data_connector_type("Azure Data Explorer MCP"), "KustoClient")
+        self.assertEqual(_normalize_data_connector_type("Custom MCP"), "Mcp")
+        self.assertEqual(_normalize_data_connector_type("User Provided Connector"), "Mcp")
+        self.assertEqual(_normalize_data_connector_type("Office 365 Outlook"), "Outlook")
+        self.assertEqual(_normalize_data_connector_type("Microsoft Teams"), "Teams")
+        self.assertEqual(_normalize_data_connector_type("Microsoft IcM"), "Icm")
+        self.assertEqual(_normalize_data_connector_type("Microsoft DGrep"), "Dgrep")
+
 
 class ConnectorConsentStatusTests(unittest.TestCase):
     """Consent surfacing (issue #10): confirmed via
