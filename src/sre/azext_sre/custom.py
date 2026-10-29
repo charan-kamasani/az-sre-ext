@@ -197,6 +197,27 @@ def _cli_invoke(cli_ctx, *args, allow_missing=False):
     return result
 
 
+def _redact_auth_result(auth_result):
+    """Mask a freshly-minted PAT/secret before 'sre repo connect' echoes it
+    back to the user. Confirmed live that 'extension create' already
+    redacts this server-side for githubAuths (pat comes back as "******"),
+    but NOT for azureDevOpsAuths (the real PAT is returned verbatim) --
+    redact defensively here for both so this command never prints a live
+    secret regardless of which provider's server-side behavior changes.
+    """
+    import copy
+
+    if not isinstance(auth_result, dict):
+        return auth_result
+    redacted = copy.deepcopy(auth_result)
+    value = redacted.get("properties", {}).get("value")
+    if isinstance(value, dict):
+        for secret_key in ("pat", "secret", "password", "token"):
+            if value.get(secret_key):
+                value[secret_key] = "******"
+    return redacted
+
+
 # Local file the data-plane `sre` CLI (separate deliverable, not an az
 # extension -- see running notes section 1) is expected to read from, the
 # same way `az aks get-credentials` writes kubeconfig for kubectl to pick
@@ -1723,9 +1744,11 @@ class _NetworkGroup(AAZCommandGroup):
 class _RepoGroup(AAZCommandGroup):
     """Connect a code repository so the agent can read source during investigations.
 
-    Supports GitHub, Azure DevOps, and GitLab. Use 'sre repo connect' to
-    link one repo to an agent in a single step (it wires up both the auth
-    and the repository extension for you).
+    'sre repo connect' supports GitHub and Azure DevOps in a single step (it
+    wires up both the auth and the repository extension for you). GitLab
+    repos are also supported at the data-plane level (see 'sre extension
+    create --extension-type repositories'), but not yet by this one-step
+    command.
     """
 
 
@@ -3871,4 +3894,4 @@ class RepoConnect(AAZCommand):
             "--extension-type", "repositories", "--extension-name", display_name,
             "--value", json.dumps(repo_body), "--overwrite", "true",
         )
-        return {"auth": auth_result, "repository": repo_result}
+        return {"auth": _redact_auth_result(auth_result), "repository": repo_result}

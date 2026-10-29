@@ -148,7 +148,7 @@ GROUP_EXAMPLES = {
     ],
     "sre repo": [
         {"name": "Connect a GitHub repo to an agent.",
-         "text": "az sre repo connect -g myrg --agent-name myagent --repo-url https://github.com/contoso/service-a --repo-type GitHub"},
+         "text": "az sre repo connect -g myrg --agent-name myagent --repo-url https://github.com/contoso/service-a --provider GitHub"},
     ],
     "sre skill": [
         {"name": "List an agent's custom skills.",

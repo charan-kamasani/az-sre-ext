@@ -984,7 +984,7 @@ Two separate steps: connecting a marketplace (a GitHub/Azure DevOps/GitLab repo 
 
 Connect a code repository so the agent can read source during investigations.
 
-Supports GitHub, Azure DevOps, and GitLab. Use 'sre repo connect' to link one repo to an agent in a single step (it wires up both the auth and the repository extension for you).
+'sre repo connect' supports GitHub and Azure DevOps in a single step (it wires up both the auth and the repository extension for you). GitLab repos are also supported at the data-plane level (see 'sre extension create --extension-type repositories'), but not yet by this one-step command.
 
 | Verb | Exact syntax |
 | --- | --- |

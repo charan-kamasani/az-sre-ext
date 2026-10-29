@@ -278,6 +278,37 @@ built-in tools via `az sre extension create --extension-type
 globalSettings` is unreliable today**; use the portal's Built-in tools tab
 for that until confirmed fixed server-side.
 
+### `repo connect` fixes: stale `--repo-type` example, misleading GitLab claim, and a real PAT-leak bug
+
+Three issues found while live-testing `az sre repo connect`:
+
+1. **Stale example**: `_help.py`'s example used `--repo-type GitHub`, a flag
+   that doesn't exist -- the real flag is `--provider`. Fixed.
+2. **Misleading docstring**: `_RepoGroup` claimed "Supports GitHub, Azure
+   DevOps, and GitLab", but `repo connect`'s `--provider` enum only allows
+   `GitHub`/`AzureDevOps` -- GitLab isn't wired up for this one-step
+   command (it IS supported at the raw `sre extension create
+   --extension-type repositories` level). Docstring corrected to be
+   precise about the split.
+3. **Security bug (the serious one)**: live-tested against a real Azure
+   DevOps org (`dev.azure.com/devdiv`) -- `repo connect` mints a PAT via
+   the vssps REST API and echoes the full `auth` result back to the user.
+   Confirmed server-side redaction is inconsistent by provider:
+   `githubAuths` already comes back masked (`"pat": "******"`), but
+   `azureDevOpsAuths` returned the **real PAT in plaintext** in the
+   command's own output. Fixed client-side with a new `_redact_auth_result`
+   helper that masks `pat`/`secret`/`password`/`token` fields in the
+   returned `auth` object regardless of provider, so this command never
+   prints a live secret even if server-side redaction behavior changes or
+   regresses for either provider. Both live-minted PATs from testing this
+   (one GitHub-account-scoped via `gh`, one Azure DevOps PAT via vssps)
+   were revoked immediately after discovery/confirmation.
+
+```bash
+az sre repo connect -g myrg --agent-name myagent \
+  --repo-url https://dev.azure.com/myorg/myproject/_git/myrepo --provider AzureDevOps
+```
+
 ## Networking
 
 See [docs/networking.md](networking.md) for VNet injection and sandbox

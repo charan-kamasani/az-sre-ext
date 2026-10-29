@@ -1363,6 +1363,48 @@ class RepoConnectTests(unittest.TestCase):
                 command._handler({})
         self.assertIn("--devops-auth-type managed-identity", str(raised.exception))
 
+    def test_azure_devops_pat_is_redacted_in_the_returned_result(self):
+        """Live-confirmed on a real Azure DevOps org: 'extension create'
+        redacts a freshly-minted PAT server-side for githubAuths (comes back
+        as "******"), but NOT for azureDevOpsAuths -- the real PAT is
+        echoed back verbatim. RepoConnect must redact it client-side
+        regardless, so this command never prints a live secret.
+        """
+        command, _calls, _fake_cli_invoke = self._run_devops()
+
+        def fake_cli_invoke_with_real_pat(cli_ctx, *args, allow_missing=False):
+            if "azureDevOpsAuths" in args:
+                return {"properties": {"value": {"authType": "Pat", "pat": "ado-pat-xyz"}}}
+            return {"properties": {"value": "stub"}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke_with_real_pat), \
+             patch("azext_sre.custom._devops_pat_token", lambda cli_ctx, org, name: "ado-pat-xyz"):
+            result = command._handler({})
+
+        self.assertEqual(result["auth"]["properties"]["value"]["pat"], "******")
+
+    def test_github_pat_stays_redacted_in_the_returned_result(self):
+        command = _bare_command(
+            RepoConnect, agent_name="myagent", resource_group="rg",
+            repo_url="https://github.com/org/repo", provider=None, display_name=None,
+            branch=None, github_account=None, devops_organization=None,
+            devops_auth_type="pat", devops_identity=None,
+            devops_federated_client_id=None, devops_federated_tenant_id=None,
+        )
+
+        def fake_cli_invoke_with_real_pat(cli_ctx, *args, allow_missing=False):
+            if "githubAuths" in args:
+                return {"properties": {"value": {"authType": "Pat", "pat": "******"}}}
+            return {"properties": {"value": "stub"}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke_with_real_pat), \
+             patch("azext_sre.custom._github_cli_token", lambda account=None: "gh-token-123"):
+            result = command._handler({})
+
+        self.assertEqual(result["auth"]["properties"]["value"]["pat"], "******")
+
 
 class HttpTriggersShapeValidationTests(unittest.TestCase):
     """--extension-type httpTriggers' inner shape is confirmed via
