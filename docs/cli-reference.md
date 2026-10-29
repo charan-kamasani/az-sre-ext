@@ -554,7 +554,7 @@ Show an SRE Agent extension.
 
 Manage lifecycle hooks that run a prompt or script at a specific agent event.
 
-Fires on one of four lifecycle events -- Start, PreToolUse, PostToolUse, Stop -- and runs either an LLM prompt (nuanced validation) or a bash/ Python command/script (deterministic checks, policy enforcement, auditing). For example, blocking a dangerous shell command on PreToolUse, or validating response completeness on Stop. The portal's own "Create hook" dialog currently only exposes PostToolUse/Stop and prompt/command as a "Hook type" picker; Start/PreToolUse are API/YAML-only today (see sre.azure.com/docs/capabilities/agent-hooks), but this CLI supports all four since it talks to the same REST API v2.
+Fires on one of four events (Start, PreToolUse, PostToolUse, Stop) and runs either an LLM prompt or a bash/Python command. See 'sre hook create -h' for the full --value shape and the portal-vs-API note.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -576,7 +576,7 @@ Create or update a hook.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Hook configuration as a JSON document, e.g. {"eventType": "Stop", "activationMode": "always", "description": "...", "hook": {"type": "prompt", "prompt": "..."}} -- top-level fields: eventType ("Start", "PreToolUse", "PostToolUse", or "Stop")/activationMode ("always" or "onDemand", lowercase)/description, plus a nested "hook" object: type ("prompt" or "command")/prompt/command/script/matcher/model/timeout/failMode/maxRejections/sources. Live-confirmed shape -- do not put hookType/prompt at the top level, they must be nested under "hook". |
+| `--value` | String | Yes |  |  | Hook configuration as a JSON document, e.g. {"eventType": "Stop", "activationMode": "always", "description": "...", "hook": {"type": "prompt", "prompt": "..."}} -- top-level fields: eventType ("Start", "PreToolUse", "PostToolUse", or "Stop"; the portal UI only offers the latter two today)/activationMode ("always" or "onDemand", lowercase)/description, plus a nested "hook" object: type ("prompt" or "command")/prompt/command/script/matcher/model/timeout/failMode/maxRejections/sources. Live-confirmed shape -- do not put hookType/prompt at the top level, they must be nested under "hook". |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 ### `az sre hook delete`

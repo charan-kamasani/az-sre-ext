@@ -3331,15 +3331,9 @@ class SkillDelete(_PinnedExtensionDelete):
 class _HookGroup(AAZCommandGroup):
     """Manage lifecycle hooks that run a prompt or script at a specific agent event.
 
-    Fires on one of four lifecycle events -- Start, PreToolUse, PostToolUse,
-    Stop -- and runs either an LLM prompt (nuanced validation) or a bash/
-    Python command/script (deterministic checks, policy enforcement,
-    auditing). For example, blocking a dangerous shell command on
-    PreToolUse, or validating response completeness on Stop. The portal's
-    own "Create hook" dialog currently only exposes PostToolUse/Stop and
-    prompt/command as a "Hook type" picker; Start/PreToolUse are
-    API/YAML-only today (see sre.azure.com/docs/capabilities/agent-hooks),
-    but this CLI supports all four since it talks to the same REST API v2.
+    Fires on one of four events (Start, PreToolUse, PostToolUse, Stop) and
+    runs either an LLM prompt or a bash/Python command. See 'sre hook
+    create -h' for the full --value shape and the portal-vs-API note.
     """
 
 
@@ -3354,7 +3348,8 @@ class HookCreate(_PinnedExtensionCreate):
         "{\"eventType\": \"Stop\", \"activationMode\": \"always\", "
         "\"description\": \"...\", \"hook\": {\"type\": \"prompt\", "
         "\"prompt\": \"...\"}} -- top-level fields: eventType (\"Start\", "
-        "\"PreToolUse\", \"PostToolUse\", or \"Stop\")/activationMode "
+        "\"PreToolUse\", \"PostToolUse\", or \"Stop\"; the portal UI only "
+        "offers the latter two today)/activationMode "
         "(\"always\" or \"onDemand\", lowercase)/description, plus a nested "
         "\"hook\" object: type (\"prompt\" or \"command\")/prompt/command/"
         "script/matcher/model/timeout/failMode/maxRejections/sources. "
