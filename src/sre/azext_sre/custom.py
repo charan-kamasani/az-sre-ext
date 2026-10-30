@@ -714,17 +714,33 @@ class _ConnectorExistenceGuardMixin:
     same risk (and same GET-before-PUT guard) as azext-aigateway's
     'mcp create' ResourceExistsError check. Use 'connector update' to
     intentionally change an existing connector.
+
+    Confirmed root cause of issue #4 (cosmetic "ERROR: ... Not Found" stderr
+    noise on a successful 'connector create'/'knowledge create'): the
+    previous version of this guard called '_cli_invoke(..., "connector",
+    "show", ..., allow_missing=True)', which runs a *full* in-process
+    'az sre connector show' via Azure CLI's own 'cli.invoke()'. On the
+    overwhelmingly common path -- creating a brand-new connector that does
+    not exist yet -- that inner 'show' genuinely 404s, and 'cli.invoke()'
+    logs the resulting HTTP error to stderr via its own global exception
+    handler *before* returning control to this caller, regardless of the
+    fact that '_cli_invoke's allow_missing=True then silently swallows it.
+    The 404 was always harmless (it's the expected, common case, not a
+    real failure), but the noisy log line survived the swallowing.
+    Switched to a direct, silent raw ARM GET via '_arm_request(...,
+    missing_ok=True)' -- the same helper '_extension_resource_create'
+    already uses for this exact existence-check pattern -- which goes
+    straight through 'send_raw_request' and never touches 'cli.invoke()',
+    so a 404 on a brand-new connector name no longer prints anything.
     """
 
     def pre_operations(self):
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
         connector_name = _arg_value(self.ctx.args.connector_name)
-        existing = _cli_invoke(
-            self.cli_ctx, "sre", "connector", "show",
-            "--agent-name", agent_name, "--resource-group", resource_group,
-            "--name", connector_name, allow_missing=True,
-        )
+        agent_resource_id = _resolve_agent_resource_id(self.cli_ctx, agent_name, resource_group)
+        resource_id = f"{agent_resource_id}/connectors/{connector_name}"
+        existing = _arm_request(self.cli_ctx, "GET", resource_id, API_VERSION, missing_ok=True)
         if existing is not None:
             raise ResourceExistsError(
                 f"A connector named '{connector_name}' already exists on agent "
@@ -2623,6 +2639,25 @@ def _validate_hooks_shape(parsed):
         if "failMode" in hook:
             if not isinstance(hook["failMode"], str) or hook["failMode"].lower() not in ("allow", "block"):
                 raise CLIError("--value.hook.failMode must be \"Allow\" or \"Block\".")
+        # matcher is effectively required for PreToolUse/PostToolUse --
+        # live-confirmed this session: an otherwise-identical, client-side-
+        # valid payload for these two event types is rejected by the real
+        # API with the same opaque "The extension configuration is invalid"
+        # error when --value.hook.matcher is missing, but the IDENTICAL
+        # payload succeeds once --value.hook.matcher (a tool-name regex,
+        # e.g. "Bash.*") is added. Start/Stop hooks (which aren't scoped to
+        # a specific tool) do NOT need matcher -- confirmed accepted without
+        # it. Caught here client-side instead of surfacing as that same
+        # opaque 400 from ARM.
+        event_type = parsed.get("eventType")
+        if event_type in ("PreToolUse", "PostToolUse") and not hook.get("matcher"):
+            raise CLIError(
+                "--value.hook.matcher is required when --value.eventType is "
+                "\"PreToolUse\" or \"PostToolUse\" (a tool-name regex, e.g. "
+                "\"Bash.*\") -- confirmed live: the real API rejects this "
+                "combination with an opaque \"extension configuration is "
+                "invalid\" error otherwise."
+            )
         for str_field in ("prompt", "command", "script", "matcher", "model"):
             _require_str(hook, str_field, "--value.hook")
         if "timeout" in hook and not isinstance(hook["timeout"], (int, float)):
@@ -3580,7 +3615,16 @@ class _HookGroup(AAZCommandGroup):
 
 @register_command("sre hook create")
 class HookCreate(_PinnedExtensionCreate):
-    """Create or update a hook."""
+    """Create or update a hook.
+
+    :example: Create a prompt-based hook that runs after every Bash tool call (live-verified payload)
+        az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check \\
+            --value '{"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands", "hook": {"type": "prompt", "prompt": "Review the last tool call. If it looks destructive, warn the user.", "matcher": "Bash.*", "failMode": "Allow"}}'
+
+    :example: Create a command-based hook that runs after every Bash tool call (live-verified payload)
+        az sre hook create --agent-name myagent --resource-group myrg --name post-tool-echo \\
+            --value '{"eventType": "PostToolUse", "activationMode": "always", "description": "Blocks dangerous commands", "hook": {"type": "command", "command": "echo ok", "matcher": "Bash.*", "timeout": 30, "failMode": "Allow"}}'
+    """
 
     _EXTENSION_TYPE = "hooks"
     _args_schema = None
@@ -3597,7 +3641,11 @@ class HookCreate(_PinnedExtensionCreate):
         "what happens if the hook itself errors/times out, not its "
         "decision)/maxRejections/sources. "
         "Live-confirmed shape -- do not put hookType/prompt at the top "
-        "level, they must be nested under \"hook\"."
+        "level, they must be nested under \"hook\". "
+        "IMPORTANT: --value.hook.matcher (a tool-name regex, e.g. "
+        "\"Bash.*\") is required when eventType is \"PreToolUse\" or "
+        "\"PostToolUse\" -- the real API rejects an otherwise-identical "
+        "payload without it; not required for \"Start\"/\"Stop\"."
     )
 
 

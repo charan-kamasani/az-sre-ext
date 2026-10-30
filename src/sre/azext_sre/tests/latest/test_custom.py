@@ -2513,8 +2513,13 @@ class ConnectorExistenceGuardTests(unittest.TestCase):
             agent_name="myagent", resource_group="rg", connector_name="myconn",
         )
         with patch(
-            "azext_sre.custom._cli_invoke",
-            lambda cli_ctx, *a, allow_missing=False: show_result,
+            "azext_sre.custom._resolve_agent_resource_id",
+            lambda cli_ctx, agent_name, resource_group: (
+                "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/agents/myagent"
+            ),
+        ), patch(
+            "azext_sre.custom._arm_request",
+            lambda cli_ctx, method, resource_id, api_version, body=None, missing_ok=False: show_result,
         ):
             command.pre_operations()
 

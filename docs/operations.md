@@ -189,14 +189,25 @@ show/list → delete) against a real agent on 2026-10-28:
 | `Outlook` | Blocked — real server error | `create` consistently returns `(InternalServerError) Internal server error occurred`, with and without `--data-source`. Reproduced twice; not a CLI defect (payload shape matches every other working type) — looks like this connector type isn't provisionable in this tenant/environment yet. Re-verify once a tenant known to support Outlook connectors is available. |
 | `Dgrep` | Blocked — real server error | `create` returns `(InvalidRequestParameter) ... MDS endpoint is not approved.` — a real, environment-specific allowlist check on the service side, not a shape or CLI defect. |
 
-Cosmetic (non-blocking) noise you may see on `connector create`/`update`:
-an `ERROR: Operation returned an invalid status 'Not Found'` line can print
-to stderr even though the command still exits `0` with the correct created
-resource in its JSON output. This comes from the generated AAZ long-running-
-operation poller's final-state GET racing real ARM-proxy replication lag —
-confirmed harmless (the resource exists and `show`/`list` return it
-immediately after) — not something fixable without hand-editing the
-generated recipe, which this project deliberately never does.
+**FIXED** (was: cosmetic, non-blocking noise on `connector create`/
+`knowledge create`): an `ERROR: Operation returned an invalid status 'Not
+Found'` line used to print to stderr on a successful first-time create, even
+though the command still exited `0` with the correct created resource in its
+JSON output. Root cause (confirmed this session, not the generated AAZ
+poller as previously suspected): `connector create`'s pre-create existence
+guard used to call `_cli_invoke(..., "connector", "show", ..., allow_missing
+=True)`, which runs a *full* in-process `az sre connector show` via Azure
+CLI's own `cli.invoke()`. On the common path of creating a brand-new
+connector, that inner `show` genuinely 404s, and `cli.invoke()` logs the
+error to stderr via its own global exception handler before returning
+control to the caller — regardless of `allow_missing=True` silently
+swallowing it afterward. Fixed by switching the guard to a direct, silent
+raw ARM GET via `_arm_request(..., missing_ok=True)` (the same helper the
+generic extension-type create/show/list/delete facade already uses for this
+exact check), which goes straight through `send_raw_request` and never
+touches `cli.invoke()`'s logger — a 404 on a brand-new name no longer prints
+anything, while the duplicate-name guard itself still works exactly as
+before.
 
 
 ## Runbook extension payload shapes
@@ -252,6 +263,20 @@ configuration is invalid"` error that gives no hint about which field is
 wrong. The CLI now validates `failMode` client-side against the confirmed
 enum so this is caught immediately instead of surfacing as an opaque
 400 from ARM.
+
+### `hook.matcher` is effectively required for `PreToolUse`/`PostToolUse`
+
+Live-confirmed this session (cold-start grading exercise finding #7): an
+otherwise fully-valid hook payload for `eventType: "PreToolUse"` or
+`"PostToolUse"` is rejected by the real API with the same opaque `"The
+extension configuration is invalid"` error when `hook.matcher` (a tool-name
+regex, e.g. `"Bash.*"`) is missing — adding only that one field makes the
+identical payload succeed. `Start`/`Stop` hooks (not scoped to a specific
+tool call) do **not** need `matcher` — confirmed accepted without it. The
+CLI's client-side validator now requires `matcher` for `PreToolUse`/
+`PostToolUse` hooks, and `az sre hook create --help` shows two full,
+live-verified example payloads (one `prompt`-type, one `command`-type) so
+this shape is no longer guessable-only from prose.
 
 **PowerShell note**: `az.cmd` on Windows mangles `--value '{"..."}'` JSON
 passed directly in PowerShell (quotes get eaten, and shell metacharacters

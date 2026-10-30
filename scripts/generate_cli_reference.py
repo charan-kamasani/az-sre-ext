@@ -323,6 +323,11 @@ def render_reference(reference=None) -> str:
         "- This CLI only talks to the control plane (`Microsoft.App/agents` ARM "
         "resource). It never talks to the agent's own data plane "
         "(`*.azuresre.ai`) directly. See the [implementation plan](../PLAN.md).",
+        "- The overall noun/verb shape (why `agent` isn't a wrapper for every "
+        "other noun, why there's one dedicated noun per runbook-extension "
+        "type instead of a generic `extension --type`) is a deliberate "
+        "decision with alternatives considered -- see the "
+        "[shape design doc](shape-design.md).",
         "- `network update` is hand-written against the real "
         "`2026-11-01-preview` api-version; there is no public Swagger for it "
         "yet. See the [networking guide](networking.md).",

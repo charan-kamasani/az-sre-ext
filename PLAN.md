@@ -135,6 +135,12 @@ hard part, creating a useful agent is.
   AAZ-generation-plus-hand-written-overlay pattern as `azext-aigateway`.
 - Use `az sre` as the top-level command (the generated Swagger's own command
   name, `az app agent ...`, is renamed via thin `custom.py` subclasses).
+- Keep the noun hierarchy flat (`agent`, `connector`, `tool`, `skill`, etc.
+  as independent top-level groups) rather than nesting everything under
+  `agent`, and give each of the 15 runbook-extension types its own dedicated
+  noun instead of one generic `extension --type` escape hatch. See
+  [docs/shape-design.md](docs/shape-design.md) for the alternatives
+  considered and why (Paul's shape-feedback points #1/#13).
 - Do **not** aim for full portal parity ("live mode", full visual runbook
   authoring) — build discrete, scriptable jobs instead, per Paul's explicit
   guidance.
