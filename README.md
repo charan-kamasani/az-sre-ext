@@ -75,24 +75,26 @@ az sre agent delete --resource-group "$RG" --name "$AGENT" --yes
 az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
 ```
 
-## What's implemented today
+## SRE Agent CLI Command Reference
 
-| Group | Example commands | Status |
+| Group | Commands | Use it to |
 |---|---|---|
-| `agent` | `create`/`show`/`list`/`update`/`delete`/`start`/`stop`/`wait`/`list-models --location <value>` | Done, live-verified |
-| `access` | `grant`/`revoke --role admin\|user\|author\|reader [--assignee\|--assignee-me]` | Done, live-verified, regression-tested |
-| `managed-resource` | `grant`/`revoke`/`list` — grants the agent's own identity Reader + Monitoring Contributor on an external scope | Done, live-verified |
-| `identity` | `assign`/`show`/`remove` (system/user-assigned) | Done, live-verified |
-| `endpoint` | `show` — resolves the agent's data-plane URL | Done, live-verified |
-| `usage` | `list [--daily]` — token/request usage stats | Done, live-verified |
-| `network` | `update` (VNet injection, sandbox egress) | Done — hand-written against the real `2026-11-01-preview` api-version, no public Swagger exists for it yet |
-| `connector` | `create`/`update`/`delete`/`list`/`show`/`list-secret` | Done, live-verified against a real Kusto cluster + Mcp/Knowledge connector types |
-| `knowledge` | `create --type {file,text,webpage,repository}`/`show`/`list`/`delete` | Done, live-verified (file/text types; service redacts content on read-back, a documented service-side limitation) |
-| `repo` | `connect` — one-step GitHub/Azure DevOps repo connect | Done, live-verified |
-| `tool` / `skill` / `hook` / `instructions` | `create`/`show`/`list`/`delete` (`skill create` also supports `--file-path SKILL.md`) | Done, live-verified |
-| `plugin marketplace` / `plugin install` | `create`/`show`/`list`/`delete` | Create/show live-verified; K8s-backed install provisioning not exercised in this sandbox |
-| `agent settings` | `show`/`update` — the agent's global settings (tool/skill permissions, custom instructions, approval-expiration) | Done, live-verified |
-| `workflow scheduled-task` / `workflow http-trigger` / `workflow incident-filter` | `create`/`show`/`list`/`delete` | Scheduled task and HTTP trigger live-verified end to end against the portal; incident filter shape-confirmed, live-create blocked by sandbox tenant limits (see [operations guide](docs/operations.md)) |
+| `agent` | `create, show, list, update, delete, start, stop, list-models, wait`<br>**settings:** `show, update` | Manage the core SRE Agent lifecycle and global settings (tool/skill permissions, custom instructions, approval expiration). |
+| `access` | `grant, revoke` | Grant or revoke built-in RBAC roles (admin, user, author, reader) on the agent. |
+| `connector` | `create, show, list, update, delete, list-secret` | Connect the agent to external data sources. Now accepts friendly names (Azure Data Explorer, Custom MCP, Office 365 Outlook, Microsoft Teams, Microsoft IcM, Microsoft DGrep) as well as raw wire values. |
+| `endpoint` | `show` | Resolve the agent's live data-plane endpoint URL. |
+| `hook` | `create, show, list, delete` | Manage lifecycle hooks (Start, PreToolUse, PostToolUse, Stop) that run prompts or scripts. |
+| `identity` | `assign, show, remove` | Manage the agent's managed identity. |
+| `instructions` | `create, show, list, delete` | Manage the agent's always-on custom instructions. |
+| `knowledge` | `create, show, list, delete` | Add files or web pages the agent can read and reason over. |
+| `managed-resource` | `grant, list, revoke` | Allow the agent's identity to monitor resources outside its resource group. |
+| `network` | `update` | Configure VNet injection and sandbox egress allowlist (Preview). |
+| `plugin` | **marketplace:** `create, show, list, delete`<br>**install:** `create, show, list, delete` | Connect a plugin marketplace and install specific plugins from it. |
+| `repo` | `connect` | Connect a GitHub or Azure DevOps repository with automatic authentication configuration. |
+| `skill` | `create, show, list, delete` | Create and manage custom SKILL.md-based skills. |
+| `tool` | `create, show, list, delete` | Manage custom tools the agent can invoke. |
+| `usage` | `list` | View agent usage and billing statistics. |
+| `workflow` | **scheduled-task:** `create, show, list, delete`<br>**http-trigger:** `create, show, list, delete`<br>**incident-filter:** `create, show, list, delete` | Manage scheduled runs, inbound webhook triggers, and incident-routing rules. |
 
 Everything in this table is backed by the unit test suite described below, and
 most rows have also been exercised against real Azure resources by hand. The
