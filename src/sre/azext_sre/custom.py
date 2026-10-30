@@ -2990,7 +2990,7 @@ EXTENSION_TYPE_CREATE_NOUN = {
     "commonPrompts": "az sre instructions create",
     "scheduledTasks": "az sre automation scheduled-task create",
     "httpTriggers": "az sre automation http-trigger create",
-    "incidentFilters": "az sre automation incident-filter create",
+    "incidentFilters": "az sre incident-filter create",
     "pluginMarketplaces": "az sre plugin marketplace create",
     "pluginInstallations": "az sre plugin install create",
     "repositories": "az sre repo connect",
@@ -3356,10 +3356,13 @@ class ToolDelete(_PinnedExtensionDelete):
 class _AutomationGroup(AAZCommandGroup):
     """Manage agent automations.
 
-    Covers scheduled tasks (run the agent on a timer), HTTP triggers (run
-    the agent from an inbound webhook), and incident filters (route
-    matching incidents to a handling agent -- portal: "Incident Response
-    Plans"). Subagents are CONFIRMED NOT buildable here: the portal's real
+    Covers scheduled tasks (run the agent on a timer) and HTTP triggers
+    (run the agent from an inbound webhook) -- confirmed against the
+    portal's own "Automation" tab, which holds exactly these two things.
+    Incident filters live under 'az sre incident-filter' instead (portal:
+    Incidents > "Triggers & response plans" -- a different top-level
+    section, not Automation; confirmed by walking the live portal nav).
+    Subagents are CONFIRMED NOT buildable here: the portal's real
     "Create a custom agent" dialog bypasses the ARM extensions proxy
     entirely and PUTs a raw YAML document (kind: AgentConfiguration)
     straight to the agent's data-plane 'api/v1/extendedAgent/apply'
@@ -3367,15 +3370,11 @@ class _AutomationGroup(AAZCommandGroup):
     'extension create --extension-type subagents' does reach the data
     plane's ARM-proxied ExtendedAgentView route, but that is the wrong/
     unsupported schema and is rejected). Use the portal or srectl to
-    create subagents instead. Incident handlers are a legacy predecessor
-    to incident filters that the service itself is migrating away from
-    (confirmed via its own 'DeleteLegacyIncidentHandlerDocument'/
-    'MigrateLegacyIncidentHandler' admin actions) -- intentionally not
-    exposed here to avoid steering anyone onto a deprecated path. Release
-    triggers, S360 triggers, and incident retrospectives are data-plane-only
-    features of the agent's own runtime (confirmed via sreagent-runtime's
-    Agent.Web v1 controllers) with no corresponding ARM resource -- they are
-    out of scope for this ARM-based control-plane CLI entirely.
+    create subagents instead. Release triggers, S360 triggers, and
+    incident retrospectives are data-plane-only features of the agent's
+    own runtime (confirmed via sreagent-runtime's Agent.Web v1
+    controllers) with no corresponding ARM resource -- they are out of
+    scope for this ARM-based control-plane CLI entirely.
     """
 
 
@@ -3491,11 +3490,21 @@ class AutomationHttpTriggerDelete(_PinnedExtensionDelete):
     _args_schema = None
 
 
-@register_command_group("sre automation incident-filter")
-class _AutomationIncidentFilterGroup(AAZCommandGroup):
-    """Manage incident filters (portal: "Incident Response Plans"): match
-    incoming incidents by platform/title/team/etc. and route matches to a
-    handling agent.
+# ---- sre incident-filter (portal: Incidents > Triggers & response plans --
+# NOT Automation; confirmed by walking the live portal nav: Automation only
+# ever shows Scheduled tasks/HTTP triggers, Incidents has its own separate
+# "Triggers & response plans" tab) ----
+@register_command_group("sre incident-filter")
+class _IncidentFilterGroup(AAZCommandGroup):
+    """Manage incident filters (portal: Incidents > "Triggers & response
+    plans"): match incoming incidents by platform/title/team/etc. and
+    route matches to a handling agent.
+
+    Incident handlers are a legacy predecessor to incident filters that
+    the service itself is migrating away from (confirmed via its own
+    'DeleteLegacyIncidentHandlerDocument'/'MigrateLegacyIncidentHandler'
+    admin actions) -- intentionally not exposed here to avoid steering
+    anyone onto a deprecated path.
 
     Note: live create against a fresh sandbox agent was rejected in our
     testing with a generic "extension configuration is invalid" error even
@@ -3508,8 +3517,8 @@ class _AutomationIncidentFilterGroup(AAZCommandGroup):
     """
 
 
-@register_command("sre automation incident-filter create")
-class AutomationIncidentFilterCreate(_PinnedExtensionCreate):
+@register_command("sre incident-filter create")
+class IncidentFilterCreate(_PinnedExtensionCreate):
     """Create or update an incident filter."""
 
     _EXTENSION_TYPE = "incidentFilters"
@@ -3553,16 +3562,16 @@ class AutomationIncidentFilterCreate(_PinnedExtensionCreate):
     )
 
 
-@register_command("sre automation incident-filter show")
-class AutomationIncidentFilterShow(_PinnedExtensionShow):
+@register_command("sre incident-filter show")
+class IncidentFilterShow(_PinnedExtensionShow):
     """Show an incident filter."""
 
     _EXTENSION_TYPE = "incidentFilters"
     _args_schema = None
 
 
-@register_command("sre automation incident-filter list")
-class AutomationIncidentFilterList(_PinnedExtensionList):
+@register_command("sre incident-filter list")
+class IncidentFilterList(_PinnedExtensionList):
     """List incident filters."""
 
     _EXTENSION_TYPE = "incidentFilters"
@@ -3570,10 +3579,10 @@ class AutomationIncidentFilterList(_PinnedExtensionList):
 
 
 @register_command(
-    "sre automation incident-filter delete",
+    "sre incident-filter delete",
     confirmation="Are you sure you want to perform this operation?",
 )
-class AutomationIncidentFilterDelete(_PinnedExtensionDelete):
+class IncidentFilterDelete(_PinnedExtensionDelete):
     """Delete an incident filter."""
 
     _EXTENSION_TYPE = "incidentFilters"

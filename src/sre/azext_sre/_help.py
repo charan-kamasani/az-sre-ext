@@ -184,14 +184,14 @@ GROUP_EXAMPLES = {
         {"name": "List an agent's HTTP triggers.",
          "text": "az sre automation http-trigger list -g myrg --agent-name myagent"},
     ],
-    "sre automation incident-filter": [
+    "sre incident-filter": [
         {"name": "Route incidents mentioning 'disk space' to a handling agent.",
-         "text": "az sre automation incident-filter create -g myrg --agent-name myagent "
+         "text": "az sre incident-filter create -g myrg --agent-name myagent "
                  "-n disk-space-filter --value \"{incidentPlatform:'Icm',"
                  "titleContains:'disk space',handlingAgents:['storage-oncall-agent'],"
                  "isEnabled:true}\""},
         {"name": "List an agent's incident filters.",
-         "text": "az sre automation incident-filter list -g myrg --agent-name myagent"},
+         "text": "az sre incident-filter list -g myrg --agent-name myagent"},
     ],
 }
 

@@ -137,14 +137,14 @@ URL to call it from your own tooling:
 az sre endpoint show --resource-group "$RG" --name "$AGENT"
 ```
 
-## 5. Automate incident response
+## 5. Route incidents to this agent
 
-Portal: *Incident platform integration* and *Response plans*.
+Portal: *Incidents > "Triggers & response plans"*.
 
 Route matching incidents to this agent:
 
 ```bash
-az sre automation incident-filter create \
+az sre incident-filter create \
   --resource-group "$RG" --agent-name "$AGENT" \
   --name high-sev --value '{"incidentPlatform":"Icm","titleContains":"disk space","handlingAgents":["'"$AGENT"'"],"isEnabled":true}'
 ```

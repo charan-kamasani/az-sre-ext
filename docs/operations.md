@@ -229,7 +229,7 @@ live-verification pass (12 of 15 extension types confirmed live):
 | `globalSettings` (`agent settings`) | `{}` plus optional `toolPermissions`/`toolStatuses`/`skillStatuses`/`customInstructions`/`approvalExpirationSetting` | Shape-confirmed from the control-plane team's own integration tests — true ARM singleton, `DELETE` unsupported, reset via `agent settings update --value '{}'` |
 | `pluginMarketplaces` (`plugin marketplace`), `pluginInstallations` (`plugin install`) | See `PLAN.md` | Create/show live-verified; K8s-backed install provisioning not exercised in this sandbox |
 | `tools` (`tool`), `skills` (`skill`), `hooks` (`hook`), `repositories` (`repo connect`) | Confirmed | Live-verified end to end (PUT + GET round-trip against a real agent) |
-| `incidentFilters` (`automation incident-filter`), `incidentHandlers` (legacy, intentionally not exposed) | Shape-confirmed from authoritative source | Live-create is environment-blocked (sandbox tenant lacks real IcM team-identity resolution), not a shape defect |
+| `incidentFilters` (`incident-filter`), `incidentHandlers` (legacy, intentionally not exposed) | Shape-confirmed from authoritative source | Live-create is environment-blocked (sandbox tenant lacks real IcM team-identity resolution), not a shape defect |
 | `githubAuths`, `azureDevOpsAuths` (both wired up for you by `repo connect`) | Shape-confirmed from authoritative source | Live-create rejected by real credential/token validation on the service side, not a shape defect |
 | `subagents` | No model found | Believed server-managed / Agent-Canvas-only, not CLI-creatable |
 
@@ -448,9 +448,10 @@ three of the five types:
   agent on a cron schedule against a prompt.
 - `az sre automation http-trigger create/show/list/delete` -- run the
   agent from an inbound webhook call.
-- `az sre automation incident-filter create/show/list/delete` -- match
+- `az sre incident-filter create/show/list/delete` -- match
   incoming incidents (by platform/title/team/etc.) and route matches to
-  a handling agent (portal: "Incident Response Plans").
+  a handling agent (portal: Incidents > "Triggers & response plans", a
+  separate top-level nav item from Automation).
 
 Scheduled task and HTTP trigger were live-verified end-to-end against
 `mytestagent`: created via CLI, confirmed showing up correctly in the
@@ -506,7 +507,7 @@ az sre automation scheduled-task create -g myrg --agent-name myagent \
 az sre automation http-trigger create -g myrg --agent-name myagent \
   -n alert-webhook --value '{"agentPrompt":"Investigate the attached alert payload"}'
 
-az sre automation incident-filter create -g myrg --agent-name myagent \
+az sre incident-filter create -g myrg --agent-name myagent \
   -n disk-space-filter --value '{"incidentPlatform":"Icm","titleContains":"disk space","handlingAgents":["storage-oncall-agent"],"isEnabled":true}'
 ```
 
