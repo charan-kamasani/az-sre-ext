@@ -168,8 +168,15 @@ Add a lifecycle hook so a script runs before/after every tool call:
 ```bash
 az sre hook create \
   --resource-group "$RG" --agent-name "$AGENT" \
-  --name audit-log --value '{"eventType":"PostToolUse","activationMode":"always","hook":{"type":"command","command":"echo logged","failMode":"Allow"}}'
+  --name audit-log --value '{"eventType":"PostToolUse","activationMode":"always","hook":{"type":"command","command":"echo logged","failMode":"Allow"},"matcher":".*"}'
 ```
+
+> **`hook.matcher` is required for `PreToolUse`/`PostToolUse`:** live-confirmed
+> — the real API rejects a `PostToolUse`/`PreToolUse` hook missing `matcher`
+> (a tool-name regex, e.g. `"Bash.*"` or `".*"` for "every tool") with an
+> opaque "extension configuration is invalid" error. `Start`/`Stop` hooks
+> don't need it. The CLI now validates this client-side with a clear
+> message instead of surfacing that opaque 400.
 
 ## 6. Extend with custom automation
 
@@ -206,10 +213,18 @@ Portal: *Build + setup > Settings* (preview).
 ```bash
 az sre agent settings update \
   --resource-group "$RG" --agent-name "$AGENT" \
-  --value '{"toolPermissions": {"deny": ["restart*"]}, "approvalExpirationSetting": {"enabled": true, "approvalExpirationInMinutes": 120}}'
+  --value '{"toolPermissions": {"allow": [], "ask": [], "deny": ["restart*"]}, "approvalExpirationSetting": {"enabled": true, "approvalExpirationInMinutes": 120}}'
 
 az sre agent settings show --resource-group "$RG" --agent-name "$AGENT"
 ```
+
+> **`toolPermissions` is all-or-nothing:** live-confirmed — once you include
+> `toolPermissions` at all, the real API requires all three of
+> `allow`/`ask`/`deny` (each can be `[]`), rejecting a partial object (e.g.
+> just `deny`) with a misleading "contains an invalid or unrecognized
+> property" 400 — the real cause is a *missing* sibling property, not an
+> unrecognized one. The CLI now validates this client-side with an accurate
+> message instead of surfacing that 400.
 
 ## Clean up
 

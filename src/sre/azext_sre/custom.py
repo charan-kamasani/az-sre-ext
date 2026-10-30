@@ -1038,6 +1038,52 @@ class SupportedAgentModelList(_GeneratedSupportedAgentModelList):
 
     _args_schema = None
 
+    def _handler(self, command_args):
+        # Deliberately calls the BASE AAZCommand._handler (argument parsing
+        # only), not _GeneratedSupportedAgentModelList._handler (which would
+        # also execute the generated AAZ-schema-deserializing HTTP call) --
+        # this command does its own raw ARM GET below instead, because the
+        # generated schema's 'properties.provider'/'properties.model' fields
+        # don't match the real API's actual wire field names. Live-confirmed
+        # via --debug: the real response uses 'providerName'/'modelName',
+        # not 'provider'/'model', so the generated AAZ deserializer silently
+        # drops them to None on every item (usability finding, live-graded:
+        # 'list-models --output table' showed real ModelDisplayName/
+        # ProviderDisplayName columns fine, but a prior fix attempt that
+        # flattened 'properties.provider'/'properties.model' to top-level
+        # 'provider'/'name' produced only nulls until this was caught by
+        # re-checking the raw --debug response).
+        AAZCommand._handler(self, command_args)
+        location = _arg_value(self.ctx.args.location)
+        subscription_id = self.ctx.subscription_id
+        resource_id = (
+            f"/subscriptions/{subscription_id}/providers/Microsoft.App/"
+            f"locations/{location}/supportedAgentModels"
+        )
+        flattened = []
+        next_url = resource_id
+        while next_url:
+            page = _arm_request(self.cli_ctx, "GET", next_url, API_VERSION)
+            for item in (page or {}).get("value") or []:
+                if not isinstance(item, dict):
+                    flattened.append(item)
+                    continue
+                properties = item.get("properties") or {}
+                # 'provider'/'name' match --default-model's own input shape
+                # 1:1 (--default-model "{provider:<Provider>,name:<Name>}"),
+                # so a caller can round-trip a row from this list straight
+                # into 'agent create --default-model' without any string
+                # splitting (usability finding, live-graded).
+                flattened.append({
+                    "provider": properties.get("providerName"),
+                    "name": properties.get("modelName"),
+                    "default": properties.get("default"),
+                    "providerDisplayName": properties.get("providerDisplayName"),
+                    "modelDisplayName": properties.get("modelDisplayName"),
+                })
+            next_url = (page or {}).get("nextLink")
+        return flattened
+
 
 # --------------------------------------------------------------------------------------------
 # "sre agent settings" -- the agent-wide 'globalSettings' extension type
@@ -1125,13 +1171,17 @@ class AgentSettingsUpdate(AAZCommand):
             help=(
                 "Global settings as a JSON document (confirmed via the "
                 "control plane's own real round-trip integration test, "
-                "GlobalSettingsExtensionTests.cs). All fields optional: "
-                "toolPermissions ({\"allow\": [...], \"ask\": [...], "
-                "\"deny\": [...]} tool-name arrays), toolStatuses/"
-                "skillStatuses (arrays of {\"name\": ..., \"enabled\": "
-                "true/false}), customInstructions (string), "
-                "approvalExpirationSetting ({\"enabled\": true/false, "
-                "\"approvalExpirationInMinutes\": <number>})."
+                "GlobalSettingsExtensionTests.cs). All top-level fields are "
+                "optional: toolPermissions, toolStatuses/skillStatuses "
+                "(arrays of {\"name\": ..., \"enabled\": true/false}), "
+                "customInstructions (string), approvalExpirationSetting "
+                "({\"enabled\": true/false, \"approvalExpirationInMinutes\": "
+                "<number>}). CAUTION: if you include toolPermissions at "
+                "all, it must have all three of 'allow'/'ask'/'deny' "
+                "(each an array of tool-name strings, [] if unused) -- "
+                "live-confirmed the real API rejects a partial "
+                "toolPermissions object (e.g. just 'deny') with a "
+                "misleading \"unrecognized property\" error."
             ),
             required=True,
         )
@@ -2239,7 +2289,27 @@ class UpdateNetwork(AAZCommand):
         if sandbox_configuration is not None:
             properties["sandboxConfiguration"] = _camelize_keys(sandbox_configuration)
 
-        return _arm_request(self.cli_ctx, "PUT", resource_id, NETWORK_API_VERSION, body=current)
+        updated = _arm_request(self.cli_ctx, "PUT", resource_id, NETWORK_API_VERSION, body=current)
+
+        # Trim the response to just the networking-relevant fields instead
+        # of returning the entire parent agent resource -- every other
+        # extension create/update command in this CLI returns only the
+        # scoped sub-resource, not the whole agent; this PUT targets the
+        # agent resource itself (there's no separate ARM child resource for
+        # networking), so without this it was the one inconsistent, overly
+        # verbose command in the surface (usability finding, live-graded).
+        if isinstance(updated, dict):
+            updated_properties = updated.get("properties") or {}
+            return {
+                "id": updated.get("id"),
+                "name": updated.get("name"),
+                "resourceGroup": updated.get("resourceGroup"),
+                "type": updated.get("type"),
+                "provisioningState": updated_properties.get("provisioningState"),
+                "vnetConfiguration": updated_properties.get("vnetConfiguration"),
+                "sandboxConfiguration": updated_properties.get("sandboxConfiguration"),
+            }
+        return updated
 
 
 # --------------------------------------------------------------------------------------------
@@ -2364,9 +2434,29 @@ def _validate_global_settings_shape(parsed):
     if "toolPermissions" in parsed:
         tp = parsed["toolPermissions"]
         if not isinstance(tp, dict):
-            raise CLIError("--value.toolPermissions must be a JSON object with optional 'allow'/'ask'/'deny' arrays.")
+            raise CLIError("--value.toolPermissions must be a JSON object with 'allow'/'ask'/'deny' arrays.")
         for key in ("allow", "ask", "deny"):
             _require_str_list(tp, key, "--value.toolPermissions")
+        # All-or-nothing, live-confirmed this session: the real API rejects
+        # --value.toolPermissions if it's present but missing any of
+        # allow/ask/deny, with a generic "contains an invalid or
+        # unrecognized property" error that actually means the opposite --
+        # a sibling property is MISSING, not unrecognized. Isolated by
+        # testing '{}' (succeeds) vs. '{"toolPermissions":{"deny":[...]}}'
+        # (fails) against a real agent. Caught here client-side with an
+        # accurate message instead of surfacing that misleading 400.
+        missing = [key for key in ("allow", "ask", "deny") if key not in tp]
+        if missing:
+            raise CLIError(
+                "--value.toolPermissions is present but missing "
+                f"{', '.join(repr(k) for k in missing)} -- live-confirmed: "
+                "the real API requires all three of 'allow'/'ask'/'deny' "
+                "once toolPermissions is specified at all (each can be an "
+                "empty array, e.g. \"allow\": []), rejecting a partial "
+                "object with a misleading \"unrecognized property\" error "
+                "that actually means a sibling property is missing. Add "
+                "the missing key(s) (as [] if you don't need them)."
+            )
 
     def _require_name_enabled_list(obj, key):
         if key not in obj:

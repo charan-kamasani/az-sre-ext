@@ -292,9 +292,48 @@ az sre agent settings update -g myrg --agent-name myagent --value '{}'
 az sre agent settings show -g myrg --agent-name myagent
 ```
 
+### `globalSettings.toolPermissions` is all-or-nothing once present
+
+Live-confirmed this session (independent-agent usability evaluation,
+QuickStart re-run): `az sre agent settings update --value '{}'` succeeds,
+but `--value '{"toolPermissions":{"deny":["restart*"]}}'` — a partial
+`toolPermissions` object with only `deny` set, exactly as the quickstart
+previously showed — is rejected by the real API with `"request is invalid.
+The request body contains an invalid or unrecognized property."` Isolated
+by testing with and without the sibling `allow`/`ask` keys against a real
+agent: the real cause is a **missing** sibling property, not an
+"unrecognized" one, despite what the error text says. Once `toolPermissions`
+is specified at all, the real API requires all three of `allow`/`ask`/`deny`
+(each can be an empty array). The CLI's client-side validator now catches
+this and names the missing key(s) instead of surfacing that misleading 400,
+and `docs/quickstart.md`'s own example was fixed to include all three keys.
+
 See [docs/testing.md](testing.md#live-verification-workflow) for the
 round-trip (PUT then GET) technique used to confirm a shape, and why
 checking only for a 200 response is not sufficient proof.
+
+### `sre network update`'s output used to return the entire parent agent object
+
+Live-confirmed this session (independent-agent usability evaluation):
+unlike every other `create`/`update` command in this CLI, which returns
+only its own scoped sub-resource, `network update` returned the *entire*
+parent `Microsoft.App/agents` resource (every property, including dozens of
+unrelated `null` fields) because the underlying call is a PUT directly on
+the agent resource itself (there's no separate ARM child resource for
+networking). Fixed to trim the response to `id`/`name`/`resourceGroup`/
+`type`/`provisioningState`/`vnetConfiguration`/`sandboxConfiguration` only,
+matching the output shape convention used everywhere else.
+
+### `sre agent list-models --output table` used to show only a concatenated name
+
+Live-confirmed this session (independent-agent usability evaluation): the
+raw item shape is `{id, name, properties: {provider, model, ...}}`, where
+the top-level `name` is a single concatenated string like
+`"Anthropic-Automatic"` — not directly reusable as the two separate
+`provider`/`name` fields `--default-model` actually takes (e.g.
+`--default-model "{provider:Anthropic,name:Automatic}"`). Fixed to flatten
+`properties.provider`/`properties.model` to top-level `provider`/`name`
+columns that match `--default-model`'s own input shape 1:1.
 
 ### `tool` discriminator is `type`, not `toolType`; `LinkTool` uses `template`, not `url`
 

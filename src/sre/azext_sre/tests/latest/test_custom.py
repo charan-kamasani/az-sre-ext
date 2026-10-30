@@ -758,10 +758,24 @@ class GlobalSettingsShapeValidationTests(unittest.TestCase):
         self.assertIn("must be a JSON object", str(raised.exception))
 
     def test_rejects_non_list_tool_permissions_entry(self):
-        raw = json.dumps({"toolPermissions": {"allow": "ReadFile"}})
+        raw = json.dumps({"toolPermissions": {"allow": "ReadFile", "ask": [], "deny": []}})
         with self.assertRaises(CLIError) as raised:
             _encode_extension_value(raw, "globalSettings")
         self.assertIn("toolPermissions.allow must be a JSON array of strings", str(raised.exception))
+
+    def test_rejects_partial_tool_permissions_object(self):
+        # Live-confirmed this session: the real API rejects a toolPermissions
+        # object that's missing any of allow/ask/deny with a misleading
+        # "contains an invalid or unrecognized property" 400 -- the actual
+        # cause is a MISSING sibling property, not an unrecognized one.
+        # Caught here client-side with an accurate message instead.
+        raw = json.dumps({"toolPermissions": {"deny": ["restart*"]}})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "globalSettings")
+        message = str(raised.exception)
+        self.assertIn("missing", message)
+        self.assertIn("'allow'", message)
+        self.assertIn("'ask'", message)
 
     def test_rejects_tool_statuses_item_missing_enabled(self):
         raw = json.dumps({"toolStatuses": [{"name": "PlotPieChart"}]})
@@ -1925,7 +1939,14 @@ class UpdateNetworkMergeTests(unittest.TestCase):
             put_body["properties"]["sandboxConfiguration"], {"egress": {"mode": "Unrestricted"}},
         )
         self.assertNotIn("vnetConfiguration", put_body["properties"])
-        self.assertEqual(result, put_body)
+        # Result is trimmed to the networking-relevant fields, not the
+        # entire parent agent object the PUT actually returns (usability
+        # fix -- every other extension command returns only its own scoped
+        # sub-resource).
+        self.assertEqual(result["id"], self._AGENT["id"])
+        self.assertEqual(result["provisioningState"], "Succeeded")
+        self.assertEqual(result["sandboxConfiguration"], {"egress": {"mode": "Unrestricted"}})
+        self.assertNotIn("displayName", result)
 
 
 class CommandRegistrationTests(unittest.TestCase):
@@ -2562,6 +2583,68 @@ class ConnectorListOutputTests(unittest.TestCase):
         with patch("azext_sre.custom.logger") as mock_logger:
             self._run(([], "https://next-page"))
             mock_logger.warning.assert_not_called()
+
+
+class SupportedAgentModelListTests(unittest.TestCase):
+    """'sre agent list-models' does its own raw ARM GET (not the generated
+    AAZ-schema-deserializing call) because the real API's wire field names
+    ('providerName'/'modelName') don't match the generated schema's declared
+    attribute names ('provider'/'model') -- confirmed live via --debug,
+    which showed the generated path silently producing null 'provider'/
+    'name' values on every item. Flattens 'properties.providerName'/
+    'properties.modelName' to top-level 'provider'/'name' so a row can be
+    passed straight into --default-model "{provider:...,name:...}"
+    (usability finding, live-graded)."""
+
+    def _run(self, pages):
+        command = object.__new__(SupportedAgentModelList)
+        command.ctx = SimpleNamespace(
+            args=SimpleNamespace(location="eastus2"), subscription_id="sub123",
+        )
+        command.cli_ctx = SimpleNamespace()
+        calls = []
+
+        def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+            calls.append(resource_id)
+            return pages.pop(0)
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._arm_request", fake_arm_request):
+            result = command._handler({})
+        return result, calls
+
+    def test_flattens_provider_name_and_model_name_to_top_level(self):
+        raw_item = {
+            "id": "...",
+            "name": "Anthropic-Automatic",
+            "properties": {
+                "providerName": "Anthropic",
+                "modelName": "Automatic",
+                "default": True,
+                "providerDisplayName": "Anthropic",
+                "modelDisplayName": "Automatic",
+            },
+        }
+        result, calls = self._run([{"value": [raw_item]}])
+        self.assertEqual(result[0]["provider"], "Anthropic")
+        self.assertEqual(result[0]["name"], "Automatic")
+        self.assertTrue(result[0]["default"])
+        self.assertIn("/locations/eastus2/supportedAgentModels", calls[0])
+
+    def test_passes_through_non_dict_items(self):
+        result, _ = self._run([{"value": ["not-a-dict"]}])
+        self.assertEqual(result, ["not-a-dict"])
+
+    def test_follows_next_link_across_pages(self):
+        page1 = {"value": [{"properties": {"providerName": "P1", "modelName": "M1"}}], "nextLink": "https://next"}
+        page2 = {"value": [{"properties": {"providerName": "P2", "modelName": "M2"}}]}
+        result, calls = self._run([page1, page2])
+        self.assertEqual([r["provider"] for r in result], ["P1", "P2"])
+        self.assertEqual(calls[1], "https://next")
+
+    def test_empty_value_returns_empty_list(self):
+        result, _ = self._run([{}])
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":
