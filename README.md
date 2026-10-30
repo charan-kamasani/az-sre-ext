@@ -109,7 +109,7 @@ cd src/sre
 python -m unittest discover -s azext_sre/tests -v
 ```
 
-180+ offline, credential-free tests cover every hand-written command in
+203 offline, credential-free tests cover every hand-written command in
 `custom.py`: RBAC role-name and managed-resource-scope mapping, the networking
 GET-merge-PUT logic, extension create/show/list/delete resource-ID and payload
 shape, the base64/JSON extension-value codec, model-provider and
@@ -155,6 +155,8 @@ every architecture decision and its evidence.
 | Guide | Use it for |
 |---|---|
 | [CLI ergonomics reference](docs/cli-reference.md) | Every group, command, exact syntax, option, and default — generated, never drifts |
+| [Quickstart](docs/quickstart.md) | The portal's "Get started" walkthrough (deploy, connect sources, automate, govern), done entirely from the CLI |
+| [CLI shape design](docs/shape-design.md) | Why the command surface is flat top-level nouns instead of everything nested under `agent`, and why each runbook-extension type gets its own noun instead of one generic `extension --type` |
 | [Operations](docs/operations.md) | Agent lifecycle, RBAC, connectors, and confirmed/unconfirmed runbook extension payload shapes |
 | [Networking](docs/networking.md) | VNet injection, sandbox egress, and safe sequencing for `network update` |
 | [Testing](docs/testing.md) | Coverage layers and the live-verification workflow (rebuild/reinstall, throwaway agents, round-trip shape confirmation) |
