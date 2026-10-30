@@ -43,7 +43,7 @@ az sre agent access grant
 - Tab-completion and `--help` under `az sre agent` would have to list 10+
   unrelated subgroups (`connector`, `tool`, `skill`, `hook`, `identity`,
   `access`, `knowledge`, `managed-resource`, `network`, `repo`, `plugin`,
-  `usage`, `endpoint`, `workflow`...) in one flat list -- the opposite of the
+  `usage`, `endpoint`, `automation`...) in one flat list -- the opposite of the
   discoverability Paul asked for; it just moves the flat list one level
   deeper instead of removing it.
 - Inconsistent with how the Azure CLI generally treats child/extension
@@ -186,11 +186,16 @@ az sre repo connect --agent-name ... --repo-url <url>
 was removed entirely (confirmed in `docs/cli-reference.md`'s "Important
 caveats" section: *"there is no generic `extension` escape hatch anymore"*).
 
-## Open sub-question still not fully resolved
+## Resolved sub-question
 
-`workflow` groups `scheduled-task`/`http-trigger`/`incident-filter` as
+`workflow` grouped `scheduled-task`/`http-trigger`/`incident-filter` as
 subcommands, but the service/portal calls this concept "automation," not
 "workflow" (see Paul's feedback point #8, tracked separately in
-`paul_shape_feedback` id=8). This is a naming question within an already
-flat/dedicated-noun shape, not a re-litigation of Decisions 1 or 2 above --
-left open pending a decision on renaming `workflow` -> `automation`.
+`paul_shape_feedback` id=8). Confirmed directly by the SRE Agent product
+team (Sanchit/Dalibor, 2026-10-30 Teams thread): the portal's top-level
+"Automation" tab is exactly this (Scheduled tasks + HTTP triggers); its
+separate "Workflows" heading is unrelated and currently only holds Agent
+Canvas. Renamed the CLI group `workflow` -> `automation` to match.
+`incident-filter`'s placement under `automation` was kept as-is pending
+further portal-parity confirmation (it doesn't appear under the portal's
+Automation section in the screenshots shared).

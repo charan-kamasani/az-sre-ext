@@ -2976,20 +2976,21 @@ def _decode_extension_envelope(envelope):
 # has no "extension" concept at all, it was purely this CLI's internal ARM-
 # proxy abstraction leaking into the user-facing surface. The functions
 # below are the same logic, kept as plain internal helpers that every
-# noun-specific facade (tool/skill/hook/instructions/workflow/plugin/repo/
+# noun-specific facade (tool/skill/hook/instructions/automation/plugin/repo/
 # agent settings) calls directly -- there is no user-reachable path to an
 # arbitrary --extension-type anymore. The only extension types left with no
 # dedicated noun are 'incidentHandlers' (legacy, intentionally not exposed)
-# and 'subagents' (confirmed not creatable via ARM at all, see _WorkflowGroup
-# above); 'globalSettings' is exposed via 'sre agent settings' below instead.
+# and 'subagents' (confirmed not creatable via ARM at all, see
+# _AutomationGroup above); 'globalSettings' is exposed via 'sre agent
+# settings' below instead.
 EXTENSION_TYPE_CREATE_NOUN = {
     "tools": "az sre tool create",
     "skills": "az sre skill create",
     "hooks": "az sre hook create",
     "commonPrompts": "az sre instructions create",
-    "scheduledTasks": "az sre workflow scheduled-task create",
-    "httpTriggers": "az sre workflow http-trigger create",
-    "incidentFilters": "az sre workflow incident-filter create",
+    "scheduledTasks": "az sre automation scheduled-task create",
+    "httpTriggers": "az sre automation http-trigger create",
+    "incidentFilters": "az sre automation incident-filter create",
     "pluginMarketplaces": "az sre plugin marketplace create",
     "pluginInstallations": "az sre plugin install create",
     "repositories": "az sre repo connect",
@@ -3019,7 +3020,7 @@ def _extension_resource_create(
 ):
     """Create or update an agent extension resource. Shared by every noun-
     specific 'create'/'update' facade (tool/skill/hook/instructions/
-    workflow/plugin/repo connect/agent settings)."""
+    automation/plugin/repo connect/agent settings)."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
     resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
     if not overwrite:
@@ -3348,10 +3349,12 @@ class ToolDelete(_PinnedExtensionDelete):
     _args_schema = None
 
 
-# ---- sre workflow (portal: Workflows tab) ----
-@register_command_group("sre workflow")
-class _WorkflowGroup(AAZCommandGroup):
-    """Manage agent workflow automations.
+# ---- sre automation (portal: Automation tab -- renamed from "workflow" to
+# match the portal's own top-level naming; the portal's separate "Workflows"
+# heading is unrelated and currently only holds Agent Canvas) ----
+@register_command_group("sre automation")
+class _AutomationGroup(AAZCommandGroup):
+    """Manage agent automations.
 
     Covers scheduled tasks (run the agent on a timer), HTTP triggers (run
     the agent from an inbound webhook), and incident filters (route
@@ -3376,14 +3379,14 @@ class _WorkflowGroup(AAZCommandGroup):
     """
 
 
-@register_command_group("sre workflow scheduled-task")
-class _WorkflowScheduledTaskGroup(AAZCommandGroup):
+@register_command_group("sre automation scheduled-task")
+class _AutomationScheduledTaskGroup(AAZCommandGroup):
     """Manage scheduled tasks: run the agent on a timer (cron) against a
     prompt, optionally bounded to a time window or a maximum run count."""
 
 
-@register_command("sre workflow scheduled-task create")
-class WorkflowScheduledTaskCreate(_PinnedExtensionCreate):
+@register_command("sre automation scheduled-task create")
+class AutomationScheduledTaskCreate(_PinnedExtensionCreate):
     """Create or update a scheduled task."""
 
     _EXTENSION_TYPE = "scheduledTasks"
@@ -3408,16 +3411,16 @@ class WorkflowScheduledTaskCreate(_PinnedExtensionCreate):
     )
 
 
-@register_command("sre workflow scheduled-task show")
-class WorkflowScheduledTaskShow(_PinnedExtensionShow):
+@register_command("sre automation scheduled-task show")
+class AutomationScheduledTaskShow(_PinnedExtensionShow):
     """Show a scheduled task."""
 
     _EXTENSION_TYPE = "scheduledTasks"
     _args_schema = None
 
 
-@register_command("sre workflow scheduled-task list")
-class WorkflowScheduledTaskList(_PinnedExtensionList):
+@register_command("sre automation scheduled-task list")
+class AutomationScheduledTaskList(_PinnedExtensionList):
     """List scheduled tasks."""
 
     _EXTENSION_TYPE = "scheduledTasks"
@@ -3425,24 +3428,24 @@ class WorkflowScheduledTaskList(_PinnedExtensionList):
 
 
 @register_command(
-    "sre workflow scheduled-task delete",
+    "sre automation scheduled-task delete",
     confirmation="Are you sure you want to perform this operation?",
 )
-class WorkflowScheduledTaskDelete(_PinnedExtensionDelete):
+class AutomationScheduledTaskDelete(_PinnedExtensionDelete):
     """Delete a scheduled task."""
 
     _EXTENSION_TYPE = "scheduledTasks"
     _args_schema = None
 
 
-@register_command_group("sre workflow http-trigger")
-class _WorkflowHttpTriggerGroup(AAZCommandGroup):
+@register_command_group("sre automation http-trigger")
+class _AutomationHttpTriggerGroup(AAZCommandGroup):
     """Manage HTTP triggers: run the agent against a prompt from an inbound
     webhook call instead of a schedule."""
 
 
-@register_command("sre workflow http-trigger create")
-class WorkflowHttpTriggerCreate(_PinnedExtensionCreate):
+@register_command("sre automation http-trigger create")
+class AutomationHttpTriggerCreate(_PinnedExtensionCreate):
     """Create or update an HTTP trigger."""
 
     _EXTENSION_TYPE = "httpTriggers"
@@ -3461,16 +3464,16 @@ class WorkflowHttpTriggerCreate(_PinnedExtensionCreate):
     )
 
 
-@register_command("sre workflow http-trigger show")
-class WorkflowHttpTriggerShow(_PinnedExtensionShow):
+@register_command("sre automation http-trigger show")
+class AutomationHttpTriggerShow(_PinnedExtensionShow):
     """Show an HTTP trigger."""
 
     _EXTENSION_TYPE = "httpTriggers"
     _args_schema = None
 
 
-@register_command("sre workflow http-trigger list")
-class WorkflowHttpTriggerList(_PinnedExtensionList):
+@register_command("sre automation http-trigger list")
+class AutomationHttpTriggerList(_PinnedExtensionList):
     """List HTTP triggers."""
 
     _EXTENSION_TYPE = "httpTriggers"
@@ -3478,18 +3481,18 @@ class WorkflowHttpTriggerList(_PinnedExtensionList):
 
 
 @register_command(
-    "sre workflow http-trigger delete",
+    "sre automation http-trigger delete",
     confirmation="Are you sure you want to perform this operation?",
 )
-class WorkflowHttpTriggerDelete(_PinnedExtensionDelete):
+class AutomationHttpTriggerDelete(_PinnedExtensionDelete):
     """Delete an HTTP trigger."""
 
     _EXTENSION_TYPE = "httpTriggers"
     _args_schema = None
 
 
-@register_command_group("sre workflow incident-filter")
-class _WorkflowIncidentFilterGroup(AAZCommandGroup):
+@register_command_group("sre automation incident-filter")
+class _AutomationIncidentFilterGroup(AAZCommandGroup):
     """Manage incident filters (portal: "Incident Response Plans"): match
     incoming incidents by platform/title/team/etc. and route matches to a
     handling agent.
@@ -3505,8 +3508,8 @@ class _WorkflowIncidentFilterGroup(AAZCommandGroup):
     """
 
 
-@register_command("sre workflow incident-filter create")
-class WorkflowIncidentFilterCreate(_PinnedExtensionCreate):
+@register_command("sre automation incident-filter create")
+class AutomationIncidentFilterCreate(_PinnedExtensionCreate):
     """Create or update an incident filter."""
 
     _EXTENSION_TYPE = "incidentFilters"
@@ -3550,16 +3553,16 @@ class WorkflowIncidentFilterCreate(_PinnedExtensionCreate):
     )
 
 
-@register_command("sre workflow incident-filter show")
-class WorkflowIncidentFilterShow(_PinnedExtensionShow):
+@register_command("sre automation incident-filter show")
+class AutomationIncidentFilterShow(_PinnedExtensionShow):
     """Show an incident filter."""
 
     _EXTENSION_TYPE = "incidentFilters"
     _args_schema = None
 
 
-@register_command("sre workflow incident-filter list")
-class WorkflowIncidentFilterList(_PinnedExtensionList):
+@register_command("sre automation incident-filter list")
+class AutomationIncidentFilterList(_PinnedExtensionList):
     """List incident filters."""
 
     _EXTENSION_TYPE = "incidentFilters"
@@ -3567,10 +3570,10 @@ class WorkflowIncidentFilterList(_PinnedExtensionList):
 
 
 @register_command(
-    "sre workflow incident-filter delete",
+    "sre automation incident-filter delete",
     confirmation="Are you sure you want to perform this operation?",
 )
-class WorkflowIncidentFilterDelete(_PinnedExtensionDelete):
+class AutomationIncidentFilterDelete(_PinnedExtensionDelete):
     """Delete an incident filter."""
 
     _EXTENSION_TYPE = "incidentFilters"

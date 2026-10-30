@@ -144,7 +144,7 @@ Portal: *Incident platform integration* and *Response plans*.
 Route matching incidents to this agent:
 
 ```bash
-az sre workflow incident-filter create \
+az sre automation incident-filter create \
   --resource-group "$RG" --agent-name "$AGENT" \
   --name high-sev --value '{"incidentPlatform":"Icm","titleContains":"disk space","handlingAgents":["'"$AGENT"'"],"isEnabled":true}'
 ```
@@ -152,12 +152,12 @@ az sre workflow incident-filter create \
 Run the agent on a schedule, and from an inbound webhook:
 
 ```bash
-az sre workflow scheduled-task create \
+az sre automation scheduled-task create \
   --resource-group "$RG" --agent-name "$AGENT" \
   --name nightly-check \
   --value '{"cronExpression":"0 2 * * *","agentPrompt":"Check overnight error rates."}'
 
-az sre workflow http-trigger create \
+az sre automation http-trigger create \
   --resource-group "$RG" --agent-name "$AGENT" \
   --name webhook-trigger \
   --value '{"agentPrompt":"Investigate the incoming alert."}'

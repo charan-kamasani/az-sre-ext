@@ -217,7 +217,7 @@ Swagger** — every payload shape had to be confirmed by live probing, not by
 reading a spec. There is no longer a generic `az sre extension` escape
 hatch: every extension type now has a dedicated front-door noun (`tool`,
 `skill`, `hook`, `instructions`, `knowledge`, `repo connect`,
-`plugin marketplace`/`plugin install`, `agent settings`, `workflow
+`plugin marketplace`/`plugin install`, `agent settings`, `automation
 scheduled-task`/`http-trigger`/`incident-filter`). The one remaining
 generic command group, `az sre managed-resource`, is unrelated RBAC
 plumbing, not an extension-type front door. Status as of the last
@@ -229,7 +229,7 @@ live-verification pass (12 of 15 extension types confirmed live):
 | `globalSettings` (`agent settings`) | `{}` plus optional `toolPermissions`/`toolStatuses`/`skillStatuses`/`customInstructions`/`approvalExpirationSetting` | Shape-confirmed from the control-plane team's own integration tests — true ARM singleton, `DELETE` unsupported, reset via `agent settings update --value '{}'` |
 | `pluginMarketplaces` (`plugin marketplace`), `pluginInstallations` (`plugin install`) | See `PLAN.md` | Create/show live-verified; K8s-backed install provisioning not exercised in this sandbox |
 | `tools` (`tool`), `skills` (`skill`), `hooks` (`hook`), `repositories` (`repo connect`) | Confirmed | Live-verified end to end (PUT + GET round-trip against a real agent) |
-| `incidentFilters` (`workflow incident-filter`), `incidentHandlers` (legacy, intentionally not exposed) | Shape-confirmed from authoritative source | Live-create is environment-blocked (sandbox tenant lacks real IcM team-identity resolution), not a shape defect |
+| `incidentFilters` (`automation incident-filter`), `incidentHandlers` (legacy, intentionally not exposed) | Shape-confirmed from authoritative source | Live-create is environment-blocked (sandbox tenant lacks real IcM team-identity resolution), not a shape defect |
 | `githubAuths`, `azureDevOpsAuths` (both wired up for you by `repo connect`) | Shape-confirmed from authoritative source | Live-create rejected by real credential/token validation on the service side, not a shape defect |
 | `subagents` | No model found | Believed server-managed / Agent-Canvas-only, not CLI-creatable |
 
@@ -424,24 +424,31 @@ az sre repo connect -g myrg --agent-name myagent \
   --repo-url https://dev.azure.com/myorg/myproject/_git/myrepo --provider AzureDevOps
 ```
 
-### `az sre workflow`: group for scheduled tasks, HTTP triggers, and incident filters
+### `az sre automation`: group for scheduled tasks, HTTP triggers, and incident filters
 
-The portal's "Automation" tab (previously "Workflows" in an older nav)
-exposes four things: Scheduled tasks, HTTP triggers, Subagents, and
-Incident filters/handlers. All four turned out to already be generic
-`az sre extension` resource types (`scheduledTasks`, `httpTriggers`,
-`subagents`, `incidentFilters`/`incidentHandlers`), confirmed by reading
+Renamed from `workflow` to `automation` (2026-10-30) to match the portal's
+own top-level naming: the portal's "Automation" tab holds Scheduled tasks
+and HTTP triggers, while its separate "Workflows" heading is unrelated and
+currently only holds Agent Canvas -- confirmed directly by the SRE Agent
+product team during shape review. See `docs/shape-design.md` for the
+earlier open-question note (Paul's feedback point #8), now resolved.
+
+The portal's "Automation" tab exposes four things: Scheduled tasks, HTTP
+triggers, Subagents, and Incident filters/handlers. All four turned out to
+already be generic `az sre extension` resource types (`scheduledTasks`,
+`httpTriggers`, `subagents`, `incidentFilters`/`incidentHandlers`),
+confirmed by reading
 `AgentExtensionsApiServiceExtensionTypesTests.cs`'s
 type-name-to-C#-model table in `AAPT-SREAgent-ControlPlane`.
 
 Added noun-specific wrappers (mirroring the `tool`/`repo` pattern) for
 three of the five types:
 
-- `az sre workflow scheduled-task create/show/list/delete` -- run the
+- `az sre automation scheduled-task create/show/list/delete` -- run the
   agent on a cron schedule against a prompt.
-- `az sre workflow http-trigger create/show/list/delete` -- run the
+- `az sre automation http-trigger create/show/list/delete` -- run the
   agent from an inbound webhook call.
-- `az sre workflow incident-filter create/show/list/delete` -- match
+- `az sre automation incident-filter create/show/list/delete` -- match
   incoming incidents (by platform/title/team/etc.) and route matches to
   a handling agent (portal: "Incident Response Plans").
 
@@ -479,7 +486,7 @@ successfully by the service's own `PagerDutySetupFixture.cs`/
   v2 route), but is rejected -- consistent with that being the wrong,
   unsupported schema for subagent creation. Use the portal or `srectl`
   to create subagents instead; this is permanently out of scope for
-  `az sre workflow`, not merely deferred.
+  `az sre automation`, not merely deferred.
 
 **Confirmed out of scope entirely (not ARM resources):** the portal's
 Release triggers, S360 triggers, and Incident Retrospective Response
@@ -493,13 +500,13 @@ to the data plane directly -- this ARM-based control-plane CLI
 correctly does not and should not add equivalents for any of these three.
 
 ```bash
-az sre workflow scheduled-task create -g myrg --agent-name myagent \
+az sre automation scheduled-task create -g myrg --agent-name myagent \
   -n daily-digest --value '{"cronExpression":"0 9 * * 1-5","agentPrompt":"Summarize overnight alerts"}'
 
-az sre workflow http-trigger create -g myrg --agent-name myagent \
+az sre automation http-trigger create -g myrg --agent-name myagent \
   -n alert-webhook --value '{"agentPrompt":"Investigate the attached alert payload"}'
 
-az sre workflow incident-filter create -g myrg --agent-name myagent \
+az sre automation incident-filter create -g myrg --agent-name myagent \
   -n disk-space-filter --value '{"incidentPlatform":"Icm","titleContains":"disk space","handlingAgents":["storage-oncall-agent"],"isEnabled":true}'
 ```
 

@@ -29,7 +29,7 @@ intentionally out of scope and why.
 
 Every noun below is a flat top-level group directly under `az sre` — the only
 nesting is where a resource genuinely only exists inside another one
-(`az sre plugin marketplace`/`az sre plugin install`, `az sre workflow
+(`az sre plugin marketplace`/`az sre plugin install`, `az sre automation
 scheduled-task`/`http-trigger`/`incident-filter`, and `az sre agent
 settings`). See [docs/cli-reference.md](docs/cli-reference.md) for the
 complete, always-current list.
@@ -94,7 +94,7 @@ az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
 | `skill` | `create, show, list, delete` | Create and manage custom SKILL.md-based skills. |
 | `tool` | `create, show, list, delete` | Manage custom tools the agent can invoke. |
 | `usage` | `list` | View agent usage and billing statistics. |
-| `workflow` | **scheduled-task:** `create, show, list, delete`<br>**http-trigger:** `create, show, list, delete`<br>**incident-filter:** `create, show, list, delete` | Manage scheduled runs, inbound webhook triggers, and incident-routing rules. |
+| `automation` | **scheduled-task:** `create, show, list, delete`<br>**http-trigger:** `create, show, list, delete`<br>**incident-filter:** `create, show, list, delete` | Manage scheduled runs, inbound webhook triggers, and incident-routing rules. |
 
 Everything in this table is backed by the unit test suite described below, and
 most rows have also been exercised against real Azure resources by hand. The

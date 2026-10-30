@@ -168,30 +168,30 @@ GROUP_EXAMPLES = {
         {"name": "List an agent's usage for the current month.",
          "text": "az sre usage list -g myrg --agent-name myagent"},
     ],
-    "sre workflow scheduled-task": [
+    "sre automation scheduled-task": [
         {"name": "Run the agent on a timer against a prompt.",
-         "text": "az sre workflow scheduled-task create -g myrg --agent-name myagent "
+         "text": "az sre automation scheduled-task create -g myrg --agent-name myagent "
                  "-n daily-digest --value \"{cronExpression:'0 9 * * 1-5',agentPrompt:"
                  "'Summarize overnight alerts'}\""},
         {"name": "List an agent's scheduled tasks.",
-         "text": "az sre workflow scheduled-task list -g myrg --agent-name myagent"},
+         "text": "az sre automation scheduled-task list -g myrg --agent-name myagent"},
     ],
-    "sre workflow http-trigger": [
+    "sre automation http-trigger": [
         {"name": "Create a webhook that runs the agent against a prompt.",
-         "text": "az sre workflow http-trigger create -g myrg --agent-name myagent "
+         "text": "az sre automation http-trigger create -g myrg --agent-name myagent "
                  "-n alert-webhook --value \"{agentPrompt:'Investigate the attached "
                  "alert payload'}\""},
         {"name": "List an agent's HTTP triggers.",
-         "text": "az sre workflow http-trigger list -g myrg --agent-name myagent"},
+         "text": "az sre automation http-trigger list -g myrg --agent-name myagent"},
     ],
-    "sre workflow incident-filter": [
+    "sre automation incident-filter": [
         {"name": "Route incidents mentioning 'disk space' to a handling agent.",
-         "text": "az sre workflow incident-filter create -g myrg --agent-name myagent "
+         "text": "az sre automation incident-filter create -g myrg --agent-name myagent "
                  "-n disk-space-filter --value \"{incidentPlatform:'Icm',"
                  "titleContains:'disk space',handlingAgents:['storage-oncall-agent'],"
                  "isEnabled:true}\""},
         {"name": "List an agent's incident filters.",
-         "text": "az sre workflow incident-filter list -g myrg --agent-name myagent"},
+         "text": "az sre automation incident-filter list -g myrg --agent-name myagent"},
     ],
 }
 
