@@ -51,7 +51,7 @@ RG="<approved-test-resource-group>"
 AGENT="sre-lifecycle-test"
 
 az sre agent create --name "$AGENT" -g "$RG" -l eastus2 \
-  --default-model "{provider:anthropic,name:claude-sonnet-4-5}" \
+  --default-model "{provider:anthropic,name:automatic}" \
   --system-assigned --no-wait
 
 az sre agent wait --name "$AGENT" -g "$RG" --created --timeout 600

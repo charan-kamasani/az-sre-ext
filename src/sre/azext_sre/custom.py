@@ -390,7 +390,7 @@ class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdenti
 
     :example: Create an agent with an Anthropic default model
         az sre agent create --name myagent --resource-group myrg \\
-            --location eastus2 --default-model "{provider:anthropic,name:claude-sonnet-4-5}"
+            --location eastus2 --default-model "{provider:anthropic,name:automatic}"
     """
 
     _args_schema = None
@@ -1058,7 +1058,7 @@ class AgentSettingsShow(AAZCommand):
             return cls._args_schema
         schema = super()._build_arguments_schema(*args, **kwargs)
         schema.agent_name = AAZStrArg(
-            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+            options=["-n", "--name", "--agent-name"], help="Name of the SRE Agent.", required=True,
         )
         schema.resource_group = AAZResourceGroupNameArg(required=True)
         cls._args_schema = schema
@@ -1101,7 +1101,7 @@ class AgentSettingsUpdate(AAZCommand):
             return cls._args_schema
         schema = super()._build_arguments_schema(*args, **kwargs)
         schema.agent_name = AAZStrArg(
-            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+            options=["-n", "--name", "--agent-name"], help="Name of the SRE Agent.", required=True,
         )
         schema.resource_group = AAZResourceGroupNameArg(required=True)
         schema.value = AAZStrArg(
@@ -1239,7 +1239,7 @@ class _ManagedResourceScopeCommand(AAZCommand):
             return cls._args_schema
         schema = super()._build_arguments_schema(*args, **kwargs)
         schema.agent_name = AAZStrArg(
-            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+            options=["-n", "--name", "--agent-name"], help="Name of the SRE Agent.", required=True,
         )
         schema.resource_group = AAZResourceGroupNameArg(
             help="Resource group of the SRE Agent (NOT the target scope -- use "
@@ -1370,7 +1370,7 @@ class ManagedResourceList(AAZCommand):
             return cls._args_schema
         schema = super()._build_arguments_schema(*args, **kwargs)
         schema.agent_name = AAZStrArg(
-            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+            options=["-n", "--name", "--agent-name"], help="Name of the SRE Agent.", required=True,
         )
         schema.resource_group = AAZResourceGroupNameArg(
             help="Resource group of the SRE Agent.", required=True,
@@ -1580,7 +1580,7 @@ class KnowledgeList(AAZCommand):
             return cls._args_schema
         schema = super()._build_arguments_schema(*args, **kwargs)
         schema.agent_name = AAZStrArg(
-            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+            options=["-n", "--name", "--agent-name"], help="Name of the SRE Agent.", required=True,
         )
         schema.resource_group = AAZResourceGroupNameArg(required=True)
         cls._args_schema = schema
@@ -3074,7 +3074,7 @@ class _PinnedExtensionList(AAZCommand):
             return cls._args_schema
         schema = super()._build_arguments_schema(*args, **kwargs)
         schema.agent_name = AAZStrArg(
-            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+            options=["-n", "--name", "--agent-name"], help="Name of the SRE Agent.", required=True,
         )
         schema.resource_group = AAZResourceGroupNameArg(required=True)
         cls._args_schema = schema
@@ -3925,6 +3925,14 @@ class RepoConnect(AAZCommand):
     DevOps REST API (Azure DevOps) and wires up both the auth extension and
     the repositories extension for you, instead of requiring two manual
     hand-built JSON payloads.
+
+    :example: Connect a GitHub repo (provider auto-detected from the URL)
+        az sre repo connect --agent-name myagent --resource-group myrg \\
+            --repo-url https://github.com/contoso/my-service
+
+    :example: Connect an Azure DevOps repo
+        az sre repo connect --agent-name myagent --resource-group myrg \\
+            --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo
     """
 
     _args_schema = None

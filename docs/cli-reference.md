@@ -170,7 +170,7 @@ Create an SRE Agent.
 
 - Create an agent with an Anthropic default model
 
-  `az sre agent create --name myagent --resource-group myrg \ --location eastus2 --default-model "{provider:anthropic,name:claude-sonnet-4-5}"`
+  `az sre agent create --name myagent --resource-group myrg \ --location eastus2 --default-model "{provider:anthropic,name:automatic}"`
 
 ### `az sre agent delete`
 
@@ -487,7 +487,7 @@ Fires on one of four events (Start, PreToolUse, PostToolUse, Stop) and runs eith
 | --- | --- |
 | `create` | `az sre hook create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
 | `delete` | `az sre hook delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
-| `list` | `az sre hook list --agent-name <value> --resource-group <value>` |
+| `list` | `az sre hook list --name <value> --resource-group <value>` |
 | `show` | `az sre hook show --agent-name <value> --resource-group <value> --name <value>` |
 
 ### `az sre hook create`
@@ -527,11 +527,11 @@ List hooks.
 
 **Syntax**
 
-`az sre hook list --agent-name <value> --resource-group <value>`
+`az sre hook list --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 ### `az sre hook show`
@@ -630,7 +630,7 @@ A single free-text block (up to 16384 bytes) appended to the agent's default sys
 | --- | --- |
 | `create` | `az sre instructions create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
 | `delete` | `az sre instructions delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
-| `list` | `az sre instructions list --agent-name <value> --resource-group <value>` |
+| `list` | `az sre instructions list --name <value> --resource-group <value>` |
 | `show` | `az sre instructions show --agent-name <value> --resource-group <value> --name <value>` |
 
 ### `az sre instructions create`
@@ -672,11 +672,11 @@ List the agent's custom instructions entries.
 
 **Syntax**
 
-`az sre instructions list --agent-name <value> --resource-group <value>`
+`az sre instructions list --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 ### `az sre instructions show`
@@ -703,7 +703,7 @@ Use 'sre knowledge create --type file' or '--type webpage' to add one. Repositor
 | --- | --- |
 | `create` | `az sre knowledge create --agent-name <value> --resource-group <value> --name <value> --type {file,text,webpage,repository} [--file-path <value>] [--url <value>] [--data-source <value>] [--overwrite {false,true}]` |
 | `delete` | `az sre knowledge delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
-| `list` | `az sre knowledge list --agent-name <value> --resource-group <value>` |
+| `list` | `az sre knowledge list --name <value> --resource-group <value>` |
 | `show` | `az sre knowledge show --agent-name <value> --resource-group <value> --name <value>` |
 
 ### `az sre knowledge create`
@@ -757,11 +757,11 @@ Self-invokes 'sre connector list' (knowledge items are connectors under the hood
 
 **Syntax**
 
-`az sre knowledge list --agent-name <value> --resource-group <value>`
+`az sre knowledge list --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 ### `az sre knowledge show`
@@ -786,9 +786,9 @@ Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles together (
 
 | Verb | Exact syntax |
 | --- | --- |
-| `grant` | `az sre managed-resource grant --agent-name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
-| `list` | `az sre managed-resource list --agent-name <value> --resource-group <value>` |
-| `revoke` | `az sre managed-resource revoke --agent-name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
+| `grant` | `az sre managed-resource grant --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
+| `list` | `az sre managed-resource list --name <value> --resource-group <value>` |
+| `revoke` | `az sre managed-resource revoke --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
 
 ### `az sre managed-resource grant`
 
@@ -796,11 +796,11 @@ Grant the agent's managed identity Reader + Monitoring Contributor on a scope.
 
 **Syntax**
 
-`az sre managed-resource grant --agent-name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
+`az sre managed-resource grant --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent (NOT the target scope -- use --target-resource-group for that). |
 | `--scope` | String | No |  |  | Full resource ID of the scope to grant access on/from. Alternative to --target-subscription/--target-resource-group/--management-group. |
 | `--target-subscription` | String | No |  |  | Target subscription name or ID. Used alone for subscription-level scope, or with --target-resource-group for resource-group-level scope. (Named --target-subscription, not --subscription, because the latter is a reserved global az CLI argument.) |
@@ -827,11 +827,11 @@ access to (i.e. every role assignment where the agent is the assignee).
 
 **Syntax**
 
-`az sre managed-resource list --agent-name <value> --resource-group <value>`
+`az sre managed-resource list --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent. |
 
 **Examples**
@@ -846,11 +846,11 @@ Revoke the agent's managed identity's Reader + Monitoring Contributor on a scope
 
 **Syntax**
 
-`az sre managed-resource revoke --agent-name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
+`az sre managed-resource revoke --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent (NOT the target scope -- use --target-resource-group for that). |
 | `--scope` | String | No |  |  | Full resource ID of the scope to revoke access on/from. Alternative to --target-subscription/--target-resource-group/--management-group. |
 | `--target-subscription` | String | No |  |  | Target subscription name or ID. Used alone for subscription-level scope, or with --target-resource-group for resource-group-level scope. (Named --target-subscription, not --subscription, because the latter is a reserved global az CLI argument.) |
@@ -942,6 +942,15 @@ Mirrors 'az aigateway mcp create --github true': fetches your existing 'gh auth 
 | `--devops-federated-client-id` | String | No |  |  | Federated client ID, only needed alongside --devops-federated-tenant-id for a user-assigned identity in a different tenant than the Azure DevOps org (managed-identity auth only; both or neither must be set). |
 | `--devops-federated-tenant-id` | String | No |  |  | Federated tenant ID, only needed alongside --devops-federated-client-id (managed-identity auth only; both or neither must be set). |
 
+**Examples**
+
+- Connect a GitHub repo (provider auto-detected from the URL)
+
+  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service`
+- Connect an Azure DevOps repo
+
+  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo`
+
 ## `az sre skill`
 
 Manage custom skills -- specialized capabilities the agent can use.
@@ -952,7 +961,7 @@ Built-in skills are toggled on/off separately, not created here; use 'sre skill 
 | --- | --- |
 | `create` | `az sre skill create --agent-name <value> --resource-group <value> --name <value> [--value <value>] [--overwrite {false,true}] [--file-path <value>] [--tools <json-or-@file>] [--description <value>]` |
 | `delete` | `az sre skill delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
-| `list` | `az sre skill list --agent-name <value> --resource-group <value>` |
+| `list` | `az sre skill list --name <value> --resource-group <value>` |
 | `show` | `az sre skill show --agent-name <value> --resource-group <value> --name <value>` |
 
 ### `az sre skill create`
@@ -1004,11 +1013,11 @@ List custom skills.
 
 **Syntax**
 
-`az sre skill list --agent-name <value> --resource-group <value>`
+`az sre skill list --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 ### `az sre skill show`
@@ -1035,7 +1044,7 @@ Built-in tools and MCP servers/services are configured separately and are not ye
 | --- | --- |
 | `create` | `az sre tool create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
 | `delete` | `az sre tool delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
-| `list` | `az sre tool list --agent-name <value> --resource-group <value>` |
+| `list` | `az sre tool list --name <value> --resource-group <value>` |
 | `show` | `az sre tool show --agent-name <value> --resource-group <value> --name <value>` |
 
 ### `az sre tool create`
@@ -1075,11 +1084,11 @@ List custom tools.
 
 **Syntax**
 
-`az sre tool list --agent-name <value> --resource-group <value>`
+`az sre tool list --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 ### `az sre tool show`
@@ -1148,8 +1157,8 @@ A single, agent-wide settings object covering tool/skill allow-ask-deny permissi
 
 | Verb | Exact syntax |
 | --- | --- |
-| `show` | `az sre agent settings show --agent-name <value> --resource-group <value>` |
-| `update` | `az sre agent settings update --agent-name <value> --resource-group <value> --value <value>` |
+| `show` | `az sre agent settings show --name <value> --resource-group <value>` |
+| `update` | `az sre agent settings update --name <value> --resource-group <value> --value <value>` |
 
 ### `az sre agent settings show`
 
@@ -1157,11 +1166,11 @@ Show an SRE Agent's global settings.
 
 **Syntax**
 
-`az sre agent settings show --agent-name <value> --resource-group <value>`
+`az sre agent settings show --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 ### `az sre agent settings update`
@@ -1172,11 +1181,11 @@ Always targets the agent's single settings object (there is no --name -- an agen
 
 **Syntax**
 
-`az sre agent settings update --agent-name <value> --resource-group <value> --value <value>`
+`az sre agent settings update --name <value> --resource-group <value> --value <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--value` | String | Yes |  |  | Global settings as a JSON document (confirmed via the control plane's own real round-trip integration test, GlobalSettingsExtensionTests.cs). All fields optional: toolPermissions ({"allow": [...], "ask": [...], "deny": [...]} tool-name arrays), toolStatuses/skillStatuses (arrays of {"name": ..., "enabled": true/false}), customInstructions (string), approvalExpirationSetting ({"enabled": true/false, "approvalExpirationInMinutes": <number>}). |
 
@@ -1190,7 +1199,7 @@ Run 'sre plugin marketplace create' first if you haven't connected a marketplace
 | --- | --- |
 | `create` | `az sre plugin install create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
 | `delete` | `az sre plugin install delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
-| `list` | `az sre plugin install list --agent-name <value> --resource-group <value>` |
+| `list` | `az sre plugin install list --name <value> --resource-group <value>` |
 | `show` | `az sre plugin install show --agent-name <value> --resource-group <value> --name <value>` |
 
 ### `az sre plugin install create`
@@ -1230,11 +1239,11 @@ List installed plugins.
 
 **Syntax**
 
-`az sre plugin install list --agent-name <value> --resource-group <value>`
+`az sre plugin install list --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 ### `az sre plugin install show`
@@ -1261,7 +1270,7 @@ Supports GitHub, Azure DevOps, and GitLab repos. Use 'sre plugin install' afterw
 | --- | --- |
 | `create` | `az sre plugin marketplace create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
 | `delete` | `az sre plugin marketplace delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
-| `list` | `az sre plugin marketplace list --agent-name <value> --resource-group <value>` |
+| `list` | `az sre plugin marketplace list --name <value> --resource-group <value>` |
 | `show` | `az sre plugin marketplace show --agent-name <value> --resource-group <value> --name <value>` |
 
 ### `az sre plugin marketplace create`
@@ -1301,11 +1310,11 @@ List connected plugin marketplaces.
 
 **Syntax**
 
-`az sre plugin marketplace list --agent-name <value> --resource-group <value>`
+`az sre plugin marketplace list --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 ### `az sre plugin marketplace show`
@@ -1332,7 +1341,7 @@ webhook call instead of a schedule.
 | --- | --- |
 | `create` | `az sre workflow http-trigger create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
 | `delete` | `az sre workflow http-trigger delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
-| `list` | `az sre workflow http-trigger list --agent-name <value> --resource-group <value>` |
+| `list` | `az sre workflow http-trigger list --name <value> --resource-group <value>` |
 | `show` | `az sre workflow http-trigger show --agent-name <value> --resource-group <value> --name <value>` |
 
 ### `az sre workflow http-trigger create`
@@ -1372,11 +1381,11 @@ List HTTP triggers.
 
 **Syntax**
 
-`az sre workflow http-trigger list --agent-name <value> --resource-group <value>`
+`az sre workflow http-trigger list --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 ### `az sre workflow http-trigger show`
@@ -1403,7 +1412,7 @@ incoming incidents by platform/title/team/etc. and route matches to a handling a
 | --- | --- |
 | `create` | `az sre workflow incident-filter create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
 | `delete` | `az sre workflow incident-filter delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
-| `list` | `az sre workflow incident-filter list --agent-name <value> --resource-group <value>` |
+| `list` | `az sre workflow incident-filter list --name <value> --resource-group <value>` |
 | `show` | `az sre workflow incident-filter show --agent-name <value> --resource-group <value> --name <value>` |
 
 ### `az sre workflow incident-filter create`
@@ -1443,11 +1452,11 @@ List incident filters.
 
 **Syntax**
 
-`az sre workflow incident-filter list --agent-name <value> --resource-group <value>`
+`az sre workflow incident-filter list --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 ### `az sre workflow incident-filter show`
@@ -1474,7 +1483,7 @@ prompt, optionally bounded to a time window or a maximum run count.
 | --- | --- |
 | `create` | `az sre workflow scheduled-task create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
 | `delete` | `az sre workflow scheduled-task delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
-| `list` | `az sre workflow scheduled-task list --agent-name <value> --resource-group <value>` |
+| `list` | `az sre workflow scheduled-task list --name <value> --resource-group <value>` |
 | `show` | `az sre workflow scheduled-task show --agent-name <value> --resource-group <value> --name <value>` |
 
 ### `az sre workflow scheduled-task create`
@@ -1514,11 +1523,11 @@ List scheduled tasks.
 
 **Syntax**
 
-`az sre workflow scheduled-task list --agent-name <value> --resource-group <value>`
+`az sre workflow scheduled-task list --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 ### `az sre workflow scheduled-task show`

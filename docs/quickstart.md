@@ -9,6 +9,27 @@ a browser.
 Everything here runs against real Azure resources and is safe to delete at
 the end. Replace the placeholder values before running.
 
+> **Windows PowerShell users:** every `--value '{"key": "value"}'` example on
+> this page uses bash-style quoting (single-quoted string containing literal
+> double quotes). PowerShell does **not** pass that through to `az.cmd`
+> unchanged — it mangles embedded `"` characters, so copy-pasting these
+> examples verbatim in `powershell.exe`/`pwsh` fails with either
+> `unrecognized arguments` or a JSON parse error. Use backslash-escaped
+> quotes instead:
+>
+> ```powershell
+> # Bash-style (works in bash/zsh, fails in PowerShell):
+> --value '{"prompt": "Escalate before restarting."}'
+>
+> # PowerShell-safe equivalent:
+> --value '{\"prompt\":\"Escalate before restarting.\"}'
+> ```
+>
+> This is a PowerShell/`.cmd`-wrapper quoting quirk, not an `az sre` bug — it
+> affects every Azure CLI command that takes inline JSON. See
+> [`operations.md`](operations.md#windows-powershell-json-quoting) for more
+> detail.
+
 ## 0. Set up
 
 ```bash
@@ -42,7 +63,7 @@ az sre agent create \
   --resource-group "$RG" \
   --name "$AGENT" \
   --location "$LOCATION" \
-  --default-model "{provider:anthropic,name:claude-sonnet-4-5}"
+  --default-model "{provider:anthropic,name:automatic}"
 
 az sre agent wait --resource-group "$RG" --name "$AGENT" --created
 az sre agent show --resource-group "$RG" --name "$AGENT" --output table

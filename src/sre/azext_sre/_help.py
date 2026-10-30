@@ -34,7 +34,7 @@ examples:
   - name: Create an agent with an Anthropic default model.
     text: |-
       az sre agent create --name myagent --resource-group myrg --location eastus2 \\
-          --default-model "{provider:anthropic,name:claude-sonnet-4-5}"
+          --default-model "{provider:anthropic,name:automatic}"
   - name: Grant the agent's managed identity read/monitoring access to a resource group.
     text: az sre managed-resource grant -g myrg --agent-name myagent --scope /subscriptions/<sub-id>/resourceGroups/prod-rg
 """
@@ -69,7 +69,7 @@ GROUP_EXAMPLES = {
     "sre agent": [
         {"name": "Create an agent with an Anthropic default model.",
          "text": ('az sre agent create --name myagent --resource-group myrg --location eastus2 '
-                   '--default-model "{provider:anthropic,name:claude-sonnet-4-5}"')},
+                   '--default-model "{provider:anthropic,name:automatic}"')},
         {"name": "Show one agent's details.",
          "text": "az sre agent show -g myrg -n myagent"},
         {"name": "List supported model providers/names in a region.",

@@ -7,7 +7,7 @@ command syntax reference, see [docs/cli-reference.md](cli-reference.md).
 
 ```bash
 az sre agent create --name myagent -g myrg -l eastus2 \
-  --default-model "{provider:anthropic,name:claude-sonnet-4-5}" \
+  --default-model "{provider:anthropic,name:automatic}" \
   --mi-system-assigned
 
 az sre agent show -g myrg -n myagent
@@ -443,6 +443,42 @@ az sre workflow incident-filter create -g myrg --agent-name myagent \
 
 See [docs/networking.md](networking.md) for VNet injection and sandbox
 egress configuration via `network update`.
+
+## Windows PowerShell: JSON quoting
+
+Live-verified during a cold-start grading pass of the quickstart on Windows:
+bash-style `--value '{"key": "value"}'` quoting (single-quoted string
+containing literal, unescaped double quotes) does **not** survive
+`powershell.exe`/`pwsh` invoking `az` (which is `az.cmd`, a batch-wrapped
+executable). The embedded `"` characters get re-tokenized on the way to the
+native command line, producing either:
+
+- `ERROR: unrecognized arguments: ...` (argument got split on whitespace
+  inside the JSON), or
+- `--value must be a JSON document... Expecting property name enclosed in
+  double quotes` (the JSON arrived with its quotes stripped).
+
+This reproduces identically regardless of spaces around `:` or any
+particular character inside the string — it is PowerShell's general handling
+of embedded `"` in a single-quoted argument being passed to a `.cmd`-wrapped
+executable, not specific to any one flag or payload. It affects every Azure
+CLI command that takes inline JSON, not just `az sre`.
+
+**Fix: escape the inner double quotes with a backslash, keep the outer
+single quotes:**
+
+```powershell
+# Fails on Windows PowerShell:
+az sre instructions create -g myrg --agent-name myagent --name default `
+  --value '{"prompt": "Escalate before restarting."}'
+
+# Works on Windows PowerShell:
+az sre instructions create -g myrg --agent-name myagent --name default `
+  --value '{\"prompt\":\"Escalate before restarting.\"}'
+```
+
+Bash/zsh users are unaffected and can keep using the unescaped form shown
+throughout this guide and the quickstart.
 
 ## Usage and endpoint info
 
