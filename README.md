@@ -11,8 +11,8 @@ extensions (tools, skills, scheduled tasks, and similar) under `az sre`.
 > distributed as a release artifact.
 
 > [!IMPORTANT]
-> This extension follows the same AAZ-generation-plus-hand-written-overlay
-> pattern as `azext-aigateway`: generated recipes under `aaz/latest/...` cover
+> This extension follows the standard AAZ-generation-plus-hand-written-overlay
+> pattern: generated recipes under `aaz/latest/...` cover
 > plain ARM CRUD, and a thin `custom.py` overlay adds the behavior no Swagger
 > spec can express (see [Implementation plan](PLAN.md) for why).
 
@@ -117,7 +117,7 @@ data-connector-type normalization, extension-type enum completeness,
 file-path-based skill/repo-connect convenience flags, command registration,
 arg-schema help regressions, and CLI-level argument enforcement
 (invalid/missing arguments rejected by argparse before any handler runs) —
-following the same pattern `azext-aigateway`'s own test suite uses. See
+a standard pattern for Azure CLI extension test suites. See
 [docs/testing.md](docs/testing.md) for the full coverage breakdown and the
 live-verification workflow used on top of these unit tests.
 
@@ -144,8 +144,7 @@ The generated AAZ recipes under `azext_sre/aaz/latest/` are produced from the
 `Microsoft.App/agents` Swagger using `aaz-dev` and should not be hand-edited —
 regenerate them instead. Everything hand-written lives in
 `azext_sre/custom.py`, which `commands.py` auto-discovers by scanning
-`vars(custom)` for `@register_command`-decorated classes (the same pattern
-`azext-aigateway` uses). See [docs/development.md](docs/development.md) and
+`vars(custom)` for `@register_command`-decorated classes. See [docs/development.md](docs/development.md) and
 [docs/source-code.md](docs/source-code.md) for the full architecture
 walkthrough, and [PLAN.md](PLAN.md) for the API versions pinned, why, plus
 every architecture decision and its evidence.

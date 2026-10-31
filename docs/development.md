@@ -2,8 +2,8 @@
 
 ## Architecture
 
-`az sre` follows the same generated-AAZ-plus-hand-written-overlay pattern
-as `azext-aigateway`: AAZ-generated recipes under `azext_sre/aaz/latest/`
+`az sre` follows the standard generated-AAZ-plus-hand-written-overlay pattern:
+AAZ-generated recipes under `azext_sre/aaz/latest/`
 cover plain ARM CRUD for `Microsoft.App/agents` and its `connectors` child
 resource; `azext_sre/custom.py` is the only file with hand-written
 behavior. See [docs/source-code.md](source-code.md) for the full map and
@@ -95,11 +95,11 @@ for the full list of what's already hand-maintained and why).
 - CI (`.github/workflows/ci.yml`) builds a wheel on every push/PR and
   uploads it as a build artifact — this is a development convenience, not
   a release.
-- A full `azext-aigateway`-style release pipeline (swagger-drift
+- A full production-grade release pipeline (swagger-drift
   validation, codegen-drift check, SBOM, signed releases) is parked at
   `.github/workflows-future/release.yml`. It is intentionally not
   auto-discovered by GitHub Actions (only `.github/workflows/` is) until
   this project needs signed release artifacts.
 - Do not produce release wheel artifacts on a developer workstation once
   that pipeline is wired up — release wheels must come from a compliant
-  pipeline, matching `azext-aigateway`'s own policy.
+  pipeline.

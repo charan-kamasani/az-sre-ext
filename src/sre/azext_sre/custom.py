@@ -18,9 +18,9 @@
 #      super().
 #
 # commands.py auto-discovers every class defined here via
-# inspect.isclass/issubclass scanning of vars(custom) (same pattern as
-# azext-aigateway), so a new command only needs to be added here, decorated
-# with @register_command("sre agent ..."), to be picked up.
+# inspect.isclass/issubclass scanning of vars(custom), so a new command
+# only needs to be added here, decorated with @register_command("sre
+# agent ..."), to be picked up.
 # --------------------------------------------------------------------------------------------
 
 # pylint: disable=too-many-lines
@@ -97,12 +97,7 @@ NETWORK_API_VERSION = "2026-11-01-preview"
 
 
 def _arg_value(value):
-    """Unwrap an AAZ argument into a plain Python value (None if unset).
-
-    Mirrors azext-aigateway's custom.py helper of the same name -- reused
-    here verbatim since this extension follows the same AAZ-override
-    pattern.
-    """
+    """Unwrap an AAZ argument into a plain Python value (None if unset)."""
     if value == AAZUndefined:
         return None
     return AAZHttpOperation.serialize_content(value)
@@ -141,10 +136,6 @@ def _arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_o
     generated aaz recipe (e.g. the agent's /usages and /dailyusages child
     collections, which are read-only list endpoints with no corresponding
     Create/Update verb for aaz-dev-tools to anchor a command group on).
-
-    Copied from azext-aigateway's custom.py (same helper name/signature) so
-    both extensions share one well-understood pattern for "generated CLI
-    doesn't cover this ARM GET" situations.
     """
     if resource_id.startswith("http://") or resource_id.startswith("https://"):
         url = resource_id
@@ -172,7 +163,7 @@ def _arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_o
 
 def _cli_invoke(cli_ctx, *args, allow_missing=False):
     """Run another public `az sre ...` command in-process and return its
-    parsed result. Copied from azext-aigateway's helper of the same name.
+    parsed result.
     """
     import io
 
@@ -594,9 +585,8 @@ class _DataConnectorTypeArgMixin:
 
 
 # Real public GitHub Copilot MCP endpoint, confirmed live this session
-# (provisioningState: Succeeded against a real agent). Same constant
-# azext-aigateway's _onboarding.py uses for its own "--github true" shortcut
-# -- this is the SRE-Agent-side equivalent for 'connector create --type Mcp'.
+# (provisioningState: Succeeded against a real agent) -- the SRE-Agent-side
+# wiring for 'connector create --type Mcp'.
 GITHUB_COPILOT_MCP_ENDPOINT = "https://api.githubcopilot.com/mcp/"
 
 
@@ -606,8 +596,7 @@ class _ConnectorConvenienceArgsMixin:
     base64 payload or the (confirmed live, easy to get wrong) nested
     --extended-properties JSON shape Mcp actually needs. The service's real
     wire shape is unchanged -- this only builds it for the caller, the same
-    spirit as 'sre repo connect' and azext-aigateway's
-    'mcp create --github true'.
+    spirit as 'sre repo connect'.
     """
 
     @classmethod
@@ -720,8 +709,7 @@ class _ConnectorExistenceGuardMixin:
     connector of the same name. The generated PUT has no If-Match/If-None-
     Match support here, so a second 'create' with the same --name would
     otherwise replace the first one's configuration without any warning --
-    same risk (and same GET-before-PUT guard) as azext-aigateway's
-    'mcp create' ResourceExistsError check. Use 'connector update' to
+    this adds a GET-before-PUT check. Use 'connector update' to
     intentionally change an existing connector.
 
     Confirmed root cause of issue #4 (cosmetic "ERROR: ... Not Found" stderr
@@ -824,8 +812,7 @@ def _connector_consent_guidance(connector):
     The SRE Agent control plane has no public ARM action to start or
     complete OAuth consent from the CLI -- confirmed by inspecting
     AAPT-SREAgent-ControlPlane src/WebApi (the ARM-facing REST surface):
-    there is no "getLoginLinks"-style operation there (unlike azext-aigateway's
-    AIGatewayToolServer_GetLoginLinks, which does return a public loginLink).
+    there is no "getLoginLinks"-style operation there.
     The only endpoints that construct/validate the Entra OAuth handshake for
     connectors (src/AuthenticationEndpoint/Controllers/EntraSSOController.cs)
     are Mise-authenticated, service-to-service routes meant for the portal's
@@ -3842,13 +3829,11 @@ class InstructionsDelete(_PinnedExtensionDelete):
 
 
 # ---- sre plugin (portal: Extensions > Plugins) ----
-# Nested two-deep, matching az aigateway's real precedent for genuine
-# parent->child sub-resources (e.g. 'model policy', 'mcp source',
-# 'network private-endpoint-connection') -- NOT the 'agent connector'
-# anti-pattern, which would nest every noun under the one universal
-# parent every resource already scopes to via --agent-name. Marketplace
-# and install are a true two-step flow (install requires an existing
-# marketplace), the same shape as model->policy and mcp->source.
+# Nested two-deep for genuine parent->child sub-resources -- NOT the
+# 'agent connector' anti-pattern, which would nest every noun under the
+# one universal parent every resource already scopes to via --agent-name.
+# Marketplace and install are a true two-step flow (install requires an
+# existing marketplace).
 @register_command_group("sre plugin")
 class _PluginGroup(AAZCommandGroup):
     """Manage community plugins that add skills, tools, and integrations.
@@ -3958,20 +3943,17 @@ class PluginInstallDelete(_PinnedExtensionDelete):
 
 # --------------------------------------------------------------------------------------------
 # "sre repo connect" -- a one-command golden path for the GitHub/Azure
-# DevOps repo-connection flow, modeled directly on azext-aigateway's
-# "az aigateway mcp create --github true" (custom.py's McpCreate.pre_operations
-# + _onboarding.py's github_mcp_endpoints/_github_cli_token). That command
-# collapses what would otherwise be a manual PAT-copy-paste + hand-built JSON
-# payload into one flag because it already has a locally authenticated
-# credential available (gh auth token) and a canonical payload shape it can
-# build for the user.
+# DevOps repo-connection flow. Collapses what would otherwise be a manual
+# PAT-copy-paste + hand-built JSON payload into one flag because it already
+# has a locally authenticated credential available (gh auth token) and a
+# canonical payload shape it can build for the user.
 #
 # Before this command, connecting one repo required two raw extension
 # creates the user had to build by hand:
 #   1. githubAuths/azureDevOpsAuths, with a manually-pasted PAT
 #   2. repositories, with a hand-written JSON --value
 # This command does both, using a token it fetches itself -- `gh auth token`
-# for GitHub (identical helper to aigateway's), or a freshly minted
+# for GitHub, or a freshly minted
 # Azure DevOps PAT via the vssps.dev.azure.com REST API for Azure DevOps
 # (ADO PAT creation has no `az devops` command; see running notes section on
 # ADO PAT generation). Nothing here bypasses the real extension model --
@@ -3985,10 +3967,8 @@ ADO_PAT_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
 def _github_cli_token(account=None):
     """Fetch the already-authenticated GitHub token from the GitHub CLI.
 
-    Copied from azext-aigateway's custom.py._github_cli_token verbatim (same
-    helper name/signature) so both extensions share one well-understood
-    pattern for "borrow the user's existing `gh auth login` session instead
-    of asking them to mint and paste a PAT."
+    Borrows the user's existing `gh auth login` session instead of asking
+    them to mint and paste a PAT.
     """
     import subprocess
 
@@ -4074,9 +4054,6 @@ def _detect_repo_provider(repo_url):
     )
 
 
-# Design note (not shown to users): modeled on azext-aigateway's
-# "az aigateway mcp create --github true" precedent for this same
-# one-step-credential-discovery pattern.
 @register_command("sre repo connect")
 class RepoConnect(AAZCommand):
     """Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.

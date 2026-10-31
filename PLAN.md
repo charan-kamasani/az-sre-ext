@@ -32,14 +32,14 @@ hard part, creating a useful agent is.
 | Runbook extensions — `subagents`/`scheduledTasks` | Permanently out of scope | These 2 types require an "approve" data-action claim that ARM only forwards for portal-originated sessions — confirmed both in the control-plane service's own test comments and independently by the official Microsoft Learn doc (`learn.microsoft.com/azure/sre-agent/create-subagent`), which documents subagent authoring as Agent-Canvas/portal-only with no public REST/CLI path | No CLI fix exists for this; it's a deliberate platform boundary, not missing code. Per Paul's guidance, not chasing a workaround — formally closed rather than carried as a backlog item. Still reachable via the generic `extension` noun if the gating is ever lifted server-side. |
 | `--data-connector-type` enum validation | Done | None | Implemented via `_DataConnectorTypeArgMixin`, mirroring the `--model-provider` fix exactly: case-insensitive validation/normalization of `kusto`/`mcp`/`outlook`/`teams`, `CLIError` on invalid input, unit-tested (`test_custom.py`). This row was stale — the fix had already landed. |
 | Stale generic `Reader` role assignment cleanup | Done | None | Checked live against `mytestagent`'s scope and the `ckamasani-publishtest` resource group: no generic ARM `Reader` assignment remains, only the correct `SRE Agent Standard User` assignment. Nothing to clean up. |
-| Repo + CI/CD infrastructure | Done | None | Code lives in `charan-kamasani/az-sre-ext` (private). Minimal GitHub Actions CI (install deps → run unit tests → build wheel) runs green on every push. 188+ unit tests, offline/mocked, same pattern as `azext-aigateway`'s own suite. |
+| Repo + CI/CD infrastructure | Done | None | Code lives in `charan-kamasani/az-sre-ext` (private). Minimal GitHub Actions CI (install deps → run unit tests → build wheel) runs green on every push. 188+ unit tests, offline/mocked. |
 
 ### Data plane (`sre.azure.com` — agent runtime, NOT touched by `az sre`)
 
 | Feature | Status | Blocker | Next step |
 |---|---|---|---|
 | Threads & Incidents chat UI (Priority 1 — the actual job) | Not started | Depends on all control-plane prerequisites above (done). Open design decision: **read-write vs. read-only access model per role**, gated by client-authorization checks | Needs a decision from Paul before building starts — not an access or code problem. |
-| Connector consent flow (first-time auth) | Investigated, closed as not CLI-fixable | The control plane has no public ARM action to initiate/complete OAuth consent (confirmed: no `getLoginLinks`-style operation exists anywhere in the SRE Agent control-plane source, unlike `azext-aigateway`'s `AIGatewayToolServer_GetLoginLinks`) | CLI now detects `consentStatus=PendingConsent` and surfaces a direct Azure Portal deep link via `connector show`/`list`/`create`/`update`. No further CLI work possible until the service adds a public consent-initiation action. |
+| Connector consent flow (first-time auth) | Investigated, closed as not CLI-fixable | The control plane has no public ARM action to initiate/complete OAuth consent (confirmed: no `getLoginLinks`-style operation exists anywhere in the SRE Agent control-plane source) | CLI now detects `consentStatus=PendingConsent` and surfaces a direct Azure Portal deep link via `connector show`/`list`/`create`/`update`. No further CLI work possible until the service adds a public consent-initiation action. |
 | Per-extension-type payload schema (field-level shapes for all 15 types) | 14 of 15 confirmed from authoritative source; 12 of 15 live-verified end-to-end (PUT+GET round trip) against a real agent | `subagents` has no model file anywhere in the runtime source; believed server-managed/non-CLI-creatable | No further action planned unless a `subagents` model surfaces in a future source pull. |
 | Repo (code context for investigations) | Confirmed data-plane only, not something this CLI builds | N/A — architectural, not a gap | Confirmed via spec: `PUT /api/v2/repos/{repoName}` lives entirely on the agent's own data-plane endpoint. |
 | Context categories observed in the portal (Code/Logs/Deployments/Incidents/Azure resources/Knowledge files/S360) | Observed only, intentionally not built | N/A — exactly the kind of portal-parity surface Paul's guidance says to skip | Informational only — confirmed our RBAC roles are mapped correctly (reaching the real data-plane UI). No CLI work planned. |
@@ -112,8 +112,7 @@ hard part, creating a useful agent is.
   is expected and consistent with the gating finding above — the payload
   shape was never the problem for this extension type.
 - 188+ offline, credential-free unit tests cover every hand-written command in
-  `custom.py`, following the same testing pattern as `azext-aigateway`'s own
-  suite: argument-validation/routing-logic tests for hand-written logic
+  `custom.py`: argument-validation/routing-logic tests for hand-written logic
   (constructed by pre-seeding a bare `AAZCommand` instance's `.ctx`/`.cli_ctx`
   and patching the base `AAZCommand._handler` to a no-op so the subclass's
   own `_handler` body runs against a controlled context), plus real
@@ -124,15 +123,15 @@ hard part, creating a useful agent is.
   `charan-kamasani/az-sre-ext` (private, personal GitHub account). GitHub
   Actions is disabled by enterprise policy on the parallel EMU-account copy
   (`ckamasani_microsoft/az-sre-ext`), kept for a future migration into a
-  shared org once the team is ready. The full `azext-aigateway`-style release
+  shared org once the team is ready. A full production-grade release
   pipeline (swagger validation, codegen-drift check, SBOM, signed releases)
   is parked, unused, in `.github/workflows-future/release.yml` until signed
   releases are actually needed.
 
 ## Decisions
 
-- Build a private Azure CLI extension first, following the same
-  AAZ-generation-plus-hand-written-overlay pattern as `azext-aigateway`.
+- Build a private Azure CLI extension first, following the standard
+  AAZ-generation-plus-hand-written-overlay pattern.
 - Use `az sre` as the top-level command (the generated Swagger's own command
   name, `az app agent ...`, is renamed via thin `custom.py` subclasses).
 - Keep the noun hierarchy flat (`agent`, `connector`, `tool`, `skill`, etc.
@@ -197,5 +196,3 @@ The command surface and every architectural decision above is grounded in:
   the subagent gating finding and documents the product's organization
   around agent lifecycle, connectors, runbook/subagents, RBAC, and
   networking.
-- `azext-aigateway`'s own architecture, `custom.py` patterns, and test suite
-  — the direct structural template this extension follows throughout.

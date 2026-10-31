@@ -17,16 +17,15 @@ from knack.help_files import helps  # pylint: disable=unused-import
 # module-level assignment is safe here (see GROUP_EXAMPLES below for why
 # every OTHER group needs a different mechanism).
 #
-# One-line short-summary only -- deliberately matches 'az aigateway -h'
-# exactly (its 'Group' section is a single line, no long-summary/category
-# text at all). An earlier version here added a categorized long-summary
-# grouping nouns into the portal's own Build + setup categories, but that
-# diverged from the real az aigateway precedent and kept going stale as the
-# noun set changed (e.g. 'connector' briefly listed under the wrong
-# category). Removed in favor of 1:1 parity with az aigateway: a plain
-# short-summary, and let the native alphabetical "Subgroups:" list (always
-# in sync, since it's generated from the registered command groups) do the
-# rest of the work.
+# One-line short-summary only, matching the standard `az <ext> -h` shape used
+# across other Azure CLI extensions (a single-line 'Group' section, no
+# long-summary/category text at all). An earlier version here added a
+# categorized long-summary grouping nouns into the portal's own Build + setup
+# categories, but that kept going stale as the noun set changed (e.g.
+# 'connector' briefly listed under the wrong category). Removed in favor of
+# a plain short-summary, and let the native alphabetical "Subgroups:" list
+# (always in sync, since it's generated from the registered command groups)
+# do the rest of the work.
 helps['sre'] = """
 type: group
 short-summary: Manage Azure SRE Agent resources -- the agent itself, what it can access, how it's customized, who can use it, and how it's doing.

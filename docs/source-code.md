@@ -8,8 +8,8 @@ CRUD, plus a thin hand-written overlay (`custom.py`) for everything a
 Swagger spec cannot express — enum normalization, a hand-maintained
 preview api-version with no public spec, GET-merge-PUT read-modify-write
 helpers, and base64/JSON codec logic for the agent's runbook extension
-payloads. This mirrors `azext-aigateway`'s structure deliberately (see
-[PLAN.md](../PLAN.md) for why).
+payloads. See
+[PLAN.md](../PLAN.md) for why.
 
 ## Repository map
 
@@ -49,9 +49,9 @@ PLAN.md                # architecture decisions, evidence, roadmap
 The SRE Agent Swagger's RP folder is literally `app`
 (`Microsoft.App/agents`), so every generated recipe under
 `aaz/latest/app/agent/...` is registered by `load_aaz_command_table` as
-`app agent ...`. There is no equivalent of `azext-aigateway`'s mismatch
-(that extension needed to remap only one leaf, `model-provider`) — here the
-*entire* top-level group needs renaming. `__init__.py` remaps a leading
+`app agent ...`. The entire top-level group needs renaming (not just one
+leaf command) since the whole RP folder name differs from the CLI's public
+noun. `__init__.py` remaps a leading
 `"sre"` in the lazy-load args to `"app"` purely so `load_aaz_command_table`
 finds the right generated module to import; `commands.load_command_table`
 then renames every resulting `"app ..."` table/group key back to `"sre

@@ -1,12 +1,11 @@
 """Credential-free regression tests for the hand-written `az sre` command
 layer (azext_sre/custom.py).
 
-Style mirrors azext-aigateway's tests: offline, mocked, no live Azure calls,
-and asserting real business logic (argument validation, wire-payload shape,
-role-name mapping) rather than just "does it import". Tests that need a real
+Style: offline, mocked, no live Azure calls, and asserting real business
+logic (argument validation, wire-payload shape, role-name mapping) rather
+than just "does it import". Tests that need a real
 AAZCommand instance bypass __init__ and the framework's ctx-rebuilding
-_handler() the same way aigateway's test_extension_registration.py does for
-generated commands: construct via object.__new__, pre-seed .ctx/.cli_ctx, and
+_handler() by constructing via object.__new__, pre-seeding .ctx/.cli_ctx, and
 patch azure.cli.core.aaz.AAZCommand._handler to a no-op so our subclass's own
 _handler() logic runs against the ctx we control instead of a freshly
 rebuilt one.
@@ -1253,8 +1252,7 @@ class RepoProviderDetectionTests(unittest.TestCase):
 
 
 class RepoConnectTests(unittest.TestCase):
-    """RepoConnect is the one-command golden path mirroring azext-aigateway's
-    'az aigateway mcp create --github true': it must fetch a token itself
+    """RepoConnect is a one-command golden path: it must fetch a token itself
     (never ask the user to paste one) and issue the same two
     _extension_resource_create() calls a user would otherwise build by hand
     (one for the auth extension, one for the repository extension).
@@ -2016,8 +2014,7 @@ class CommandRegistrationTests(unittest.TestCase):
 
 class CliArgumentEnforcementTests(unittest.TestCase):
     """Exercises the real Azure CLI argument parser so enum/required-argument
-    enforcement is proven, not just declared -- mirrors aigateway's
-    McpSourceCliEnforcementTests. No Azure call happens: argument parsing
+    enforcement is proven, not just declared. No Azure call happens: argument parsing
     fails before any handler runs.
     """
 
@@ -2524,8 +2521,8 @@ class _TestConnectorExistenceGuard(_ConnectorExistenceGuardMixin, _NoOpPreOpBase
 
 class ConnectorExistenceGuardTests(unittest.TestCase):
     """'connector create' must not silently overwrite an existing connector
-    of the same name (the generated PUT has no If-Match support) -- same
-    GET-before-PUT guard azext-aigateway's 'mcp create' uses, pointing the
+    of the same name (the generated PUT has no If-Match support) -- a
+    GET-before-PUT guard, pointing the
     caller at 'connector update' instead."""
 
     def _run(self, show_result):
