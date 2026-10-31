@@ -137,8 +137,8 @@ Create, show, list, update, delete, start, and stop an agent.
 | `list` | `az sre agent list [--next-token <value>] [--max-items <value>] [--resource-group <value>]` |
 | `list-models` | `az sre agent list-models [--next-token <value>] [--max-items <value>] --location <value>` |
 | `show` | `az sre agent show --name <value> --resource-group <value>` |
-| `start` | `az sre agent start [--no-wait] --agent-name <value> --resource-group <value>` |
-| `stop` | `az sre agent stop [--no-wait] --agent-name <value> --resource-group <value>` |
+| `start` | `az sre agent start [--no-wait] --name <value> --resource-group <value>` |
+| `stop` | `az sre agent stop [--no-wait] --name <value> --resource-group <value>` |
 | `update` | `az sre agent update [--no-wait] [--add <value>] [--set <value>] [--remove <value>] [--force-string {true,t,yes,y,1,false,f,no,n,0}] --name <value> --resource-group <value> [--action-configuration <json-or-@file>] [--agent-identity <json-or-@file>] [--default-model <json-or-@file>] [--incident-management-configuration <json-or-@file>] [--knowledge-graph-configuration <json-or-@file>] [--log-configuration <json-or-@file>] [--upgrade-channel {Preview,Stable}] [--tags <json-or-@file>]` |
 | `wait` | `az sre agent wait --name <value> --resource-group <value>` |
 
@@ -244,12 +244,12 @@ Start a stopped SRE Agent.
 
 **Syntax**
 
-`az sre agent start [--no-wait] --agent-name <value> --resource-group <value>`
+`az sre agent start [--no-wait] --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
 | `--no-wait` | Flag | No |  |  | Do not wait for the long-running operation to finish. |
-| `--agent-name` | String | Yes |  |  | The name of the Agent |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 ### `az sre agent stop`
@@ -258,12 +258,12 @@ Stop a running SRE Agent.
 
 **Syntax**
 
-`az sre agent stop [--no-wait] --agent-name <value> --resource-group <value>`
+`az sre agent stop [--no-wait] --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
 | `--no-wait` | Flag | No |  |  | Do not wait for the long-running operation to finish. |
-| `--agent-name` | String | Yes |  |  | The name of the Agent |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 ### `az sre agent update`

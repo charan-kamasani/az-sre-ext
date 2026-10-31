@@ -199,3 +199,51 @@ Canvas. Renamed the CLI group `workflow` -> `automation` to match.
 `incident-filter`'s placement under `automation` was kept as-is pending
 further portal-parity confirmation (it doesn't appear under the portal's
 Automation section in the screenshots shared).
+
+**Update (2026-10-30):** a later, fuller portal screenshot tour confirmed
+incident filters actually live under the portal's **Incidents** nav item,
+tab "Triggers & response plans" -- a separate top-level section from
+Automation (which only ever shows Scheduled tasks + HTTP triggers).
+Promoted `incident-filter` out of `automation` to its own flat top-level
+noun, `az sre incident-filter`, consistent with Decision 1's flat-noun
+principle. This also leaves room for a future `az sre incident` noun to
+cover the portal's separate read-only "Incidents" list without conflating
+the two concepts.
+
+## Decision 3: Control plane and data plane are two separate CLI deliverables
+
+The agent exposes two fundamentally different surfaces:
+
+- **Control plane**: ARM resource lifecycle (`Microsoft.App/agents` and its
+  extension sub-resources) -- idempotent PUT/GET/DELETE against
+  `management.azure.com`. This is what `az sre` covers today.
+- **Data plane**: the agent's own live runtime, reached at the endpoint
+  `az sre endpoint show` resolves -- chat/threads, investigations, actual
+  incident instances (not filters), live reports, session insights. This is
+  stateful and often long-running/streaming, not resource CRUD.
+
+Because the shapes, auth model, and lifecycle semantics are genuinely
+different, these are **two separate CLI deliverables**, not one CLI with a
+`--data-plane` mode:
+
+1. `az sre` (this repo) -- Python, Azure CLI extension, control plane only,
+   talks to ARM.
+2. A separate data-plane CLI -- language TBD (Rust or .NET candidates),
+   talks directly to the agent runtime's own API.
+
+**Neither deliverable uses a generated SDK.** Both call the well-known
+ARM/data-plane REST APIs directly (same approach `az sre` already uses via
+its own `_arm_request()`-style helpers, not the `azure-mgmt-app` SDK).
+Rationale: avoids SDK version coupling/lag behind the service, avoids
+pulling in SDK dependency weight, and gives direct control over request
+shape when the service's preview APIs move faster than SDKs are cut --
+the same tradeoff already validated empirically this session (raw
+`API_VERSION` calls vs. the generated AAZ commands).
+
+Note: Microsoft already ships `srectl` (`sreagent.cli`, .NET global tool),
+which is data-plane and covers agent-definition authoring/deploy (YAML
+apply, EV2 Bicep/ARM) plus some triggers (e.g. `ReleaseTriggerController`
+via `Agent.Cli`'s `CommandBuilder.ReleaseTrigger.cs`). The new data-plane
+CLI's ops-focused scope (threads/chat, incidents, live reports) needs to be
+reconciled against `srectl`'s existing scope before committing to a
+language -- see open question below.

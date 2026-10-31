@@ -46,7 +46,7 @@ class Stop(AAZCommand):
 
         _args_schema = cls._args_schema
         _args_schema.agent_name = AAZStrArg(
-            options=["--agent-name"],
+            options=["-n", "--name", "--agent-name"],
             help="The name of the Agent",
             required=True,
             id_part="name",
