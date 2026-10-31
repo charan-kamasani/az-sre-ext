@@ -346,7 +346,7 @@ Create an Agent Connector.
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--data-connector-type` | String | No |  |  | Type of the data connector. Real API values (friendly product name in parentheses, both accepted): 'Kusto' (Azure Data Explorer -- also covers App Insights/Log Analytics, differentiated by --data-source, not a separate type), 'Mcp' (Custom MCP -- PagerDuty/ServiceNow/Datadog/Splunk/S360/Ev2/etc., differentiated by endpoint, not a separate type), 'Outlook' (Office 365 Outlook), 'Teams' (Microsoft Teams), 'Icm' (Microsoft IcM, singleton per agent), 'KustoClient' (Azure Data Explorer via the Azure MCP server; no --data-source needed), 'Dgrep' (Microsoft DGrep, singleton per agent), and four knowledge-item types that need --extended-properties instead of --data-source: 'KnowledgeText', 'KnowledgeFile', 'KnowledgeWebPage', 'KnowledgeRepository'. Case-insensitive; friendly names (e.g. 'Azure Data Explorer', 'Custom MCP') also accepted. |
-| `--data-source` | String | No |  |  | Data source connection string or endpoint |
+| `--data-source` | String | No |  |  | Data source connection string or endpoint. For 'Kusto' (Azure Data Explorer), this must include a database name, e.g. 'https://cluster.kusto.windows.net/databasename' -- a bare cluster URL with no database is rejected server-side with 'Kusto DataSource must include a database name'. |
 | `--endpoint` | String | No |  |  | Endpoint of the connector |
 | `--extended-properties` | Dictionary | No |  |  | Additional properties for the data connector which can be used to store custom key-value pairs |
 | `--identity` | String | No |  |  | Identity used to access the data source |
@@ -453,7 +453,7 @@ Update an Agent Connector.
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--data-connector-type` | String | No |  |  | Type of the data connector. Real API values (friendly product name in parentheses, both accepted): 'Kusto' (Azure Data Explorer -- also covers App Insights/Log Analytics, differentiated by --data-source, not a separate type), 'Mcp' (Custom MCP -- PagerDuty/ServiceNow/Datadog/Splunk/S360/Ev2/etc., differentiated by endpoint, not a separate type), 'Outlook' (Office 365 Outlook), 'Teams' (Microsoft Teams), 'Icm' (Microsoft IcM, singleton per agent), 'KustoClient' (Azure Data Explorer via the Azure MCP server; no --data-source needed), 'Dgrep' (Microsoft DGrep, singleton per agent), and four knowledge-item types that need --extended-properties instead of --data-source: 'KnowledgeText', 'KnowledgeFile', 'KnowledgeWebPage', 'KnowledgeRepository'. Case-insensitive; friendly names (e.g. 'Azure Data Explorer', 'Custom MCP') also accepted. |
-| `--data-source` | String | No |  |  | Data source connection string or endpoint |
+| `--data-source` | String | No |  |  | Data source connection string or endpoint. For 'Kusto' (Azure Data Explorer), this must include a database name, e.g. 'https://cluster.kusto.windows.net/databasename' -- a bare cluster URL with no database is rejected server-side with 'Kusto DataSource must include a database name'. |
 | `--endpoint` | String | No |  |  | Endpoint of the connector |
 | `--extended-properties` | Dictionary | No |  |  | Additional properties for the data connector which can be used to store custom key-value pairs |
 | `--identity` | String | No |  |  | Identity used to access the data source |
@@ -1014,7 +1014,7 @@ Connect a code repository so the agent can read source during investigations.
 
 Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 
-Mirrors 'az aigateway mcp create --github true': fetches your existing 'gh auth login' credential (GitHub) or mints a fresh PAT via the Azure DevOps REST API (Azure DevOps) and wires up both the auth extension and the repositories extension for you, instead of requiring two manual hand-built JSON payloads.
+Fetches your existing 'gh auth login' credential (GitHub) or mints a fresh PAT via the Azure DevOps REST API (Azure DevOps) and wires up both the auth extension and the repositories extension for you, instead of requiring two manual hand-built JSON payloads.
 
 **Syntax**
 
@@ -1212,7 +1212,7 @@ Token counts and request counts, for a month or broken down by day. Use 'sre usa
 
 List monthly or daily agent-unit usage for an SRE Agent.
 
-Wraps the dedicated 'usages'/'dailyusages' read-only ARM child collections (confirmed real in running notes section 1a) -- these are plain GETs with no Create/Update verb, so aaz-dev-tools has nothing to anchor a generated command group on. Hand-written the same way azext-aigateway wraps metrics it has no generated recipe for.
+Wraps the dedicated 'usages'/'dailyusages' read-only ARM child collections (confirmed real in running notes section 1a) -- these are plain GETs with no Create/Update verb, so aaz-dev-tools has nothing to anchor a generated command group on. Hand-written instead.
 
 **Syntax**
 

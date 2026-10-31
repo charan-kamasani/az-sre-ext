@@ -572,6 +572,15 @@ class _DataConnectorTypeArgMixin:
                 "friendly names (e.g. 'Azure Data Explorer', 'Custom MCP') "
                 "also accepted."
             )
+        data_source = getattr(schema, "data_source", None)
+        if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
+            data_source._help["short-summary"] = (
+                "Data source connection string or endpoint. For 'Kusto' "
+                "(Azure Data Explorer), this must include a database name, "
+                "e.g. 'https://cluster.kusto.windows.net/databasename' -- a "
+                "bare cluster URL with no database is rejected server-side "
+                "with 'Kusto DataSource must include a database name'."
+            )
         return schema
 
     def pre_operations(self):
@@ -1863,8 +1872,7 @@ class ListUsage(AAZCommand):
     Wraps the dedicated 'usages'/'dailyusages' read-only ARM child
     collections (confirmed real in running notes section 1a) -- these are
     plain GETs with no Create/Update verb, so aaz-dev-tools has nothing to
-    anchor a generated command group on. Hand-written the same way
-    azext-aigateway wraps metrics it has no generated recipe for.
+    anchor a generated command group on. Hand-written instead.
 
     :example: List this month's usage for an agent
         az sre usage list --agent-name myagent --resource-group myrg
@@ -4066,15 +4074,17 @@ def _detect_repo_provider(repo_url):
     )
 
 
+# Design note (not shown to users): modeled on azext-aigateway's
+# "az aigateway mcp create --github true" precedent for this same
+# one-step-credential-discovery pattern.
 @register_command("sre repo connect")
 class RepoConnect(AAZCommand):
     """Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 
-    Mirrors 'az aigateway mcp create --github true': fetches your existing
-    'gh auth login' credential (GitHub) or mints a fresh PAT via the Azure
-    DevOps REST API (Azure DevOps) and wires up both the auth extension and
-    the repositories extension for you, instead of requiring two manual
-    hand-built JSON payloads.
+    Fetches your existing 'gh auth login' credential (GitHub) or mints a
+    fresh PAT via the Azure DevOps REST API (Azure DevOps) and wires up both
+    the auth extension and the repositories extension for you, instead of
+    requiring two manual hand-built JSON payloads.
 
     :example: Connect a GitHub repo (provider auto-detected from the URL)
         az sre repo connect --agent-name myagent --resource-group myrg \\
