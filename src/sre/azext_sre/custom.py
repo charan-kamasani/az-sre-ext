@@ -30,7 +30,24 @@
 import base64
 import json
 import os
+import uuid
 from functools import partial
+
+# 'requests' is imported eagerly here (rather than left to its normal lazy
+# import inside azure.cli.core.util.send_raw_request) to avoid a real,
+# live-reproduced Python import deadlock: _DefaultSystemIdentityMixin's
+# auto-created-identity PUT (_arm_request -> send_raw_request) runs inside
+# 'agent create's pre_operations(), which the AAZ LRO poller executes on a
+# background thread. If 'requests' has never been imported yet, that
+# background thread's first-time lazy import can race against the main
+# thread's own first-time import of the same module and deadlock in
+# CPython's import lock (_frozen_importlib._DeadlockError: deadlock detected
+# by _ModuleLock('requests.structures')) -- confirmed live, 2026-11-01,
+# reproduced on every 'az sre agent create' with no --mi-* flags given.
+# Importing it here, synchronously, during module load (which always
+# happens single-threaded, well before any poller thread exists) guarantees
+# it is already in sys.modules and the race can never occur.
+import requests  # noqa: F401  pylint: disable=unused-import
 
 from azure.cli.core.aaz import (
     AAZBoolArg,
@@ -285,6 +302,32 @@ class _ModelProviderArgMixin:
         super().pre_operations()
 
 
+def _resolve_signed_in_tenant_id(cli_ctx):
+    """Resolve the signed-in account's AAD tenant ID via 'az account show'.
+
+    Used to gate GenevaMetrics (Microsoft-internal only, per Paul's
+    2026-11-02 Teams feedback: "Geneva is good. we need that for 1p. 3p
+    cannot use" -- the backend already rejects non-1p callers, but that's
+    a confusing experience; this lets the CLI reject it up front with a
+    clear message instead). One CLI, no separate 1p/3p build -- the
+    behavior just adapts to whichever tenant the caller is signed into.
+    """
+    invoke = partial(_cli_invoke, cli_ctx)
+    account = invoke("account", "show")
+    tenant_id = (account or {}).get("tenantId") if isinstance(account, dict) else None
+    if not tenant_id:
+        raise CLIError("Could not resolve the signed-in account's tenant ID via 'az account show'.")
+    return tenant_id
+
+
+# Microsoft's own corporate AAD tenant ID -- well-known/public (e.g. used
+# throughout Microsoft's own sample code and documentation). Confirmed
+# live, 2026-11-02, as this CLI's own test environment's signed-in tenant
+# (`az account show --query tenantId` -> this exact value), consistent
+# with it being a genuine Microsoft-internal tenant.
+MICROSOFT_TENANT_ID = "72f988bf-86f1-41af-91ab-2d7cd011db47"
+
+
 def _resolve_signed_in_user_object_id(cli_ctx):
     """Resolve the signed-in user's AAD object ID via 'az ad signed-in-user show'.
 
@@ -344,18 +387,50 @@ class _GrantAccessToMeMixin:
         )
 
 
+def _create_user_assigned_identity(cli_ctx, subscription_id, resource_group, location, agent_name):
+    """Auto-creates a Microsoft.ManagedIdentity/userAssignedIdentities
+    resource, returning its resource ID.
+
+    Mirrors the Azure Portal's own "Create agent" wizard default: the real
+    ARM template it deploys (SreAgentTemplateResource.ts) defaults
+    'createUserIdentity' to true and sets 'identity.type' to
+    "SystemAssigned, UserAssigned" -- i.e. the portal always creates a
+    brand-new identity resource alongside the agent rather than only
+    enabling system-assigned. api-version 2023-01-31 is the stable GA
+    version for this resource type.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    identity_name = f"{agent_name}-identity-{suffix}"
+    resource_id = (
+        f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}"
+        f"/providers/Microsoft.ManagedIdentity/userAssignedIdentities/{identity_name}"
+    )
+    _arm_request(cli_ctx, "PUT", resource_id, "2023-01-31", body={"location": location})
+    return resource_id
+
+
 class _DefaultSystemIdentityMixin:
-    """Defaults 'agent create' to a system-assigned managed identity when
-    neither --mi-system-assigned nor --mi-user-assigned is given.
+    """Defaults 'agent create' to match the Azure Portal's own identity
+    default when neither --mi-system-assigned nor --mi-user-assigned is
+    given: auto-creates a new user-assigned identity AND enables
+    system-assigned, i.e. identity.type = "SystemAssigned, UserAssigned".
 
     WHY: live-confirmed the service rejects agent creation outright with
     (ManagedIdentityRequired) "At least one managed identity (SystemAssigned
-    or UserAssigned) must be assigned to the agent" if neither is set --
-    the CLI previously let that request go all the way to ARM before
-    failing. Defaulting to system-assigned (the simplest, no-prerequisite
-    option, and what the Azure Portal's own create flow defaults to) means
-    'az sre agent create --name x -g rg -l eastus2' now succeeds out of the
-    box instead of requiring a second, non-obvious flag.
+    or UserAssigned) must be assigned to the agent" if neither is set -- the
+    CLI previously let that request go all the way to ARM before failing.
+    An earlier version of this mixin defaulted to system-assigned only,
+    believing that to be the portal's own default; a real portal screenshot
+    (2026-11-01) plus the portal's actual ARM template
+    (Agent.Portal/.../SreAgentTemplateResource.ts: 'createUserIdentity:
+    this._options.createUserIdentity ?? true', 'identity.type:
+    "SystemAssigned, UserAssigned"') proved that wrong -- the portal always
+    creates a brand-new user-assigned identity resource too. This mixin now
+    reproduces that: 'az sre agent create --name x -g rg -l eastus2' (no
+    --mi-* flags) creates a new Microsoft.ManagedIdentity/
+    userAssignedIdentities resource and assigns both identity types to the
+    agent, matching the portal exactly instead of the simpler
+    system-assigned-only behavior.
     """
 
     def pre_operations(self):
@@ -365,12 +440,21 @@ class _DefaultSystemIdentityMixin:
         has_system = has_value(system_assigned)
         has_user = has_value(user_assigned) and len(user_assigned) > 0
         if not has_system and not has_user:
+            agent_name = _arg_value(args.agent_name)
+            resource_group = _arg_value(args.resource_group)
+            location = _arg_value(args.location)
+            identity_id = _create_user_assigned_identity(
+                self.cli_ctx, self.ctx.subscription_id, resource_group, location, agent_name,
+            )
             args.mi_system_assigned = "True"
+            args.mi_user_assigned = [identity_id]
             logger.warning(
-                "No managed identity specified; defaulting to "
-                "--mi-system-assigned (required by the service). Pass "
-                "--mi-system-assigned or --mi-user-assigned explicitly to "
-                "override."
+                "No managed identity specified; matching the Azure Portal's "
+                "own default by creating a new user-assigned identity '%s' "
+                "and enabling both system-assigned and user-assigned "
+                "identities on the agent. Pass --mi-system-assigned/"
+                "--mi-user-assigned explicitly to override.",
+                identity_id.rsplit("/", 1)[-1],
             )
         super().pre_operations()
 
@@ -441,6 +525,31 @@ DATA_CONNECTOR_TYPES = {
     "knowledgefile": "KnowledgeFile",
     "knowledgewebpage": "KnowledgeWebPage",
     "knowledgerepository": "KnowledgeRepository",
+    # The 14 entries below were missing from this allowlist even though the
+    # real backend (sreagent-runtime's Agent.Core/Configuration/
+    # DataConnectorTypes.cs V1 list) has always accepted and implemented
+    # them -- this CLI's own stricter client-side check was rejecting them
+    # before the request ever reached the service. Confirmed live,
+    # 2026-11-02, against a real throwaway agent: all 14 succeed with just
+    # --data-source (already a supported flag); "genevametrics" additionally
+    # needs extended-properties.monitoringAccount (confirmed by a real
+    # downstream Geneva validation error, not a guess). No backend or
+    # service change was involved -- this only removes a redundant,
+    # out-of-date local restriction.
+    "appinsights": "AppInsights",
+    "loganalytics": "LogAnalytics",
+    "kustouser": "KustoUser",
+    "kustodataindexer": "KustoDataIndexer",
+    "tsgcrawler": "TsgCrawler",
+    "ev2mcp": "Ev2Mcp",
+    "genevametrics": "GenevaMetrics",
+    "s360": "S360",
+    "connectorgateway": "ConnectorGateway",
+    "documentation": "Documentation",
+    "azuredevopsbuiltinmcp": "AzureDevOpsBuiltinMcp",
+    "applicationinsights": "ApplicationInsights",
+    "azuremonitor": "AzureMonitor",
+    "monitorclient": "MonitorClient",
 }
 
 # Friendly-name aliases for the same wire values above, so users can type
@@ -454,17 +563,32 @@ DATA_CONNECTOR_TYPES = {
 # userProvidedConnector: "User provided connector" (shown for the generic
 # "Mcp" type -- Paul's suggested "Custom MCP" label), office365Outlook:
 # "Office 365 Outlook", microsoftTeams: "Microsoft Teams", microsoftIcm:
-# "Microsoft IcM", microsoftDGrep: "Microsoft DGrep". Also confirmed via
-# `ConnectorType.ts`'s `getEffectiveConnectorType`: "KustoClient" is the
-# wire value the service persists for what the portal UX presents as
-# "Azure Data Explorer" reached through the Azure MCP server -- same
-# product-facing name as plain "Kusto", disambiguated here by an "mcp"
-# suffix since the CLI needs one alias per wire value.
+# "Microsoft IcM", microsoftDGrep: "Microsoft DGrep".
+#
+# "Azure Data Explorer" maps to KustoClient, matching the portal exactly --
+# confirmed directly against the portal's own picker list and persistence
+# logic: `ConnectorType.ts`'s `connectorTypeOptions` has no separate picker
+# entry for plain "Kusto" at all (only `AzureMcpKusto`, labeled "Azure Data
+# Explorer"), and `getEffectiveConnectorType` confirms the portal always
+# *persists* that selection to ARM as `dataConnectorType: "KustoClient"`
+# ("KustoClient is the new persisted type for Kusto MCP parents"). Plain
+# "Kusto" (a pinned single-cluster connection via --data-source) has no
+# *direct* top-level portal picker entry, but the portal does create it
+# indirectly: the "Azure Data Explorer" wizard's optional "Add clusters"
+# step creates one "Kusto" child connector per cluster group (confirmed via
+# ConnectorWizardFormik.tsx/DialogHelper.tsx's
+# buildKustoConnectorsFromClusterGroups, dataConnectorType:
+# ConnectorType.AzureDataExplorerQuery = 'Kusto'). Reachable here via its
+# own raw name or the "azure data explorer cluster" alias, never the bare
+# "Azure Data Explorer" name a real user would actually type for the
+# parent connector.
 DATA_CONNECTOR_TYPE_ALIASES = {
-    "azure data explorer": "Kusto",
-    "azuredataexplorer": "Kusto",
+    "azure data explorer": "KustoClient",
+    "azuredataexplorer": "KustoClient",
     "azure data explorer mcp": "KustoClient",
     "azure data explorer (mcp)": "KustoClient",
+    "azure data explorer cluster": "Kusto",
+    "azure data explorer (cluster)": "Kusto",
     "custom mcp": "Mcp",
     "custom mcp server": "Mcp",
     "user provided connector": "Mcp",
@@ -547,19 +671,26 @@ class _DataConnectorTypeArgMixin:
         if data_connector_type is not None and isinstance(getattr(data_connector_type, "_help", None), dict):
             data_connector_type._help["short-summary"] = (
                 "Type of the data connector. Real API values (friendly "
-                "product name in parentheses, both accepted): 'Kusto' "
-                "(Azure Data Explorer -- also covers App Insights/Log "
-                "Analytics, differentiated by --data-source, not a "
-                "separate type), 'Mcp' (Custom MCP -- PagerDuty/ServiceNow/"
-                "Datadog/Splunk/S360/Ev2/etc., differentiated by endpoint, "
-                "not a separate type), 'Outlook' (Office 365 Outlook), "
-                "'Teams' (Microsoft Teams), 'Icm' (Microsoft IcM, singleton "
-                "per agent), 'KustoClient' (Azure Data Explorer via the "
-                "Azure MCP server; no --data-source needed), 'Dgrep' "
+                "product name in parentheses, both accepted): 'KustoClient' "
+                "(Azure Data Explorer -- the default type, matching the "
+                "portal's own 'Azure Data Explorer' option exactly; no "
+                "--data-source needed), 'Kusto' (Azure Data Explorer "
+                "Cluster -- legacy, pinned to one cluster via --data-source, "
+                "no portal entry point), 'Mcp' (Custom MCP -- PagerDuty/"
+                "ServiceNow/Datadog/Splunk/S360/Ev2/etc., differentiated by "
+                "endpoint, not a separate type), 'Outlook' (Office 365 "
+                "Outlook), 'Teams' (Microsoft Teams), 'Icm' (Microsoft IcM, "
+                "singleton per agent), 'Dgrep' "
                 "(Microsoft DGrep, singleton per agent), and four "
                 "knowledge-item types that need --extended-properties "
                 "instead of --data-source: 'KnowledgeText', 'KnowledgeFile', "
-                "'KnowledgeWebPage', 'KnowledgeRepository'. Case-insensitive; "
+                "'KnowledgeWebPage', 'KnowledgeRepository'. Also accepts 14 "
+                "more real backend types unlocked 2026-11-02: 'AppInsights', "
+                "'LogAnalytics', 'KustoUser', 'KustoDataIndexer', "
+                "'TsgCrawler', 'Ev2Mcp', 'GenevaMetrics' (Microsoft-internal "
+                "tenants only), 'S360', 'ConnectorGateway', 'Documentation', "
+                "'AzureDevOpsBuiltinMcp', 'ApplicationInsights', "
+                "'AzureMonitor', 'MonitorClient'. Case-insensitive; "
                 "friendly names (e.g. 'Azure Data Explorer', 'Custom MCP') "
                 "also accepted."
             )
@@ -567,7 +698,7 @@ class _DataConnectorTypeArgMixin:
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
             data_source._help["short-summary"] = (
                 "Data source connection string or endpoint. For 'Kusto' "
-                "(Azure Data Explorer), this must include a database name, "
+                "(Azure Data Explorer Cluster), this must include a database name, "
                 "e.g. 'https://cluster.kusto.windows.net/databasename' -- a "
                 "bare cluster URL with no database is rejected server-side "
                 "with 'Kusto DataSource must include a database name'."
@@ -578,9 +709,17 @@ class _DataConnectorTypeArgMixin:
         args = self.ctx.args
         data_connector_type = getattr(args, "data_connector_type", None)
         if has_value(data_connector_type):
-            args.data_connector_type = _normalize_data_connector_type(
+            normalized = _normalize_data_connector_type(
                 data_connector_type.to_serialized_data()
             )
+            if normalized == "GenevaMetrics":
+                tenant_id = _resolve_signed_in_tenant_id(self.cli_ctx)
+                if tenant_id != MICROSOFT_TENANT_ID:
+                    raise CLIError(
+                        "--data-connector-type GenevaMetrics is Microsoft-internal "
+                        "only and is not available in this tenant."
+                    )
+            args.data_connector_type = normalized
         super().pre_operations()
 
 
@@ -635,6 +774,16 @@ class _ConnectorConvenienceArgsMixin:
             "--mcp-endpoint pointed at the real public GitHub Copilot MCP "
             "server (https://api.githubcopilot.com/mcp/).",
         )
+        schema.tool_access = AAZBoolArg(
+            options=["--tool-access"],
+            arg_group="Properties",
+            help="For --data-connector-type KustoClient/'Azure Data "
+            "Explorer': shortcut for the portal's 'Allow agent to use "
+            "query tools from this connector' checkbox (Review + add "
+            "step). Builds extended-properties.toolsVisibleToMetaAgent -- "
+            "true sets it to ['*'], false to [] (confirmed live: both "
+            "values persist and read back correctly).",
+        )
         return schema
 
     # Set by pre_operations() when --file-path was used, so _output() (see
@@ -656,6 +805,21 @@ class _ConnectorConvenienceArgsMixin:
         file_path = _arg_value(getattr(args, "file_path", None))
         mcp_endpoint = _arg_value(getattr(args, "mcp_endpoint", None))
         github = _arg_value(getattr(args, "github", None))
+        tool_access = _arg_value(getattr(args, "tool_access", None))
+
+        if tool_access is not None:
+            if connector_type != "KustoClient":
+                raise CLIError(
+                    "--tool-access requires --data-connector-type "
+                    "KustoClient ('Azure Data Explorer')."
+                )
+            existing = _arg_value(getattr(args, "extended_properties", None)) or {}
+            if not isinstance(existing, dict):
+                existing = {}
+            args.extended_properties = {
+                **existing,
+                "toolsVisibleToMetaAgent": ["*"] if tool_access else [],
+            }
 
         if github or mcp_endpoint:
             if connector_type != "Mcp":
@@ -756,9 +920,17 @@ class ConnectorCreate(
 ):
     """Create an Agent Connector.
 
-    :example: Connect an agent to Azure Data Explorer (Kusto) via MCP
+    :example: Connect an agent to Azure Data Explorer -- matches the portal's
+        "Add connector" > "Azure Data Explorer" flow exactly: just a name and
+        type, no --data-source or --mcp-endpoint needed (uses the agent's
+        system-assigned identity by default, same as the portal)
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name conn-kusto --data-connector-type Kusto --mcp-endpoint "https://help.kusto.windows.net/v1/rest"
+            --name azure-data-explorer --data-connector-type "Azure Data Explorer"
+
+    :example: Same, but with a user-assigned identity (portal's "Add identity")
+        az sre connector create --agent-name myagent --resource-group myrg \\
+            --name azure-data-explorer --data-connector-type "Azure Data Explorer" \\
+            --identity /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<identity>
 
     :example: Connect an agent's GitHub MCP connector using your own gh auth
         az sre connector create --agent-name myagent --resource-group myrg \\

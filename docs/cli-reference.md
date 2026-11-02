@@ -324,7 +324,7 @@ Supports Azure Data Explorer/Kusto (direct or via the Azure MCP server), Custom 
 
 | Verb | Exact syntax |
 | --- | --- |
-| `create` | `az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}]` |
+| `create` | `az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}] [--tool-access {false,true}]` |
 | `delete` | `az sre connector delete [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--yes]` |
 | `list` | `az sre connector list [--next-token <value>] [--max-items <value>] --agent-name <value> --resource-group <value>` |
 | `list-secret` | `az sre connector list-secret --agent-name <value> --name <value> --resource-group <value>` |
@@ -337,7 +337,7 @@ Create an Agent Connector.
 
 **Syntax**
 
-`az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}]`
+`az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}] [--tool-access {false,true}]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -345,20 +345,24 @@ Create an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Type of the data connector. Real API values (friendly product name in parentheses, both accepted): 'Kusto' (Azure Data Explorer -- also covers App Insights/Log Analytics, differentiated by --data-source, not a separate type), 'Mcp' (Custom MCP -- PagerDuty/ServiceNow/Datadog/Splunk/S360/Ev2/etc., differentiated by endpoint, not a separate type), 'Outlook' (Office 365 Outlook), 'Teams' (Microsoft Teams), 'Icm' (Microsoft IcM, singleton per agent), 'KustoClient' (Azure Data Explorer via the Azure MCP server; no --data-source needed), 'Dgrep' (Microsoft DGrep, singleton per agent), and four knowledge-item types that need --extended-properties instead of --data-source: 'KnowledgeText', 'KnowledgeFile', 'KnowledgeWebPage', 'KnowledgeRepository'. Case-insensitive; friendly names (e.g. 'Azure Data Explorer', 'Custom MCP') also accepted. |
-| `--data-source` | String | No |  |  | Data source connection string or endpoint. For 'Kusto' (Azure Data Explorer), this must include a database name, e.g. 'https://cluster.kusto.windows.net/databasename' -- a bare cluster URL with no database is rejected server-side with 'Kusto DataSource must include a database name'. |
+| `--data-connector-type` | String | No |  |  | Type of the data connector. Real API values (friendly product name in parentheses, both accepted): 'KustoClient' (Azure Data Explorer -- the default type, matching the portal's own 'Azure Data Explorer' option exactly; no --data-source needed), 'Kusto' (Azure Data Explorer Cluster -- legacy, pinned to one cluster via --data-source, no portal entry point), 'Mcp' (Custom MCP -- PagerDuty/ServiceNow/Datadog/Splunk/S360/Ev2/etc., differentiated by endpoint, not a separate type), 'Outlook' (Office 365 Outlook), 'Teams' (Microsoft Teams), 'Icm' (Microsoft IcM, singleton per agent), 'Dgrep' (Microsoft DGrep, singleton per agent), and four knowledge-item types that need --extended-properties instead of --data-source: 'KnowledgeText', 'KnowledgeFile', 'KnowledgeWebPage', 'KnowledgeRepository'. Also accepts 14 more real backend types unlocked 2026-11-02: 'AppInsights', 'LogAnalytics', 'KustoUser', 'KustoDataIndexer', 'TsgCrawler', 'Ev2Mcp', 'GenevaMetrics' (Microsoft-internal tenants only), 'S360', 'ConnectorGateway', 'Documentation', 'AzureDevOpsBuiltinMcp', 'ApplicationInsights', 'AzureMonitor', 'MonitorClient'. Case-insensitive; friendly names (e.g. 'Azure Data Explorer', 'Custom MCP') also accepted. |
+| `--data-source` | String | No |  |  | Data source connection string or endpoint. For 'Kusto' (Azure Data Explorer Cluster), this must include a database name, e.g. 'https://cluster.kusto.windows.net/databasename' -- a bare cluster URL with no database is rejected server-side with 'Kusto DataSource must include a database name'. |
 | `--endpoint` | String | No |  |  | Endpoint of the connector |
 | `--extended-properties` | Dictionary | No |  |  | Additional properties for the data connector which can be used to store custom key-value pairs |
 | `--identity` | String | No |  |  | Identity used to access the data source |
 | `--file-path` | String | No |  |  | Local file to ingest, instead of hand-building --extended-properties yourself. For --data-connector-type KnowledgeFile, the CLI reads and base64-encodes the file into extended-properties.fileContent/fileName. For KnowledgeText, the CLI reads the file as UTF-8 text into extended-properties.content. |
 | `--mcp-endpoint` | String | No |  |  | For --data-connector-type Mcp: the MCP server's HTTP endpoint URL. Builds both --data-source and the nested extended-properties.transport/endpoint the service actually requires (confirmed live: a bare --data-source alone is rejected with 'Endpoint value is required for MCP connector with HTTP transport.'). |
 | `--github` | Boolean | No |  | `false`, `true` | For --data-connector-type Mcp: shortcut for --mcp-endpoint pointed at the real public GitHub Copilot MCP server (https://api.githubcopilot.com/mcp/). |
+| `--tool-access` | Boolean | No |  | `false`, `true` | For --data-connector-type KustoClient/'Azure Data Explorer': shortcut for the portal's 'Allow agent to use query tools from this connector' checkbox (Review + add step). Builds extended-properties.toolsVisibleToMetaAgent -- true sets it to ['*'], false to [] (confirmed live: both values persist and read back correctly). |
 
 **Examples**
 
-- Connect an agent to Azure Data Explorer (Kusto) via MCP
+- Connect an agent to Azure Data Explorer -- matches the portal's
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name conn-kusto --data-connector-type Kusto --mcp-endpoint "https://help.kusto.windows.net/v1/rest"`
+  `"Add connector" > "Azure Data Explorer" flow exactly: just a name and type, no --data-source or --mcp-endpoint needed (uses the agent's system-assigned identity by default, same as the portal) az sre connector create --agent-name myagent --resource-group myrg \ --name azure-data-explorer --data-connector-type "Azure Data Explorer"`
+- Same, but with a user-assigned identity (portal's "Add identity")
+
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name azure-data-explorer --data-connector-type "Azure Data Explorer" \ --identity /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<identity>`
 - Connect an agent's GitHub MCP connector using your own gh auth
 
   `az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp --data-connector-type Mcp --github true`
@@ -452,8 +456,8 @@ Update an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Type of the data connector. Real API values (friendly product name in parentheses, both accepted): 'Kusto' (Azure Data Explorer -- also covers App Insights/Log Analytics, differentiated by --data-source, not a separate type), 'Mcp' (Custom MCP -- PagerDuty/ServiceNow/Datadog/Splunk/S360/Ev2/etc., differentiated by endpoint, not a separate type), 'Outlook' (Office 365 Outlook), 'Teams' (Microsoft Teams), 'Icm' (Microsoft IcM, singleton per agent), 'KustoClient' (Azure Data Explorer via the Azure MCP server; no --data-source needed), 'Dgrep' (Microsoft DGrep, singleton per agent), and four knowledge-item types that need --extended-properties instead of --data-source: 'KnowledgeText', 'KnowledgeFile', 'KnowledgeWebPage', 'KnowledgeRepository'. Case-insensitive; friendly names (e.g. 'Azure Data Explorer', 'Custom MCP') also accepted. |
-| `--data-source` | String | No |  |  | Data source connection string or endpoint. For 'Kusto' (Azure Data Explorer), this must include a database name, e.g. 'https://cluster.kusto.windows.net/databasename' -- a bare cluster URL with no database is rejected server-side with 'Kusto DataSource must include a database name'. |
+| `--data-connector-type` | String | No |  |  | Type of the data connector. Real API values (friendly product name in parentheses, both accepted): 'KustoClient' (Azure Data Explorer -- the default type, matching the portal's own 'Azure Data Explorer' option exactly; no --data-source needed), 'Kusto' (Azure Data Explorer Cluster -- legacy, pinned to one cluster via --data-source, no portal entry point), 'Mcp' (Custom MCP -- PagerDuty/ServiceNow/Datadog/Splunk/S360/Ev2/etc., differentiated by endpoint, not a separate type), 'Outlook' (Office 365 Outlook), 'Teams' (Microsoft Teams), 'Icm' (Microsoft IcM, singleton per agent), 'Dgrep' (Microsoft DGrep, singleton per agent), and four knowledge-item types that need --extended-properties instead of --data-source: 'KnowledgeText', 'KnowledgeFile', 'KnowledgeWebPage', 'KnowledgeRepository'. Also accepts 14 more real backend types unlocked 2026-11-02: 'AppInsights', 'LogAnalytics', 'KustoUser', 'KustoDataIndexer', 'TsgCrawler', 'Ev2Mcp', 'GenevaMetrics' (Microsoft-internal tenants only), 'S360', 'ConnectorGateway', 'Documentation', 'AzureDevOpsBuiltinMcp', 'ApplicationInsights', 'AzureMonitor', 'MonitorClient'. Case-insensitive; friendly names (e.g. 'Azure Data Explorer', 'Custom MCP') also accepted. |
+| `--data-source` | String | No |  |  | Data source connection string or endpoint. For 'Kusto' (Azure Data Explorer Cluster), this must include a database name, e.g. 'https://cluster.kusto.windows.net/databasename' -- a bare cluster URL with no database is rejected server-side with 'Kusto DataSource must include a database name'. |
 | `--endpoint` | String | No |  |  | Endpoint of the connector |
 | `--extended-properties` | Dictionary | No |  |  | Additional properties for the data connector which can be used to store custom key-value pairs |
 | `--identity` | String | No |  |  | Identity used to access the data source |

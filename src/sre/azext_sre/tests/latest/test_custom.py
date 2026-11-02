@@ -77,6 +77,7 @@ from azext_sre.custom import (
     IdentityShow,
     SupportedAgentModelList,
     _ConnectorConvenienceArgsMixin,
+    _DataConnectorTypeArgMixin,
     _ConnectorExistenceGuardMixin,
     _DefaultSystemIdentityMixin,
     _GrantAccessToMeMixin,
@@ -96,7 +97,9 @@ from azext_sre.custom import (
     _parse_skill_md,
     _resolve_agent_principal_id,
     _resolve_managed_resource_scope,
+    _resolve_signed_in_tenant_id,
     _resolve_signed_in_user_object_id,
+    MICROSOFT_TENANT_ID,
 )
 
 
@@ -173,6 +176,29 @@ class DataConnectorTypeNormalizationTests(unittest.TestCase):
         self.assertEqual(_normalize_data_connector_type("KNOWLEDGEWEBPAGE"), "KnowledgeWebPage")
         self.assertEqual(_normalize_data_connector_type("knowledgerepository"), "KnowledgeRepository")
 
+    def test_accepts_v1_backend_types_case_insensitively(self):
+        # These 14 are in sreagent-runtime's real V1 allowlist
+        # (Agent.Core/Configuration/DataConnectorTypes.cs) and were
+        # confirmed live against a throwaway agent on 2026-11-02: all
+        # succeed with just --data-source (genevametrics additionally
+        # needs extended-properties.monitoringAccount). They were missing
+        # from this CLI's stricter client-side check even though the
+        # service has always accepted them.
+        self.assertEqual(_normalize_data_connector_type("appinsights"), "AppInsights")
+        self.assertEqual(_normalize_data_connector_type("LOGANALYTICS"), "LogAnalytics")
+        self.assertEqual(_normalize_data_connector_type("KustoUser"), "KustoUser")
+        self.assertEqual(_normalize_data_connector_type("kustodataindexer"), "KustoDataIndexer")
+        self.assertEqual(_normalize_data_connector_type("TsgCrawler"), "TsgCrawler")
+        self.assertEqual(_normalize_data_connector_type("ev2mcp"), "Ev2Mcp")
+        self.assertEqual(_normalize_data_connector_type("GenevaMetrics"), "GenevaMetrics")
+        self.assertEqual(_normalize_data_connector_type("s360"), "S360")
+        self.assertEqual(_normalize_data_connector_type("ConnectorGateway"), "ConnectorGateway")
+        self.assertEqual(_normalize_data_connector_type("documentation"), "Documentation")
+        self.assertEqual(_normalize_data_connector_type("AzureDevOpsBuiltinMcp"), "AzureDevOpsBuiltinMcp")
+        self.assertEqual(_normalize_data_connector_type("applicationinsights"), "ApplicationInsights")
+        self.assertEqual(_normalize_data_connector_type("AzureMonitor"), "AzureMonitor")
+        self.assertEqual(_normalize_data_connector_type("monitorclient"), "MonitorClient")
+
     def test_none_passes_through_unchanged(self):
         self.assertIsNone(_normalize_data_connector_type(None))
 
@@ -188,9 +214,13 @@ class DataConnectorTypeNormalizationTests(unittest.TestCase):
         # i18n strings (SREAgentResources.ts), not invented -- see
         # DATA_CONNECTOR_TYPE_ALIASES docstring. Lets users type what the
         # product calls the connector instead of the raw wire enum casing.
-        self.assertEqual(_normalize_data_connector_type("Azure Data Explorer"), "Kusto")
-        self.assertEqual(_normalize_data_connector_type("AZURE DATA EXPLORER"), "Kusto")
+        # "Azure Data Explorer" -> KustoClient matches the portal exactly:
+        # the portal's own picker has no entry for plain "Kusto" at all,
+        # and always persists that selection as dataConnectorType=KustoClient.
+        self.assertEqual(_normalize_data_connector_type("Azure Data Explorer"), "KustoClient")
+        self.assertEqual(_normalize_data_connector_type("AZURE DATA EXPLORER"), "KustoClient")
         self.assertEqual(_normalize_data_connector_type("Azure Data Explorer MCP"), "KustoClient")
+        self.assertEqual(_normalize_data_connector_type("Azure Data Explorer Cluster"), "Kusto")
         self.assertEqual(_normalize_data_connector_type("Custom MCP"), "Mcp")
         self.assertEqual(_normalize_data_connector_type("User Provided Connector"), "Mcp")
         self.assertEqual(_normalize_data_connector_type("Office 365 Outlook"), "Outlook")
@@ -2101,6 +2131,71 @@ class _TestConnectorConvenience(_ConnectorConvenienceArgsMixin, _NoOpPreOperatio
     pass
 
 
+class GenevaMetricsTenantGateTests(unittest.TestCase):
+    """GenevaMetrics is Microsoft-internal only (Paul's 2026-11-02 Teams
+    feedback). _DataConnectorTypeArgMixin.pre_operations() now resolves the
+    signed-in tenant via 'az account show' and rejects the request
+    client-side with a clear message when it doesn't match
+    MICROSOFT_TENANT_ID -- one CLI, no separate 1p/3p build."""
+
+    class _TestDataConnectorType(_DataConnectorTypeArgMixin, _NoOpPreOperationsBase):
+        pass
+
+    @staticmethod
+    def _value(serialized):
+        """Stand-in for a real AAZ value: has_value() just needs it to not
+        be None/AAZUndefined, and pre_operations() calls .to_serialized_data()
+        on it (mirrors ConnectorConvenienceArgsTests' approach one level up)."""
+        return SimpleNamespace(to_serialized_data=lambda: serialized)
+
+    def test_resolve_signed_in_tenant_id_returns_tenant(self):
+        with patch(
+            "azext_sre.custom._cli_invoke",
+            lambda cli_ctx, *args, **kwargs: {"tenantId": MICROSOFT_TENANT_ID},
+        ):
+            self.assertEqual(
+                _resolve_signed_in_tenant_id(SimpleNamespace()), MICROSOFT_TENANT_ID
+            )
+
+    def test_resolve_signed_in_tenant_id_raises_when_missing(self):
+        with patch("azext_sre.custom._cli_invoke", lambda cli_ctx, *args, **kwargs: {}):
+            with self.assertRaises(CLIError):
+                _resolve_signed_in_tenant_id(SimpleNamespace())
+
+    def test_connector_create_allows_geneva_metrics_in_microsoft_tenant(self):
+        command = _bare_command(
+            self._TestDataConnectorType, data_connector_type=self._value("genevametrics")
+        )
+        with patch(
+            "azext_sre.custom._resolve_signed_in_tenant_id",
+            lambda cli_ctx: MICROSOFT_TENANT_ID,
+        ):
+            command.pre_operations()
+        self.assertEqual(command.ctx.args.data_connector_type, "GenevaMetrics")
+
+    def test_connector_create_rejects_geneva_metrics_outside_microsoft_tenant(self):
+        command = _bare_command(
+            self._TestDataConnectorType, data_connector_type=self._value("GenevaMetrics")
+        )
+        with patch(
+            "azext_sre.custom._resolve_signed_in_tenant_id",
+            lambda cli_ctx: "some-other-tenant-id",
+        ):
+            with self.assertRaises(CLIError):
+                command.pre_operations()
+
+    def test_connector_create_other_types_do_not_check_tenant(self):
+        command = _bare_command(
+            self._TestDataConnectorType, data_connector_type=self._value("kusto")
+        )
+        with patch(
+            "azext_sre.custom._resolve_signed_in_tenant_id",
+            lambda cli_ctx: (_ for _ in ()).throw(AssertionError("should not be called")),
+        ):
+            command.pre_operations()
+        self.assertEqual(command.ctx.args.data_connector_type, "Kusto")
+
+
 class ConnectorConvenienceArgsTests(unittest.TestCase):
     """--file-path/--mcp-endpoint/--github on 'connector create' build the
     real nested extended-properties/data-source shapes confirmed live this
@@ -2431,21 +2526,50 @@ class DefaultSystemIdentityTests(unittest.TestCase):
     """Real bug found live: 'az sre agent create' with no identity flag at
     all reached ARM and failed with (ManagedIdentityRequired) "At least one
     managed identity (SystemAssigned or UserAssigned) must be assigned to
-    the agent." _DefaultSystemIdentityMixin defaults to
-    --mi-system-assigned client-side so creation succeeds out of the box,
-    matching the Portal's own create-flow default, while still honoring an
-    explicit --mi-system-assigned/--mi-user-assigned if the caller gave one."""
+    the agent." _DefaultSystemIdentityMixin used to default to just
+    --mi-system-assigned client-side; a real portal screenshot plus the
+    portal's own ARM template (SreAgentTemplateResource.ts:
+    'createUserIdentity ?? true', identity.type "SystemAssigned,
+    UserAssigned") proved the portal actually auto-creates a NEW
+    user-assigned identity too and enables both types. This mixin now
+    reproduces that -- auto-creating the identity resource via
+    _create_user_assigned_identity() (mocked out below, real ARM call
+    tested live) -- while still honoring an explicit --mi-system-assigned/
+    --mi-user-assigned if the caller gave one."""
 
     def _run(self, **extra_args):
-        args = {"mi_system_assigned": AAZUndefined, "mi_user_assigned": AAZUndefined}
+        args = {
+            "mi_system_assigned": AAZUndefined,
+            "mi_user_assigned": AAZUndefined,
+            "agent_name": "myagent",
+            "resource_group": "myrg",
+            "location": "eastus2",
+        }
         args.update(extra_args)
         command = _bare_command(_TestDefaultSystemIdentity, **args)
-        command.pre_operations()
+        command.ctx.subscription_id = "sub123"
+        with patch(
+            "azext_sre.custom._create_user_assigned_identity",
+            return_value="/subscriptions/sub123/resourceGroups/myrg/providers/"
+            "Microsoft.ManagedIdentity/userAssignedIdentities/myagent-identity-abc123",
+        ) as mock_create:
+            command.pre_operations()
+        command._mock_create_identity = mock_create
         return command.ctx.args
 
     def test_defaults_to_system_assigned_when_neither_given(self):
         args = self._run()
         self.assertEqual(args.mi_system_assigned, "True")
+
+    def test_defaults_also_creates_and_attaches_a_new_user_assigned_identity(self):
+        args = self._run()
+        self.assertEqual(
+            args.mi_user_assigned,
+            [
+                "/subscriptions/sub123/resourceGroups/myrg/providers/"
+                "Microsoft.ManagedIdentity/userAssignedIdentities/myagent-identity-abc123"
+            ],
+        )
 
     def test_leaves_explicit_system_assigned_alone(self):
         args = self._run(mi_system_assigned="some-explicit-value")
