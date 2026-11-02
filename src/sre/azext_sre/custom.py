@@ -320,12 +320,47 @@ def _resolve_signed_in_tenant_id(cli_ctx):
     return tenant_id
 
 
-# Microsoft's own corporate AAD tenant ID -- well-known/public (e.g. used
-# throughout Microsoft's own sample code and documentation). Confirmed
-# live, 2026-11-02, as this CLI's own test environment's signed-in tenant
-# (`az account show --query tenantId` -> this exact value), consistent
-# with it being a genuine Microsoft-internal tenant.
-MICROSOFT_TENANT_ID = "72f988bf-86f1-41af-91ab-2d7cd011db47"
+def _is_microsoft_first_party_tenant(tenant_id):
+    """True if tenant_id is one of Microsoft's known first-party AAD tenants.
+
+    Mirrors the real SRE Agent portal's own first-party gate exactly --
+    confirmed live, 2026-11-02, in sreagent-runtime's
+    src/Agent/Agent.Web/Client/src/src/Common/Helpers/FirstPartyHelper.ts:
+    getTenantType() (lines 67-108) maps each of these 13 GUIDs to a named
+    TenantType, and isFirstPartyAgent() (lines 177-208) treats every named
+    type except "Other" as first-party -- i.e. all 13 below. The portal
+    uses this same list to hide the GenevaMetrics/S360/DGrep/Limn/EngHub
+    connector cards from the picker entirely for non-1p tenants, not just
+    reject at submit time; this CLI check is the equivalent gate, matching
+    the portal 1:1 instead of our earlier single-tenant-ID approximation.
+    """
+    return tenant_id is not None and tenant_id.lower() in MICROSOFT_FIRST_PARTY_TENANT_IDS
+
+
+# The 13 Microsoft-internal AAD tenant IDs the real portal treats as
+# first-party (public-cloud only; sovereign-cloud equivalents are omitted
+# since this CLI targets Azure Public Cloud). Source: getTenantType() in
+# FirstPartyHelper.ts (see docstring above) -- lowercased for
+# case-insensitive comparison, matching the portal's own `equals(...,
+# AntUxStringComparison.IgnoreCase)`.
+MICROSOFT_FIRST_PARTY_TENANT_IDS = frozenset(
+    tid.lower()
+    for tid in (
+        "33e01921-4d64-4f8c-a055-5bdaffd5e33d",  # AME
+        "72f988bf-86f1-41af-91ab-2d7cd011db47",  # Corp
+        "975f013f-7f24-47e8-a7d3-abc4752bf346",  # PME
+        "cdc5aeea-15c5-4db6-b079-fcadd2505dc2",  # TORUS
+        "ed5693bc-117f-4001-a14c-5f50a530d5df",  # MicrosoftHealthcareCloud
+        "124edf19-b350-4797-aefc-3206115ffdb3",  # GME
+        "68cd85cc-e0b3-43c8-ba3c-67686dbf8a67",  # MSFTGreen
+        "c3ed4049-c06b-48f2-bdfa-fea0c818f1ee",  # DevicesMFG
+        "5f032c4e-48ab-4c54-bdc8-067b8a575484",  # MPA
+        "53dc36a4-5a8f-4b90-8851-fdfd99605427",  # MPD
+        "05e6f886-e266-4486-a450-9bbb7e84da55",  # PKIHRE
+        "b1a4f7cb-a159-44a6-ac48-6674e85c4ddc",  # TestTRS01
+        "5806608c-07fd-4751-ab09-a60cb90409a2",  # PCECloud
+    )
+)
 
 
 def _resolve_signed_in_user_object_id(cli_ctx):
@@ -687,8 +722,10 @@ class _DataConnectorTypeArgMixin:
                 "'KnowledgeWebPage', 'KnowledgeRepository'. Also accepts 14 "
                 "more real backend types unlocked 2026-11-02: 'AppInsights', "
                 "'LogAnalytics', 'KustoUser', 'KustoDataIndexer', "
-                "'TsgCrawler', 'Ev2Mcp', 'GenevaMetrics' (Microsoft-internal "
-                "tenants only), 'S360', 'ConnectorGateway', 'Documentation', "
+                "'TsgCrawler', 'Ev2Mcp', 'GenevaMetrics' (restricted to "
+                "Microsoft's 13 known first-party tenants, matching the "
+                "portal's own connector-picker gate), 'S360', "
+                "'ConnectorGateway', 'Documentation', "
                 "'AzureDevOpsBuiltinMcp', 'ApplicationInsights', "
                 "'AzureMonitor', 'MonitorClient'. Case-insensitive; "
                 "friendly names (e.g. 'Azure Data Explorer', 'Custom MCP') "
@@ -714,7 +751,7 @@ class _DataConnectorTypeArgMixin:
             )
             if normalized == "GenevaMetrics":
                 tenant_id = _resolve_signed_in_tenant_id(self.cli_ctx)
-                if tenant_id != MICROSOFT_TENANT_ID:
+                if not _is_microsoft_first_party_tenant(tenant_id):
                     raise CLIError(
                         "--data-connector-type GenevaMetrics is Microsoft-internal "
                         "only and is not available in this tenant."

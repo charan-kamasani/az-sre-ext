@@ -92,6 +92,7 @@ from azext_sre.custom import (
     _extension_resource_show,
     _extension_resource_list,
     _extension_resource_delete,
+    _is_microsoft_first_party_tenant,
     _normalize_data_connector_type,
     _normalize_model_provider,
     _parse_skill_md,
@@ -99,7 +100,7 @@ from azext_sre.custom import (
     _resolve_managed_resource_scope,
     _resolve_signed_in_tenant_id,
     _resolve_signed_in_user_object_id,
-    MICROSOFT_TENANT_ID,
+    MICROSOFT_FIRST_PARTY_TENANT_IDS,
 )
 
 
@@ -2135,8 +2136,14 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
     """GenevaMetrics is Microsoft-internal only (Paul's 2026-11-02 Teams
     feedback). _DataConnectorTypeArgMixin.pre_operations() now resolves the
     signed-in tenant via 'az account show' and rejects the request
-    client-side with a clear message when it doesn't match
-    MICROSOFT_TENANT_ID -- one CLI, no separate 1p/3p build."""
+    client-side with a clear message unless the tenant is one of the 13
+    Microsoft first-party tenant IDs -- matching the real SRE Agent portal's
+    own ConnectorPicker.tsx/FirstPartyHelper.ts gate 1:1, confirmed
+    2026-11-02 (see _is_microsoft_first_party_tenant docstring). One CLI,
+    no separate 1p/3p build."""
+
+    MICROSOFT_CORP_TENANT_ID = "72f988bf-86f1-41af-91ab-2d7cd011db47"
+    MICROSOFT_AME_TENANT_ID = "33e01921-4d64-4f8c-a055-5bdaffd5e33d"
 
     class _TestDataConnectorType(_DataConnectorTypeArgMixin, _NoOpPreOperationsBase):
         pass
@@ -2151,10 +2158,10 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
     def test_resolve_signed_in_tenant_id_returns_tenant(self):
         with patch(
             "azext_sre.custom._cli_invoke",
-            lambda cli_ctx, *args, **kwargs: {"tenantId": MICROSOFT_TENANT_ID},
+            lambda cli_ctx, *args, **kwargs: {"tenantId": self.MICROSOFT_CORP_TENANT_ID},
         ):
             self.assertEqual(
-                _resolve_signed_in_tenant_id(SimpleNamespace()), MICROSOFT_TENANT_ID
+                _resolve_signed_in_tenant_id(SimpleNamespace()), self.MICROSOFT_CORP_TENANT_ID
             )
 
     def test_resolve_signed_in_tenant_id_raises_when_missing(self):
@@ -2162,18 +2169,42 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
             with self.assertRaises(CLIError):
                 _resolve_signed_in_tenant_id(SimpleNamespace())
 
-    def test_connector_create_allows_geneva_metrics_in_microsoft_tenant(self):
+    def test_is_microsoft_first_party_tenant_covers_all_13_known_ids(self):
+        self.assertEqual(len(MICROSOFT_FIRST_PARTY_TENANT_IDS), 13)
+        for tenant_id in MICROSOFT_FIRST_PARTY_TENANT_IDS:
+            self.assertTrue(_is_microsoft_first_party_tenant(tenant_id))
+            # Case-insensitive, matching the portal's own AntUxStringComparison.IgnoreCase.
+            self.assertTrue(_is_microsoft_first_party_tenant(tenant_id.upper()))
+
+    def test_is_microsoft_first_party_tenant_rejects_unknown_and_none(self):
+        self.assertFalse(_is_microsoft_first_party_tenant("some-other-tenant-id"))
+        self.assertFalse(_is_microsoft_first_party_tenant(None))
+
+    def test_connector_create_allows_geneva_metrics_in_corp_tenant(self):
         command = _bare_command(
             self._TestDataConnectorType, data_connector_type=self._value("genevametrics")
         )
         with patch(
             "azext_sre.custom._resolve_signed_in_tenant_id",
-            lambda cli_ctx: MICROSOFT_TENANT_ID,
+            lambda cli_ctx: self.MICROSOFT_CORP_TENANT_ID,
         ):
             command.pre_operations()
         self.assertEqual(command.ctx.args.data_connector_type, "GenevaMetrics")
 
-    def test_connector_create_rejects_geneva_metrics_outside_microsoft_tenant(self):
+    def test_connector_create_allows_geneva_metrics_in_ame_tenant(self):
+        # Confirms the gate isn't hardcoded to a single tenant -- AME is a
+        # distinct first-party tenant in the portal's own allowlist.
+        command = _bare_command(
+            self._TestDataConnectorType, data_connector_type=self._value("GenevaMetrics")
+        )
+        with patch(
+            "azext_sre.custom._resolve_signed_in_tenant_id",
+            lambda cli_ctx: self.MICROSOFT_AME_TENANT_ID,
+        ):
+            command.pre_operations()
+        self.assertEqual(command.ctx.args.data_connector_type, "GenevaMetrics")
+
+    def test_connector_create_rejects_geneva_metrics_outside_microsoft_tenants(self):
         command = _bare_command(
             self._TestDataConnectorType, data_connector_type=self._value("GenevaMetrics")
         )
