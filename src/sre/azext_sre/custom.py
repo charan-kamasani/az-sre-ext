@@ -708,6 +708,25 @@ KNOWLEDGE_DATA_CONNECTOR_TYPES = {
     "KnowledgeRepository",
 }
 
+# Wire value -> real portal display name, for the subset of types with a
+# confirmed portal picker entry (same 7 names already used in --help and in
+# DATA_CONNECTOR_TYPE_ALIASES above). Used only to label 'sre connector
+# list'/'show' -o table output so it matches what a user actually sees in
+# the portal instead of the internal wire value -- -o json/yaml always
+# return the raw dataConnectorType unchanged, since scripts/automation rely
+# on that exact value. The 14 types unlocked 2026-11-02 and the 4 knowledge
+# types have no confirmed portal display name, so they're intentionally
+# left out here and fall back to showing the wire value as-is.
+CONNECTOR_TYPE_PORTAL_NAMES = {
+    "KustoClient": "Azure Data Explorer",
+    "Kusto": "Azure Data Explorer Cluster",
+    "Mcp": "Custom MCP",
+    "Outlook": "Office 365 Outlook",
+    "Teams": "Microsoft Teams",
+    "Icm": "Microsoft IcM",
+    "Dgrep": "Microsoft DGrep",
+}
+
 
 def _normalize_data_connector_type(value):
     if value is None:
@@ -766,31 +785,30 @@ class _DataConnectorTypeArgMixin:
         # existing ._help dict rather than replace it.
         if data_connector_type is not None and isinstance(getattr(data_connector_type, "_help", None), dict):
             data_connector_type._help["short-summary"] = (
-                "Type of the data connector. Real API values (friendly "
-                "product name in parentheses, both accepted): 'KustoClient' "
-                "(Azure Data Explorer -- the default type, matching the "
-                "portal's own 'Azure Data Explorer' option exactly; no "
-                "--data-source needed), 'Kusto' (Azure Data Explorer "
-                "Cluster -- legacy, pinned to one cluster via --data-source, "
-                "no portal entry point), 'Mcp' (Custom MCP -- PagerDuty/"
-                "ServiceNow/Datadog/Splunk/S360/Ev2/etc., differentiated by "
-                "endpoint, not a separate type), 'Outlook' (Office 365 "
-                "Outlook), 'Teams' (Microsoft Teams), 'Icm' (Microsoft IcM, "
-                "singleton per agent), 'Dgrep' "
-                "(Microsoft DGrep, singleton per agent), and four "
+                "Type of the data connector. Portal display name shown "
+                "first, wire/API value in parentheses (both accepted, "
+                "case-insensitive): 'Azure Data Explorer' (KustoClient -- "
+                "the default type, matching the portal's own 'Azure Data "
+                "Explorer' option exactly; no --data-source needed), "
+                "'Azure Data Explorer Cluster' (Kusto -- legacy, pinned to "
+                "one cluster via --data-source, no portal entry point), "
+                "'Custom MCP' (Mcp -- PagerDuty/ServiceNow/Datadog/Splunk/"
+                "S360/Ev2/etc., differentiated by endpoint, not a separate "
+                "type), 'Office 365 Outlook' (Outlook), 'Microsoft Teams' "
+                "(Teams), 'Microsoft IcM' (Icm, singleton per agent), "
+                "'Microsoft DGrep' (Dgrep, singleton per agent), and four "
                 "knowledge-item types that need --extended-properties "
                 "instead of --data-source: 'KnowledgeText', 'KnowledgeFile', "
                 "'KnowledgeWebPage', 'KnowledgeRepository'. Also accepts 14 "
-                "more real backend types unlocked 2026-11-02: 'AppInsights', "
-                "'LogAnalytics', 'KustoUser', 'KustoDataIndexer', "
-                "'TsgCrawler', 'Ev2Mcp', 'GenevaMetrics' (restricted to "
-                "Microsoft's 13 known first-party tenants, matching the "
-                "portal's own connector-picker gate), 'S360', "
+                "more real backend types unlocked 2026-11-02 (no confirmed "
+                "portal display name yet, so only the wire value is shown): "
+                "'AppInsights', 'LogAnalytics', 'KustoUser', "
+                "'KustoDataIndexer', 'TsgCrawler', 'Ev2Mcp', 'GenevaMetrics' "
+                "(restricted to Microsoft's 13 known first-party tenants, "
+                "matching the portal's own connector-picker gate), 'S360', "
                 "'ConnectorGateway', 'Documentation', "
                 "'AzureDevOpsBuiltinMcp', 'ApplicationInsights', "
-                "'AzureMonitor', 'MonitorClient'. Case-insensitive; "
-                "friendly names (e.g. 'Azure Data Explorer', 'Custom MCP') "
-                "also accepted."
+                "'AzureMonitor', 'MonitorClient'."
             )
         data_source = getattr(schema, "data_source", None)
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):

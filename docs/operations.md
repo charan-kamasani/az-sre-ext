@@ -148,6 +148,19 @@ and `identity` are write-only on the wire — they never come back on `show`/
 `list`/`list-secret`, even for the connector that owns them; this is
 confirmed server behavior, not a CLI omission.
 
+`connector list`/`show -o table` resolve `properties.dataConnectorType`'s
+raw wire value (e.g. `KustoClient`) to the real portal display name (e.g.
+`Azure Data Explorer`) via a curated `table_transformer`
+(`_transformers.py`, `CONNECTOR_TYPE_PORTAL_NAMES` in `custom.py`) —
+confirmed a real source of user confusion, since the wire value never
+appears anywhere in the portal UI. Only the 7 types with a confirmed
+portal picker entry (`KustoClient`, `Kusto`, `Mcp`, `Outlook`, `Teams`,
+`Icm`, `Dgrep`) are mapped; the 14 types unlocked 2026-11-02 and the 4
+`Knowledge*` types have no confirmed portal display name, so they fall
+back to showing the wire value as-is rather than guessing. `-o json`/
+`-o yaml`/etc. are unaffected and still return the raw `dataConnectorType`
+unchanged, since scripts/automation rely on that exact value.
+
 **How the portal's single "Azure Data Explorer" option actually maps to
 `Kusto`/`KustoClient` (confirmed against `ConnectorWizardFormik.tsx` and
 `DialogHelper.tsx`'s `buildKustoConnectorsFromClusterGroups`, and live

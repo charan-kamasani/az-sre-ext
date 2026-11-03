@@ -2998,5 +2998,78 @@ class TableTransformerTests(unittest.TestCase):
         self.assertIsNone(command_table["sre access grant"].table_transformer)
 
 
+class ConnectorTableTransformerTests(unittest.TestCase):
+    """Real UX gap: a connector's properties.dataConnectorType is an
+    internal wire value (e.g. 'KustoClient') that never appears anywhere
+    in the portal UI, which only shows the display name (e.g. 'Azure Data
+    Explorer') -- confirmed a source of user confusion. 'sre connector
+    list'/'show' -o table now resolve it to the portal name via
+    CONNECTOR_TYPE_PORTAL_NAMES; -o json/yaml are untouched (still return
+    the raw wire value), since scripts rely on that exact value."""
+
+    _KUSTOCLIENT_CONNECTOR = {
+        "id": "/subscriptions/sub/.../connectors/azure-data-explorer",
+        "name": "azure-data-explorer",
+        "resourceGroup": "myrg",
+        "type": "Microsoft.App/agents/connectors",
+        "properties": {"dataConnectorType": "KustoClient", "identity": "", "provisioningState": "Succeeded"},
+    }
+
+    _UNMAPPED_TYPE_CONNECTOR = {
+        "name": "runbook",
+        "properties": {"dataConnectorType": "KnowledgeFile", "provisioningState": "Succeeded"},
+    }
+
+    def test_connector_list_format_resolves_portal_name(self):
+        from azext_sre._transformers import connector_list_table_format
+
+        rows = connector_list_table_format([self._KUSTOCLIENT_CONNECTOR])
+        self.assertEqual(
+            list(rows[0].items()),
+            [
+                ("Name", "azure-data-explorer"),
+                ("Type", "Azure Data Explorer"),
+                ("ProvisioningState", "Succeeded"),
+                ("ConsentStatus", None),
+            ],
+        )
+
+    def test_connector_show_format_resolves_portal_name(self):
+        from azext_sre._transformers import connector_show_table_format
+
+        row = connector_show_table_format(self._KUSTOCLIENT_CONNECTOR)
+        self.assertEqual(row["Type"], "Azure Data Explorer")
+        self.assertEqual(row["Name"], "azure-data-explorer")
+
+    def test_connector_format_falls_back_to_wire_value_when_no_portal_name(self):
+        from azext_sre._transformers import connector_list_table_format
+
+        rows = connector_list_table_format([self._UNMAPPED_TYPE_CONNECTOR])
+        # KnowledgeFile has no confirmed portal display name -- must show
+        # the raw wire value as-is, not guess or blank it out.
+        self.assertEqual(rows[0]["Type"], "KnowledgeFile")
+
+    def test_connector_format_includes_consent_status_when_present(self):
+        from azext_sre._transformers import connector_list_table_format
+
+        connector = dict(self._KUSTOCLIENT_CONNECTOR)
+        connector["consentStatus"] = "PendingConsent"
+        rows = connector_list_table_format([connector])
+        self.assertEqual(rows[0]["ConsentStatus"], "PendingConsent")
+
+    def test_table_transformers_registered_for_connector_list_and_show(self):
+        from azext_sre._transformers import TABLE_TRANSFORMERS
+
+        self.assertIn("sre connector list", TABLE_TRANSFORMERS)
+        self.assertIn("sre connector show", TABLE_TRANSFORMERS)
+
+    def test_command_table_wires_transformer_for_connector_list_and_show(self):
+        loader = SreCommandsLoader(cli_ctx=DummyCli())
+        command_table = loader.load_command_table(["sre", "connector", "list"])
+        self.assertIsNotNone(command_table["sre connector list"].table_transformer)
+        self.assertIsNotNone(command_table["sre connector show"].table_transformer)
+        self.assertIsNone(command_table["sre connector create"].table_transformer)
+
+
 if __name__ == "__main__":
     unittest.main()
