@@ -91,14 +91,33 @@ az sre managed-resource grant \
   --target-subscription "$SUBSCRIPTION_ID" --target-resource-group "<rg-to-monitor>"
 ```
 
-Connect a data source, e.g. Kusto for logs/metrics:
+Connect a data source, e.g. Azure Data Explorer for logs/metrics — this is
+the exact type the portal's own "Azure Data Explorer" button creates
+(confirmed live), so no `--data-source` is needed:
 
 ```bash
 az sre connector create \
   --resource-group "$RG" --agent-name "$AGENT" \
-  --name my-kusto --data-connector-type Kusto \
-  --data-source "https://help.kusto.windows.net/Samples"
+  --name azure-data-explorer --data-connector-type "Azure Data Explorer"
 ```
+
+> **`Kusto` vs. `KustoClient`:** the friendly name `"Azure Data Explorer"`
+> above resolves to the wire value `KustoClient` — the portal's picker has
+> no entry for the plain `Kusto` type at all. If you specifically need to
+> pin a connector to one cluster URL (what the portal's optional "Add
+> clusters" step under the "Azure Data Explorer" wizard creates per
+> cluster group), use the raw `Kusto` type instead, which **does** require
+> `--data-source`:
+>
+> ```bash
+> az sre connector create \
+>   --resource-group "$RG" --agent-name "$AGENT" \
+>   --name my-kusto-cluster --data-connector-type Kusto \
+>   --data-source "https://help.kusto.windows.net/Samples"
+> ```
+>
+> See [`operations.md`](operations.md#data-connectors) for the full
+> `Kusto`/`KustoClient` portal-mapping story.
 
 ## 3. Give it operational context
 
@@ -148,6 +167,15 @@ az sre incident-filter create \
   --resource-group "$RG" --agent-name "$AGENT" \
   --name high-sev --value '{"incidentPlatform":"Icm","titleContains":"disk space","handlingAgents":["'"$AGENT"'"],"isEnabled":true}'
 ```
+
+> **Known environment limitation:** live-create of `incident-filter` is
+> blocked in sandbox/dev tenants that lack real IcM team-identity
+> resolution — confirmed to fail with `(InvalidRequestParameter) The
+> extension configuration is invalid.` even with a payload shape that
+> matches the documented schema exactly. This is not a CLI defect; see
+> [`operations.md`](operations.md#runbook-extension-payload-shapes) for the
+> full status table. `scheduled-task`/`http-trigger` below don't have this
+> restriction and are live-verified to work end to end.
 
 Run the agent on a schedule, and from an inbound webhook:
 

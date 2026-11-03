@@ -30,8 +30,12 @@ intentionally out of scope and why.
 Every noun below is a flat top-level group directly under `az sre` — the only
 nesting is where a resource genuinely only exists inside another one
 (`az sre plugin marketplace`/`az sre plugin install`, `az sre automation
-scheduled-task`/`http-trigger`/`incident-filter`, and `az sre agent
-settings`). See [docs/cli-reference.md](docs/cli-reference.md) for the
+scheduled-task`/`http-trigger`, and `az sre agent settings`). `incident-filter`
+is its own flat top-level group (`az sre incident-filter ...`), not nested
+under `automation`, despite living in the portal's "Automation" tab alongside
+scheduled tasks/HTTP triggers — see
+[docs/operations.md](docs/operations.md#az-sre-automation-group-for-scheduled-tasks-http-triggers-and-incident-filters)
+for why. See [docs/cli-reference.md](docs/cli-reference.md) for the
 complete, always-current list.
 
 The shortest useful walkthrough creates a disposable agent, grants a
@@ -80,11 +84,12 @@ az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
 | Group | Commands | Use it to |
 |---|---|---|
 | `agent` | `create, show, list, update, delete, start, stop, list-models, wait`<br>**settings:** `show, update` | Manage the core SRE Agent lifecycle and global settings (tool/skill permissions, custom instructions, approval expiration). |
-| `access` | `grant, revoke` | Grant or revoke built-in RBAC roles (admin, user, author, reader) on the agent. |
+| `access` | `grant, list, revoke` | Grant, list, or revoke built-in RBAC roles (admin, user, author, reader) on the agent. |
 | `connector` | `create, show, list, update, delete, list-secret` | Connect the agent to external data sources. Now accepts friendly names (Azure Data Explorer, Custom MCP, Office 365 Outlook, Microsoft Teams, Microsoft IcM, Microsoft DGrep) as well as raw wire values. |
 | `endpoint` | `show` | Resolve the agent's live data-plane endpoint URL. |
 | `hook` | `create, show, list, delete` | Manage lifecycle hooks (Start, PreToolUse, PostToolUse, Stop) that run prompts or scripts. |
 | `identity` | `assign, show, remove` | Manage the agent's managed identity. |
+| `incident-filter` | `create, show, list, delete` | Match incoming incidents by platform/title/team/etc. and route matches to a handling agent (portal: Incidents > "Triggers & response Plans"). |
 | `instructions` | `create, show, list, delete` | Manage the agent's always-on custom instructions. |
 | `knowledge` | `create, show, list, delete` | Add files or web pages the agent can read and reason over. |
 | `managed-resource` | `grant, list, revoke` | Allow the agent's identity to monitor resources outside its resource group. |
@@ -94,7 +99,7 @@ az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
 | `skill` | `create, show, list, delete` | Create and manage custom SKILL.md-based skills. |
 | `tool` | `create, show, list, delete` | Manage custom tools the agent can invoke. |
 | `usage` | `list` | View agent usage and billing statistics. |
-| `automation` | **scheduled-task:** `create, show, list, delete`<br>**http-trigger:** `create, show, list, delete`<br>**incident-filter:** `create, show, list, delete` | Manage scheduled runs, inbound webhook triggers, and incident-routing rules. |
+| `automation` | **scheduled-task:** `create, show, list, delete`<br>**http-trigger:** `create, show, list, delete` | Manage scheduled runs and inbound webhook triggers. |
 
 Everything in this table is backed by the unit test suite described below, and
 most rows have also been exercised against real Azure resources by hand. The
@@ -109,7 +114,7 @@ cd src/sre
 python -m unittest discover -s azext_sre/tests -v
 ```
 
-203 offline, credential-free tests cover every hand-written command in
+234 offline, credential-free tests cover every hand-written command in
 `custom.py`: RBAC role-name and managed-resource-scope mapping, the networking
 GET-merge-PUT logic, extension create/show/list/delete resource-ID and payload
 shape, the base64/JSON extension-value codec, model-provider and
