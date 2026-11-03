@@ -168,7 +168,7 @@ Add a lifecycle hook so a script runs before/after every tool call:
 ```bash
 az sre hook create \
   --resource-group "$RG" --agent-name "$AGENT" \
-  --name audit-log --value '{"eventType":"PostToolUse","activationMode":"always","hook":{"type":"command","command":"echo logged","failMode":"Allow"},"matcher":".*"}'
+  --name audit-log --value '{"eventType":"PostToolUse","activationMode":"always","hook":{"type":"command","command":"echo logged","failMode":"Allow","matcher":".*"}}'
 ```
 
 > **`hook.matcher` is required for `PreToolUse`/`PostToolUse`:** live-confirmed
