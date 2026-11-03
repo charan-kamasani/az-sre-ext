@@ -99,10 +99,56 @@ az sre connector delete -g myrg --agent-name myagent --name my-kusto-connector -
 (`"Azure Data Explorer"`, `"Custom MCP"`, `"Office 365 Outlook"`, etc. — see
 the friendly-names table below), case-insensitively, as an alias for the
 raw wire value. `--data-source` is required for `Kusto` connectors (learned
-from a real server error, not documented in the generated help). `dataSource`
+from a real server error, not documented in the generated help). Note:
+`"Azure Data Explorer"` (the bare friendly name, matching what the portal
+calls it) resolves to `KustoClient`, not `Kusto` — the portal's own picker
+has no entry for plain `Kusto` at all; use `"Azure Data Explorer Cluster"`
+or the raw `Kusto` value directly for the legacy pinned-cluster type.
+`dataSource`
 and `identity` are write-only on the wire — they never come back on `show`/
 `list`/`list-secret`, even for the connector that owns them; this is
 confirmed server behavior, not a CLI omission.
+
+**How the portal's single "Azure Data Explorer" option actually maps to
+`Kusto`/`KustoClient` (confirmed against `ConnectorWizardFormik.tsx` and
+`DialogHelper.tsx`'s `buildKustoConnectorsFromClusterGroups`, and live
+ARM-verified):** picking "Azure Data Explorer" in the portal does **not**
+create one connector — it can create several:
+
+- The connector you name in step 2 is always created as `KustoClient` (the
+  generic MCP Kusto-query capability, no `--data-source` needed). This is
+  what `--data-connector-type "Azure Data Explorer"` creates.
+- Each optional "cluster group" you add in step 3 ("Add clusters") becomes
+  its **own separate connector**, created as `dataConnectorType: "Kusto"`
+  (`ConnectorType.AzureDataExplorerQuery = 'Kusto'` in source), named after
+  the group, with `--data-source` set to the group's first cluster URI.
+  So `Kusto` **does** have a portal entry point after all — just reached
+  indirectly, through the "Azure Data Explorer" wizard's cluster-groups
+  step, not as its own top-level picker entry. (Correcting an earlier
+  assumption in this doc that `Kusto` was portal-unreachable.)
+- The review step's "Allow agent to use query tools from this connector"
+  checkbox sets `extended-properties.toolsVisibleToMetaAgent` on the
+  `KustoClient` parent connector to `["*"]` (checked) or `[]` (unchecked) —
+  use `--tool-access true|false` instead of hand-building this JSON
+  (live-verified: both values persist and read back correctly).
+- A cluster group's additional clusters beyond the first are meant to go
+  into `extended-properties.additionalClusters` on the child `Kusto`
+  connector, but this was live-verified to **not** persist on read-back
+  (same known echo-bug pattern as `KnowledgeFile`'s `fileContent` -- see
+  below) -- so the CLI does not offer a convenience flag for it. If you
+  need multiple clusters, create one `Kusto` connector per cluster instead.
+
+To replicate a cluster group yourself:
+
+```bash
+az sre connector create -g myrg --agent-name myagent \
+  --name azure-data-explorer --data-connector-type "Azure Data Explorer" \
+  --tool-access true
+
+az sre connector create -g myrg --agent-name myagent \
+  --name dnci-westus --data-connector-type Kusto \
+  --data-source "https://dnci.westus.kusto.windows.net/dnci"
+```
 
 `consentStatus` is a derived, CLI-added field on connector output — present
 only for `EntraOAuth`-based connectors, silently absent otherwise. When a
@@ -131,8 +177,8 @@ accepts as an alias, case-insensitively, alongside the raw wire value:
 
 | Wire value (`--data-connector-type`) | Friendly name (also accepted) |
 |---|---|
-| `Kusto` | Azure Data Explorer |
-| `KustoClient` | Azure Data Explorer (via the Azure MCP server) — product UX shows the same "Azure Data Explorer" name as plain `Kusto`; disambiguated here as "Azure Data Explorer MCP" since the CLI needs one alias per wire value |
+| `KustoClient` | Azure Data Explorer — this is the exact type the portal creates when you pick "Azure Data Explorer" (confirmed: the portal's picker has no separate entry for plain `Kusto`, and always persists that selection as `KustoClient`) |
+| `Kusto` | Azure Data Explorer Cluster — pinned-single-cluster type; has no *direct* top-level portal picker entry, but the portal creates it indirectly as a per-cluster-group child connector under the "Azure Data Explorer" wizard's optional "Add clusters" step; requires `--data-source` |
 | `Mcp` | Custom MCP / User provided connector |
 | `Outlook` | Office 365 Outlook |
 | `Teams` | Microsoft Teams |
@@ -188,6 +234,39 @@ show/list → delete) against a real agent on 2026-10-28:
 | `KnowledgeRepository` | Live-verified | Use `--extended-properties '{"url": "..."}'`; `sre repo connect` is the dedicated front door for this type. |
 | `Outlook` | Blocked — real server error | `create` consistently returns `(InternalServerError) Internal server error occurred`, with and without `--data-source`. Reproduced twice; not a CLI defect (payload shape matches every other working type) — looks like this connector type isn't provisionable in this tenant/environment yet. Re-verify once a tenant known to support Outlook connectors is available. |
 | `Dgrep` | Blocked — real server error | `create` returns `(InvalidRequestParameter) ... MDS endpoint is not approved.` — a real, environment-specific allowlist check on the service side, not a shape or CLI defect. |
+
+**2026-11-02: expanded from 11 to 25 real backend types.** The CLI's
+allowlist was stricter than the actual backend: the control plane
+(`DataConnectorTypes.cs` in `sreagent-runtime`) accepts a `V1` list of 20
+first-party built-in types, of which only 11 were previously exposed here.
+All 14 missing `V1` types were confirmed live against a real agent (schema
+accepted, same endpoint, no new backend work) and added:
+`AppInsights`, `LogAnalytics`, `KustoUser`, `KustoDataIndexer`,
+`TsgCrawler`, `Ev2Mcp`, `GenevaMetrics`, `S360`, `ConnectorGateway`,
+`Documentation`, `AzureDevOpsBuiltinMcp`, `ApplicationInsights`,
+`AzureMonitor`, `MonitorClient`. These were schema/create-level verified
+only (fake placeholder data sources) — not confirmed to retrieve real data
+end-to-end, except `GenevaMetrics` (see below). The remaining 26 `Managed`
+API types (Box, Dropbox, GitLab, etc.) are intentionally **not** exposed:
+they require a separately-provisioned `Microsoft.Web/connectorGateways`
+Azure resource wired via `agent.spec.connectorGatewaySettings.resourceId`
+— genuine infrastructure work, not a CLI allowlist fix.
+
+**`GenevaMetrics` is gated to Microsoft-internal tenants**, matching the
+real SRE Agent portal's own behavior. The portal's connector picker
+(`ConnectorPicker.tsx`/`FirstPartyHelper.ts`) hides the Geneva/S360/DGrep/
+Limn/EngHub cards entirely for non-first-party tenants; the CLI can't hide
+`--help` text per-tenant, so it instead rejects client-side with a clear
+`CLIError` before any ARM call when the signed-in tenant (resolved via
+`az account show`) isn't one of Microsoft's 13 known first-party tenant
+IDs (AME, Corp, PME, TORUS, MicrosoftHealthcareCloud, GME, MSFTGreen,
+DevicesMFG, MPA, MPD, PKIHRE, TestTRS01, PCECloud — the exact same
+allowlist the portal uses). In an allowed tenant, the request still goes
+through normal backend validation (e.g. a `GenevaMetrics` connector also
+needs `--extended-properties monitoringAccount=<account>`, and the service
+genuinely validates that account exists — confirmed live, this is the only
+one of the 14 new types verified against a real downstream auth check,
+not just schema acceptance).
 
 **FIXED** (was: cosmetic, non-blocking noise on `connector create`/
 `knowledge create`): an `ERROR: Operation returned an invalid status 'Not
