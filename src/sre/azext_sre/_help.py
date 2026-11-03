@@ -17,18 +17,24 @@ from knack.help_files import helps  # pylint: disable=unused-import
 # module-level assignment is safe here (see GROUP_EXAMPLES below for why
 # every OTHER group needs a different mechanism).
 #
-# One-line short-summary only, matching the standard `az <ext> -h` shape used
-# across other Azure CLI extensions (a single-line 'Group' section, no
-# long-summary/category text at all). An earlier version here added a
+# One-line short-summary, matching the standard `az <ext> -h` shape used
+# across other Azure CLI extensions (a single-line 'Group' section plus the
+# native alphabetical "Subgroups:" list, always in sync since it's generated
+# from the registered command groups). An earlier version here added a
 # categorized long-summary grouping nouns into the portal's own Build + setup
 # categories, but that kept going stale as the noun set changed (e.g.
-# 'connector' briefly listed under the wrong category). Removed in favor of
-# a plain short-summary, and let the native alphabetical "Subgroups:" list
-# (always in sync, since it's generated from the registered command groups)
-# do the rest of the work.
+# 'connector' briefly listed under the wrong category) -- removed in favor of
+# letting the native subgroup listing do that work instead. The long-summary
+# below is different: a single, non-stale, universally-applicable fact (the
+# Windows PowerShell inline-JSON quoting gotcha affects every JSON-accepting
+# argument across the whole extension) that a brand-new user following only
+# --help, with no docs, would otherwise hit with zero guidance (found via a
+# live help-only walkthrough of 'sre hook create').
 helps['sre'] = """
 type: group
 short-summary: Manage Azure SRE Agent resources -- the agent itself, what it can access, how it's customized, who can use it, and how it's doing.
+long-summary: |-
+  Windows PowerShell note: inline JSON passed to any --value/--extended-properties/--default-model/etc. argument (e.g. --value '{"key": "value"}') is unreliable on powershell.exe/pwsh -- PowerShell does not pass embedded double quotes through to az.cmd intact for multi-word strings, so the command fails with a confusing "unrecognized arguments" error. This is a PowerShell/.cmd-wrapper quoting quirk, not an az sre bug. Workaround: write the JSON to a file and pass --value @path\\to\\file.json instead of inline JSON. See docs/operations.md's "Windows PowerShell: JSON quoting" section for the full explanation and more examples.
 examples:
   - name: Create an agent with an Anthropic default model.
     text: |-
@@ -110,13 +116,14 @@ GROUP_EXAMPLES = {
         {"name": "Show an agent's current custom instructions.",
          "text": "az sre instructions show -g myrg --agent-name myagent"},
         {"name": "Set an agent's custom instructions.",
-         "text": 'az sre instructions create -g myrg --agent-name myagent --content "Always cite the runbook section you used."'},
+         "text": 'az sre instructions create -g myrg --agent-name myagent --name default --value '
+                 '\'{"prompt": "Always cite the runbook section you used."}\''},
     ],
     "sre knowledge": [
         {"name": "List an agent's knowledge sources.",
          "text": "az sre knowledge list -g myrg --agent-name myagent"},
         {"name": "Add a web page as a knowledge source.",
-         "text": "az sre knowledge create -g myrg --agent-name myagent -n runbook --url https://contoso.com/runbook"},
+         "text": "az sre knowledge create -g myrg --agent-name myagent -n runbook --type webpage --url https://learn.microsoft.com/azure/"},
     ],
     "sre managed-resource": [
         {"name": "List the scopes an agent's identity can currently monitor.",
@@ -125,27 +132,30 @@ GROUP_EXAMPLES = {
          "text": "az sre managed-resource grant -g myrg --agent-name myagent --scope /subscriptions/<sub-id>/resourceGroups/prod-rg"},
     ],
     "sre network": [
-        {"name": "Add an outbound allowlist entry to an agent's sandbox.",
-         "text": "az sre network update -g myrg --agent-name myagent --egress-allowlist contoso.com"},
+        {"name": "Limit an agent's code-execution sandbox to an allowlisted host.",
+         "text": 'az sre network update -g myrg --agent-name myagent --sandbox-configuration '
+                 '"{egress:{mode:Limited,allowed-hosts:[contoso.com]}}"'},
     ],
     "sre plugin": [
         {"name": "Connect a plugin marketplace, then install a plugin from it.",
-         "text": ("az sre plugin marketplace create -g myrg --agent-name myagent -n contoso-plugins "
-                   "--repo-url https://github.com/contoso/sre-plugins\n"
-                   "az sre plugin install create -g myrg --agent-name myagent --marketplace-name contoso-plugins "
-                   "-n pagerduty-triage")},
+         "text": ('az sre plugin marketplace create -g myrg --agent-name myagent -n contoso-plugins '
+                   '--value \'{"sourceType": "github", "sourceUrl": "https://github.com/contoso/sre-plugins"}\'\n'
+                   'az sre plugin install create -g myrg --agent-name myagent -n pagerduty-triage '
+                   '--value \'{"marketplaceName": "contoso-plugins", "pluginName": "pagerduty-triage"}\'')},
     ],
     "sre plugin marketplace": [
         {"name": "List an agent's connected plugin marketplaces.",
          "text": "az sre plugin marketplace list -g myrg --agent-name myagent"},
         {"name": "Connect a GitHub repo as a plugin marketplace.",
-         "text": "az sre plugin marketplace create -g myrg --agent-name myagent -n contoso-plugins --repo-url https://github.com/contoso/sre-plugins"},
+         "text": 'az sre plugin marketplace create -g myrg --agent-name myagent -n contoso-plugins --value '
+                 '\'{"sourceType": "github", "sourceUrl": "https://github.com/contoso/sre-plugins"}\''},
     ],
     "sre plugin install": [
         {"name": "List an agent's installed plugins.",
          "text": "az sre plugin install list -g myrg --agent-name myagent"},
         {"name": "Install a plugin from a connected marketplace.",
-         "text": "az sre plugin install create -g myrg --agent-name myagent --marketplace-name contoso-plugins -n pagerduty-triage"},
+         "text": 'az sre plugin install create -g myrg --agent-name myagent -n pagerduty-triage --value '
+                 '\'{"marketplaceName": "contoso-plugins", "pluginName": "pagerduty-triage"}\''},
     ],
     "sre repo": [
         {"name": "Connect a GitHub repo to an agent.",

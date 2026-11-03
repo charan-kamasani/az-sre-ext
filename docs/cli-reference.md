@@ -38,6 +38,8 @@ These Azure CLI global options apply to every command and are not repeated in ea
 
 Manage Azure SRE Agent resources -- the agent itself, what it can access, how it's customized, who can use it, and how it's doing.
 
+Windows PowerShell note: inline JSON passed to any --value/--extended-properties/--default-model/etc. argument (e.g. --value '{"key": "value"}') is unreliable on powershell.exe/pwsh -- PowerShell does not pass embedded double quotes through to az.cmd intact for multi-word strings, so the command fails with a confusing "unrecognized arguments" error. This is a PowerShell/.cmd-wrapper quoting quirk, not an az sre bug. Workaround: write the JSON to a file and pass --value @path\to\file.json instead of inline JSON. See docs/operations.md's "Windows PowerShell: JSON quoting" section for the full explanation and more examples.
+
 | Subgroup | Summary |
 | --- | --- |
 | `access` | Control who can manage or use an SRE Agent. |
