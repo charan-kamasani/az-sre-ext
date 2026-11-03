@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **23 groups** and **69 commands**.
+Public surface: **23 groups** and **70 commands**.
 
 ## Important caveats
 
@@ -62,11 +62,12 @@ Manage Azure SRE Agent resources -- the agent itself, what it can access, how it
 
 Control who can manage or use an SRE Agent.
 
-Grants or revokes a built-in RBAC role (admin, user, author, or reader) on the agent itself, for a specific person, group, or service principal. Use 'sre access grant' to add someone and 'sre access revoke' to remove them. This is the mirror image of 'sre managed-resource', which grants the agent's own identity access to things outside itself -- not other people access to the agent.
+Grants or revokes a built-in RBAC role (admin, user, author, or reader) on the agent itself, for a specific person, group, or service principal. Use 'sre access grant' to add someone, 'sre access list' to see who currently has access, and 'sre access revoke' to remove them. This is the mirror image of 'sre managed-resource', which grants the agent's own identity access to things outside itself -- not other people access to the agent.
 
 | Verb | Exact syntax |
 | --- | --- |
 | `grant` | `az sre access grant --name <value> --resource-group <value> --role {admin,user,author,reader} [--assignee <value>] [--assignee-me {false,true}]` |
+| `list` | `az sre access list --name <value> --resource-group <value>` |
 | `revoke` | `az sre access revoke --name <value> --resource-group <value> --role {admin,user,author,reader} [--assignee <value>] [--assignee-me {false,true}]` |
 
 ### `az sre access grant`
@@ -95,6 +96,27 @@ Thin convenience wrapper over 'az role assignment create' that builds the agent'
 - Grant a user read-only access
 
   `az sre access grant --name myagent --resource-group myrg --role reader --assignee someone@contoso.com`
+
+### `az sre access list`
+
+List who currently has access to an SRE Agent -- every role
+
+assignment scoped to the agent itself, across all four built-in roles (admin, user, author, reader). Thin convenience wrapper over 'az role assignment list --scope <agent-resource-id>' (the agent's own resource ID, resolved for you via 'sre agent show'), the same way 'access grant'/'access revoke' build that scope automatically.
+
+**Syntax**
+
+`az sre access list --name <value> --resource-group <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent to list access on. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List everyone with access to an agent
+
+  `az sre access list --name myagent --resource-group myrg`
 
 ### `az sre access revoke`
 
@@ -146,6 +168,8 @@ Create, show, list, update, delete, start, and stop an agent.
 
 Create an SRE Agent.
 
+If neither --mi-system-assigned nor --mi-user-assigned is passed, this matches the Azure Portal's own default: it creates a brand-new Microsoft.ManagedIdentity/userAssignedIdentities resource for you and enables both system-assigned and user-assigned identities on the agent (identity.type = "SystemAssigned, UserAssigned"). Pass --mi-system-assigned/--mi-user-assigned explicitly to opt out of the auto-created identity.
+
 **Syntax**
 
 `az sre agent create [--no-wait] --name <value> --resource-group <value> [--system-assigned <value>] [--user-assigned <json-or-@file>] [--action-configuration <json-or-@file>] [--agent-identity <json-or-@file>] [--default-model <json-or-@file>] [--incident-management-configuration <json-or-@file>] [--knowledge-graph-configuration <json-or-@file>] [--log-configuration <json-or-@file>] [--upgrade-channel {Preview,Stable}] --location <value> [--tags <json-or-@file>] [--grant-access-to-me {admin,user,author,reader}]`
@@ -166,7 +190,7 @@ Create an SRE Agent.
 | `--upgrade-channel` | String | No |  | `Preview`, `Stable` | The upgrade channel of the agent |
 | `--location`, `-l` | String | Yes |  |  | The geo-location where the resource lives |
 | `--tags` | Dictionary | No |  |  | Resource tags. |
-| `--grant-access-to-me` | String | No |  | `admin`, `user`, `author`, `reader` | Grant the signed-in user a built-in SRE Agent role immediately after creating the agent: 'admin', 'user', 'author', or 'reader'. Resolves your object ID via 'az ad signed-in-user show' automatically -- equivalent to running 'sre access grant --assignee <your-object-id>' as a separate, manual follow-up command. |
+| `--grant-access-to-me` | String | No |  | `admin`, `user`, `author`, `reader` | Grant the signed-in user a built-in SRE Agent role immediately after creating the agent: 'admin', 'user', 'author', or 'reader'. Resolves your object ID via 'az ad signed-in-user show' automatically -- equivalent to running 'sre access grant --assignee <your-object-id>' as a separate, manual follow-up command. Cannot be combined with --no-wait (the grant runs in post_operations, which the no-wait code path never reaches). |
 
 **Examples**
 

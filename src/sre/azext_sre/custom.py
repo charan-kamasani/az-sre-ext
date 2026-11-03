@@ -411,10 +411,33 @@ class _GrantAccessToMeMixin:
             "'author', or 'reader'. Resolves your object ID via "
             "'az ad signed-in-user show' automatically -- equivalent to "
             "running 'sre access grant --assignee <your-object-id>' "
-            "as a separate, manual follow-up command.",
+            "as a separate, manual follow-up command. Cannot be combined "
+            "with --no-wait (the grant runs in post_operations, which the "
+            "no-wait code path never reaches).",
             enum={key: key for key in GrantAccess._ROLES},
         )
         return schema
+
+    def pre_operations(self):
+        # AAZCommand's no-wait support (build_lro_poller) advances the
+        # pre_operations -> yield PUT -> post_operations generator exactly
+        # one step and returns, so post_operations() -- where the grant
+        # below actually runs -- is never reached under --no-wait. That
+        # would otherwise make --grant-access-to-me a silent no-op instead
+        # of a clear error, so reject the combination up front, before
+        # super().pre_operations() (which includes _DefaultSystemIdentityMixin's
+        # auto-identity-creation side effect) runs.
+        role_key = _arg_value(getattr(self.ctx.args, "grant_access_to_me", None))
+        no_wait = bool(_arg_value(getattr(self.ctx.args, "no_wait", None)))
+        if role_key and no_wait:
+            raise CLIError(
+                "--grant-access-to-me cannot be combined with --no-wait: the "
+                "grant would silently never happen (it runs after the agent "
+                "finishes provisioning, which --no-wait skips waiting for). "
+                "Either omit --no-wait, or grant access separately afterward "
+                "with 'az sre access grant'."
+            )
+        super().pre_operations()
 
     def post_operations(self):
         super().post_operations()
@@ -512,6 +535,14 @@ class _DefaultSystemIdentityMixin:
 class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
+    If neither --mi-system-assigned nor --mi-user-assigned is passed, this
+    matches the Azure Portal's own default: it creates a brand-new
+    Microsoft.ManagedIdentity/userAssignedIdentities resource for you and
+    enables both system-assigned and user-assigned identities on the agent
+    (identity.type = "SystemAssigned, UserAssigned"). Pass
+    --mi-system-assigned/--mi-user-assigned explicitly to opt out of the
+    auto-created identity.
+
     :example: Create an agent with an Anthropic default model
         az sre agent create --name myagent --resource-group myrg \\
             --location eastus2 --default-model "{provider:anthropic,name:automatic}"
@@ -531,6 +562,22 @@ class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdenti
         # instead of surfacing it as a raw regex error after submission.
         schema.agent_name._fmt = AAZStrArgFormat(
             pattern="^[A-Za-z]([-A-Za-z0-9]{0,30}[A-Za-z0-9])$",
+        )
+        # Document the auto-identity-creation default (see
+        # _DefaultSystemIdentityMixin) directly on these args, not just in
+        # a runtime warning -- a new user reading --help before running the
+        # command had no way to know this would happen otherwise.
+        schema.mi_system_assigned.help = (
+            "Set the system managed identity. If this and --mi-user-assigned "
+            "are both omitted, a new user-assigned identity is auto-created "
+            "and both are enabled, matching the portal's own default."
+        )
+        schema.mi_user_assigned.help = (
+            "Set the user managed identities. Support shorthand-syntax, "
+            "json-file and yaml-file. Try \"??\" to show more. If this and "
+            "--mi-system-assigned are both omitted, a new user-assigned "
+            "identity is auto-created and both are enabled, matching the "
+            "portal's own default."
         )
         cls._args_schema = schema
         return cls._args_schema
@@ -1509,6 +1556,22 @@ def _resolve_agent_principal_id(cli_ctx, agent_name, resource_group):
     return principal_id
 
 
+def _resolve_agent_resource_id(cli_ctx, agent_name, resource_group):
+    """Resolve an agent's full ARM resource ID via 'sre agent show' -- the
+    scope every 'sre access ...' command operates on (the agent itself,
+    not something it has been granted access to)."""
+    invoke = partial(_cli_invoke, cli_ctx)
+    agent = invoke("sre", "agent", "show", "--name", agent_name, "--resource-group", resource_group)
+    if not isinstance(agent, dict):
+        raise ResourceNotFoundError(
+            f"Could not resolve SRE Agent '{agent_name}' in resource group '{resource_group}'."
+        )
+    resource_id = agent.get("id")
+    if not resource_id:
+        raise CLIError(f"Could not resolve the resource ID of agent '{agent_name}'.")
+    return resource_id
+
+
 class _ManagedResourceScopeCommand(AAZCommand):
     """Shared base for 'managed-resource grant'/'managed-resource revoke':
     resolves the agent's own principal ID and the target external scope,
@@ -2147,10 +2210,11 @@ class _AccessGroup(AAZCommandGroup):
 
     Grants or revokes a built-in RBAC role (admin, user, author, or reader)
     on the agent itself, for a specific person, group, or service principal.
-    Use 'sre access grant' to add someone and 'sre access revoke' to remove
-    them. This is the mirror image of 'sre managed-resource', which grants
-    the agent's own identity access to things outside itself -- not other
-    people access to the agent.
+    Use 'sre access grant' to add someone, 'sre access list' to see who
+    currently has access, and 'sre access revoke' to remove them. This is
+    the mirror image of 'sre managed-resource', which grants the agent's
+    own identity access to things outside itself -- not other people access
+    to the agent.
     """
 
 
@@ -2263,18 +2327,7 @@ class _RoleAssignmentScopeCommand(AAZCommand):
         return assignee
 
     def _resolve_resource_id(self, name, resource_group):
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        agent = invoke(
-            "sre", "agent", "show", "--name", name, "--resource-group", resource_group,
-        )
-        if not isinstance(agent, dict):
-            raise ResourceNotFoundError(
-                f"Could not resolve SRE Agent '{name}' in resource group '{resource_group}'."
-            )
-        resource_id = agent.get("id")
-        if not resource_id:
-            raise CLIError(f"Could not resolve the resource ID of agent '{name}'.")
-        return resource_id
+        return _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
 
 
 @register_command("sre access grant")
@@ -2348,6 +2401,47 @@ class RevokeAccess(_RoleAssignmentScopeCommand):
             "--assignee", assignee,
             "--scope", resource_id,
         )
+
+
+@register_command("sre access list")
+class AccessList(AAZCommand):
+    """List who currently has access to an SRE Agent -- every role
+    assignment scoped to the agent itself, across all four built-in roles
+    (admin, user, author, reader).
+
+    Thin convenience wrapper over 'az role assignment list --scope
+    <agent-resource-id>' (the agent's own resource ID, resolved for you via
+    'sre agent show'), the same way 'access grant'/'access revoke' build
+    that scope automatically.
+
+    :example: List everyone with access to an agent
+        az sre access list --name myagent --resource-group myrg
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.name = AAZStrArg(
+            options=["-n", "--name", "--agent-name"],
+            help="Name of the SRE Agent to list access on.",
+            required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        name = _arg_value(self.ctx.args.name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        resource_id = _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
+
+        invoke = partial(_cli_invoke, self.cli_ctx)
+        return invoke("role", "assignment", "list", "--scope", resource_id)
 
 
 @register_command("sre network update")

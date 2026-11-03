@@ -31,6 +31,17 @@ az sre identity remove -g myrg --agent-name myagent --system-assigned
 `identity remove` is correctly rejected by the server if it would leave the
 agent with zero identities (`ManagedIdentityRequired`).
 
+**Default when neither `--mi-system-assigned` nor `--mi-user-assigned` is
+passed to `agent create`**: matches the Azure Portal's own default by
+auto-creating a new `Microsoft.ManagedIdentity/userAssignedIdentities`
+resource and enabling both system-assigned and user-assigned identities on
+the agent (`identity.type = "SystemAssigned, UserAssigned"`). This is
+confirmed against the portal's own ARM template
+(`createUserIdentity ?? true`) and is now documented directly on both
+`--mi-system-assigned`/`--mi-user-assigned` in `--help`, not just a runtime
+warning — found during a help-only live walkthrough of the CLI where this
+side effect was discoverable only after running the command.
+
 ### `agent create`/`agent update` -- Properties/Identity args live-verification
 
 All non-trivial `--<property>` arguments on `agent create`/`agent update`
@@ -65,6 +76,17 @@ exact mapping, confirmed against real `az role definition list` output.
 Pass `--assignee-me` instead of `--assignee` to grant yourself access without
 looking up your own object ID first (also available as
 `az sre agent create --grant-access-to-me <role>` at agent-creation time).
+Use `az sre access list -g myrg --agent-name myagent` to see every current
+role assignment on the agent (added after a help-only live walkthrough found
+no documented way to verify a grant afterward — a thin wrapper over
+`az role assignment list --scope <agent-id>`).
+
+**`--grant-access-to-me` cannot be combined with `--no-wait`** on
+`agent create`: the grant runs in the AAZ command's `post_operations()` hook,
+which the generated no-wait code path (`build_lro_poller`) never reaches —
+advancing the `pre_operations -> yield PUT -> post_operations` generator
+only one step before returning. This combination is rejected up front with a
+clear `CLIError` instead of silently never granting access.
 
 The mirror image is `az sre managed-resource grant/revoke/list` — instead of
 granting a person access *to* the agent, it grants the agent's own managed

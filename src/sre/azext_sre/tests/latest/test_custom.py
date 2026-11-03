@@ -40,6 +40,7 @@ from azext_sre.custom import (
     ManagedResourceGrant,
     ManagedResourceRevoke,
     ManagedResourceList,
+    AccessList,
     UpdateNetwork,
     RepoConnect,
     GetConnection,
@@ -554,6 +555,43 @@ class AssigneeMeTests(unittest.TestCase):
         )
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None):
             with self.assertRaises(CLIError):
+                command._handler({})
+
+    def test_access_list_queries_role_assignments_on_agent_scope(self):
+        """New: 'az sre access list' -- the gap found live-testing the CLI
+        purely via --help (granting access had no documented way to verify
+        who has it afterward)."""
+        command = _bare_command(AccessList, name="myagent", resource_group="myrg")
+        calls = []
+
+        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
+            calls.append(args)
+            if args[:3] == ("sre", "agent", "show"):
+                return {"id": "/subscriptions/x/resourceGroups/myrg/providers/Microsoft.App/agents/myagent"}
+            return [{"roleDefinitionName": "SRE Agent Reader"}]
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            result = command._handler({})
+
+        self.assertEqual(result, [{"roleDefinitionName": "SRE Agent Reader"}])
+        self.assertEqual(
+            calls[-1],
+            (
+                "role", "assignment", "list",
+                "--scope", "/subscriptions/x/resourceGroups/myrg/providers/Microsoft.App/agents/myagent",
+            ),
+        )
+
+    def test_access_list_raises_when_agent_not_found(self):
+        command = _bare_command(AccessList, name="ghost", resource_group="rg")
+
+        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
+            return None
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            with self.assertRaises(ResourceNotFoundError):
                 command._handler({})
 
     def test_resolve_signed_in_user_object_id_raises_when_missing(self):
@@ -2605,6 +2643,39 @@ class GrantAccessToMeTests(unittest.TestCase):
     def test_agent_create_schema_exposes_grant_access_to_me(self):
         schema = Create._build_arguments_schema()
         self.assertIsNotNone(schema.grant_access_to_me)
+
+
+class _TestGrantAccessToMePreOps(_GrantAccessToMeMixin, _NoOpPreOperationsBase):
+    pass
+
+
+class GrantAccessToMeNoWaitGuardTests(unittest.TestCase):
+    """Real bug found live: --grant-access-to-me silently did nothing when
+    combined with --no-wait, because AAZCommand's no-wait code path
+    (build_lro_poller) advances the pre_operations -> yield PUT ->
+    post_operations generator exactly one step and never reaches
+    post_operations() -- where the grant actually runs. pre_operations()
+    must reject the combination up front instead of silently dropping it.
+    """
+
+    def _run(self, grant_access_to_me, no_wait):
+        command = _bare_command(
+            _TestGrantAccessToMePreOps,
+            agent_name="myagent", resource_group="rg",
+            grant_access_to_me=grant_access_to_me, no_wait=no_wait,
+        )
+        command.pre_operations()
+
+    def test_rejects_grant_access_to_me_with_no_wait(self):
+        with self.assertRaises(CLIError) as raised:
+            self._run(grant_access_to_me="admin", no_wait=True)
+        self.assertIn("--no-wait", str(raised.exception))
+
+    def test_allows_grant_access_to_me_without_no_wait(self):
+        self._run(grant_access_to_me="admin", no_wait=False)  # should not raise
+
+    def test_allows_no_wait_without_grant_access_to_me(self):
+        self._run(grant_access_to_me=None, no_wait=True)  # should not raise
 
 
 class _TestDefaultSystemIdentity(_DefaultSystemIdentityMixin, _NoOpPreOperationsBase):
