@@ -79,7 +79,9 @@ looking up your own object ID first (also available as
 Use `az sre access list -g myrg --agent-name myagent` to see every current
 role assignment on the agent (added after a help-only live walkthrough found
 no documented way to verify a grant afterward — a thin wrapper over
-`az role assignment list --scope <agent-id>`).
+`az role assignment list --scope <agent-id>`). `-o table` shows a curated
+`Principal`/`Type`/`Role`/`GrantedOn` view (not every raw field) — see the
+same note under `sre managed-resource list` below for why.
 
 **`--grant-access-to-me` cannot be combined with `--no-wait`** on
 `agent create`: the grant runs in the AAZ command's `post_operations()` hook,
@@ -101,6 +103,21 @@ az sre managed-resource list -g myrg --agent-name myagent
 az sre managed-resource revoke -g myrg --agent-name myagent \
   --target-subscription <sub-id> --target-resource-group monitored-rg
 ```
+
+`access list` and `managed-resource list` both return a raw
+`az role assignment list` object (a dozen-plus flat top-level fields —
+`id`/`principalId`/`principalName`/`principalType`/`roleDefinitionId`/
+`roleDefinitionName`/`scope`/`createdBy`/`createdOn`/`updatedBy`/`updatedOn`),
+which az's default `-o table` auto-generator renders as one column per
+field — confirmed live to wrap into an unreadable wall of text at a normal
+terminal width. Both commands register a custom `table_transformer`
+(`_transformers.py`) that curates the columns actually useful for each: a
+`Principal`/`Type`/`Role`/`GrantedOn` view for `access list` (the scope is
+always the agent itself, so it's omitted), and a
+`Scope`/`Role`/`PrincipalType`/`GrantedOn` view for `managed-resource list`
+(the principal is always the agent's own identity, so its GUID/app-id is
+omitted as noise). `-o json`/`-o jsonc`/`-o yaml`/etc. are unaffected and
+still return every field.
 
 ## Data connectors
 

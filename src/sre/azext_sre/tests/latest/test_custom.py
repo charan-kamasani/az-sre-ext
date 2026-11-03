@@ -2928,5 +2928,75 @@ class SupportedAgentModelListTests(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class TableTransformerTests(unittest.TestCase):
+    """Real UX gap found live via a '-o table' screenshot: 'access list' and
+    'managed-resource list' both return raw 'az role assignment list'
+    output (a dozen-plus flat top-level fields), which az's default
+    '-o table' auto-generator renders as one column per field -- confirmed
+    to wrap into an unreadable wall of text at a normal terminal width.
+    Both commands now register a curated table_transformer
+    (_transformers.py) via commands.py's TABLE_TRANSFORMERS map."""
+
+    _ROLE_ASSIGNMENT = {
+        "createdBy": "admin-id", "createdOn": "2026-11-03T18:10:42.126877+00:00",
+        "id": "/subscriptions/sub/.../roleAssignments/abc",
+        "name": "abc", "principalId": "user-id",
+        "principalName": "someone@example.com", "principalType": "User",
+        "resourceGroup": "myrg",
+        "roleDefinitionId": "/subscriptions/sub/.../roleDefinitions/def",
+        "roleDefinitionName": "SRE Agent Administrator",
+        "scope": "/subscriptions/sub/resourceGroups/myrg/providers/Microsoft.App/agents/myagent",
+        "type": "Microsoft.Authorization/roleAssignments",
+        "updatedBy": "admin-id", "updatedOn": "2026-11-03T18:10:42.126877+00:00",
+    }
+
+    def test_access_list_format_curates_expected_columns(self):
+        from azext_sre._transformers import access_list_table_format
+
+        rows = access_list_table_format([self._ROLE_ASSIGNMENT])
+        self.assertEqual(
+            list(rows[0].items()),
+            [
+                ("Principal", "someone@example.com"),
+                ("Type", "User"),
+                ("Role", "SRE Agent Administrator"),
+                ("GrantedOn", "2026-11-03T18:10:42Z"),
+            ],
+        )
+
+    def test_managed_resource_list_format_curates_expected_columns(self):
+        from azext_sre._transformers import managed_resource_list_table_format
+
+        rows = managed_resource_list_table_format([self._ROLE_ASSIGNMENT])
+        self.assertEqual(
+            list(rows[0].items()),
+            [
+                ("Scope", "/subscriptions/sub/resourceGroups/myrg/providers/Microsoft.App/agents/myagent"),
+                ("Role", "SRE Agent Administrator"),
+                ("PrincipalType", "User"),
+                ("GrantedOn", "2026-11-03T18:10:42Z"),
+            ],
+        )
+
+    def test_handles_missing_fields_and_multiple_rows_without_raising(self):
+        from azext_sre._transformers import access_list_table_format
+
+        rows = access_list_table_format([{}, self._ROLE_ASSIGNMENT])
+        self.assertEqual(len(rows), 2)
+        self.assertIsNone(rows[0]["GrantedOn"])
+
+    def test_table_transformers_registered_for_both_commands(self):
+        from azext_sre._transformers import TABLE_TRANSFORMERS
+
+        self.assertIn("sre access list", TABLE_TRANSFORMERS)
+        self.assertIn("sre managed-resource list", TABLE_TRANSFORMERS)
+
+    def test_command_table_wires_transformer_for_access_list(self):
+        loader = SreCommandsLoader(cli_ctx=DummyCli())
+        command_table = loader.load_command_table(["sre", "access", "list"])
+        self.assertIsNotNone(command_table["sre access list"].table_transformer)
+        self.assertIsNone(command_table["sre access grant"].table_transformer)
+
+
 if __name__ == "__main__":
     unittest.main()

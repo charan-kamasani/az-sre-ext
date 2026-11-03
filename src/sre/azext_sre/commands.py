@@ -56,11 +56,14 @@ def load_command_table(self, _):  # pylint: disable=unused-argument
             and value.__module__ == custom.__name__
         )
 
+    from ._transformers import TABLE_TRANSFORMERS
+
     recipes = [value for value in vars(custom).values() if _is_custom_recipe(value)]
     if not recipes:
         raise RuntimeError("azext_sre.custom registered no AAZ command recipes.")
     for recipe in recipes:
-        self.command_table[recipe.AZ_NAME] = recipe(loader=self)
+        table_transformer = TABLE_TRANSFORMERS.get(recipe.AZ_NAME)
+        self.command_table[recipe.AZ_NAME] = recipe(loader=self, table_transformer=table_transformer)
 
     # Drop raw generated duplicates that custom.py deliberately does NOT
     # override/reuse, so they don't linger in the command surface as
