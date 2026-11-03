@@ -195,6 +195,20 @@ def _cli_invoke(cli_ctx, *args, allow_missing=False):
         if allow_missing:
             return None
         raise CLIError(f"'{' '.join(args)}' failed: {ex}") from ex
+    except Exception as ex:  # pylint: disable=broad-except
+        # cli.invoke() normally reports a failing invoked command via its
+        # exit code (handled below), not an exception -- but some failures
+        # (e.g. an expired/missing login token, a broken credential
+        # provider) can raise before that machinery engages and escape as a
+        # raw, unrelated-looking exception type. Wrapping everything here,
+        # the same way as the ResourceNotFoundError/SystemExit case above,
+        # means every one of this helper's 19+ call sites (tenant/user
+        # object ID resolution, PAT token fetch, identity lookups, etc.)
+        # always surfaces a clear "'<command>' failed: <reason>" CLIError
+        # instead of a confusing unrelated stack trace.
+        if allow_missing:
+            return None
+        raise CLIError(f"'{' '.join(args)}' failed: {ex}") from ex
     if exit_code not in (0, None):
         if allow_missing:
             return None

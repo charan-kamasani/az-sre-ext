@@ -83,6 +83,7 @@ from azext_sre.custom import (
     _GrantAccessToMeMixin,
     _annotate_connector_consent_status,
     _arg_value,
+    _cli_invoke,
     _connector_consent_guidance,
     _connector_consent_status,
     _decode_extension_envelope,
@@ -342,6 +343,63 @@ class ArgValueTests(unittest.TestCase):
         self.assertEqual(_arg_value("foo"), "foo")
         self.assertEqual(_arg_value({"a": "b"}), {"a": "b"})
         self.assertIsNone(_arg_value(None))
+
+
+class CliInvokeTests(unittest.TestCase):
+    """`_cli_invoke` runs another `az` command in-process; it is the shared
+    helper behind 19+ call sites (tenant/user resolution, PAT token fetch,
+    identity lookups, etc.), so every exception path it can take must
+    surface a clear CLIError rather than an arbitrary raw exception.
+    """
+
+    @staticmethod
+    def _fake_cli(invoke_side_effect=None, exit_code=0, result="ok"):
+        fake_cli = SimpleNamespace(out_file=None, result=SimpleNamespace(result=result))
+
+        def _invoke(_args, out_file=None):  # pylint: disable=unused-argument
+            if invoke_side_effect is not None:
+                raise invoke_side_effect
+            return exit_code
+
+        fake_cli.invoke = _invoke
+        return fake_cli
+
+    def test_success_returns_result(self):
+        with patch("azure.cli.core.get_default_cli", return_value=self._fake_cli(result={"a": 1})):
+            self.assertEqual(_cli_invoke(None, "account", "show"), {"a": 1})
+
+    def test_resource_not_found_error_wrapped_as_clierror(self):
+        fake_cli = self._fake_cli(invoke_side_effect=ResourceNotFoundError("no such thing"))
+        with patch("azure.cli.core.get_default_cli", return_value=fake_cli):
+            with self.assertRaises(CLIError):
+                _cli_invoke(None, "account", "show")
+
+    def test_resource_not_found_error_suppressed_when_allow_missing(self):
+        fake_cli = self._fake_cli(invoke_side_effect=ResourceNotFoundError("no such thing"))
+        with patch("azure.cli.core.get_default_cli", return_value=fake_cli):
+            self.assertIsNone(_cli_invoke(None, "account", "show", allow_missing=True))
+
+    def test_arbitrary_exception_wrapped_as_clierror_not_leaked_raw(self):
+        """A non-ResourceNotFoundError/SystemExit exception (e.g. an auth
+        failure escaping cli.invoke() before its own error handling
+        engages) must still come out as a clear CLIError, not propagate
+        as its original, unrelated-looking exception type.
+        """
+        fake_cli = self._fake_cli(invoke_side_effect=RuntimeError("token provider exploded"))
+        with patch("azure.cli.core.get_default_cli", return_value=fake_cli):
+            with self.assertRaises(CLIError) as ctx:
+                _cli_invoke(None, "account", "show")
+        self.assertIn("token provider exploded", str(ctx.exception))
+
+    def test_arbitrary_exception_suppressed_when_allow_missing(self):
+        fake_cli = self._fake_cli(invoke_side_effect=RuntimeError("boom"))
+        with patch("azure.cli.core.get_default_cli", return_value=fake_cli):
+            self.assertIsNone(_cli_invoke(None, "account", "show", allow_missing=True))
+
+    def test_nonzero_exit_code_wrapped_as_clierror(self):
+        with patch("azure.cli.core.get_default_cli", return_value=self._fake_cli(exit_code=1)):
+            with self.assertRaises(CLIError):
+                _cli_invoke(None, "account", "show")
 
 
 class GrantAccessRoleMappingTests(unittest.TestCase):
