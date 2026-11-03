@@ -230,6 +230,11 @@ class DataConnectorTypeNormalizationTests(unittest.TestCase):
         self.assertEqual(_normalize_data_connector_type("Microsoft Teams"), "Teams")
         self.assertEqual(_normalize_data_connector_type("Microsoft IcM"), "Icm")
         self.assertEqual(_normalize_data_connector_type("Microsoft DGrep"), "Dgrep")
+        # Corrected Title-based names, added 2026-11-04 after the full
+        # portal catalog export clarified these are the real card Titles
+        # (previously only the subtitle-based aliases above existed).
+        self.assertEqual(_normalize_data_connector_type("MCP server"), "Mcp")
+        self.assertEqual(_normalize_data_connector_type("IcM connector"), "Icm")
 
 
 class ConnectorConsentStatusTests(unittest.TestCase):
@@ -3048,6 +3053,39 @@ class ConnectorTableTransformerTests(unittest.TestCase):
         # KnowledgeFile has no confirmed portal display name -- must show
         # the raw wire value as-is, not guess or blank it out.
         self.assertEqual(rows[0]["Type"], "KnowledgeFile")
+
+    def test_connector_format_resolves_corrected_title_based_names(self):
+        # Icm/Dgrep/Mcp were previously mapped to subtitle-based names
+        # ("Microsoft IcM"/"Microsoft DGrep"/"Custom MCP"); the full portal
+        # catalog export confirmed the real card Title is different --
+        # these must resolve to the corrected Title-based names.
+        from azext_sre._transformers import connector_list_table_format
+
+        cases = {
+            "Icm": "IcM connector",
+            "Dgrep": "DGrep",
+            "Mcp": "MCP server",
+        }
+        for wire_value, expected_name in cases.items():
+            connector = {"name": "x", "properties": {"dataConnectorType": wire_value}}
+            rows = connector_list_table_format([connector])
+            self.assertEqual(rows[0]["Type"], expected_name, wire_value)
+
+    def test_connector_format_resolves_new_high_confidence_portal_names(self):
+        # KustoUser/KustoDataIndexer/AzureDevOpsBuiltinMcp: high-confidence
+        # correlations from the full portal catalog export (not
+        # create-and-inspect confirmed), added 2026-11-04.
+        from azext_sre._transformers import connector_list_table_format
+
+        cases = {
+            "KustoUser": "Database query connector (user)",
+            "KustoDataIndexer": "Database indexing connector",
+            "AzureDevOpsBuiltinMcp": "Azure DevOps AI Search",
+        }
+        for wire_value, expected_name in cases.items():
+            connector = {"name": "x", "properties": {"dataConnectorType": wire_value}}
+            rows = connector_list_table_format([connector])
+            self.assertEqual(rows[0]["Type"], expected_name, wire_value)
 
     def test_connector_format_includes_consent_status_when_present(self):
         from azext_sre._transformers import connector_list_table_format

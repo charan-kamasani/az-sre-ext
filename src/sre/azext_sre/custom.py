@@ -687,11 +687,13 @@ DATA_CONNECTOR_TYPE_ALIASES = {
     "azure data explorer (cluster)": "Kusto",
     "custom mcp": "Mcp",
     "custom mcp server": "Mcp",
+    "mcp server": "Mcp",
     "user provided connector": "Mcp",
     "office 365 outlook": "Outlook",
     "microsoft outlook": "Outlook",
     "microsoft teams": "Teams",
     "microsoft icm": "Icm",
+    "icm connector": "Icm",
     "incident manager": "Icm",
     "microsoft dgrep": "Dgrep",
 }
@@ -709,22 +711,95 @@ KNOWLEDGE_DATA_CONNECTOR_TYPES = {
 }
 
 # Wire value -> real portal display name, for the subset of types with a
-# confirmed portal picker entry (same 7 names already used in --help and in
-# DATA_CONNECTOR_TYPE_ALIASES above). Used only to label 'sre connector
-# list'/'show' -o table output so it matches what a user actually sees in
-# the portal instead of the internal wire value -- -o json/yaml always
-# return the raw dataConnectorType unchanged, since scripts/automation rely
-# on that exact value. The 14 types unlocked 2026-11-02 and the 4 knowledge
-# types have no confirmed portal display name, so they're intentionally
-# left out here and fall back to showing the wire value as-is.
+# confirmed portal picker entry. Confirmed live against the portal's
+# "Connectors" dialog (screenshots reviewed 2026-11-03, plus a full catalog
+# export from the user). Used only to label 'sre connector list'/'show'
+# -o table output so it matches what a user actually sees in the portal
+# instead of the internal wire value -- -o json/yaml always return the raw
+# dataConnectorType unchanged, since scripts/automation rely on that exact
+# value.
+#
+# Each portal card has a bold Title (the name shown prominently in the
+# grid) and a smaller Subtitle underneath (often the full/branded product
+# name). We map to the Title, since that's what's visually prominent, and
+# note the subtitle in this comment for reference. Two earlier entries in
+# this map were corrected from the subtitle to the real Title once the full
+# catalog export clarified the distinction:
+#   - Icm: card Title is "IcM connector" (was wrongly mapped to the
+#     subtitle "Microsoft IcM").
+#   - Dgrep: card Title is "DGrep" (was wrongly mapped to the subtitle
+#     "Microsoft DGrep").
+#   - Mcp: card Title is "MCP server" (was wrongly mapped to "Custom MCP",
+#     which does not appear anywhere in the real catalog export; the real
+#     subtitle is "User provided connector", already an accepted alias).
+#
+# Confirmed NOT present as their own portal picker card (live-checked, empty
+# search results, and absent from the full catalog export): TsgCrawler,
+# ConnectorGateway, AzureMonitor, MonitorClient. These accept creation via
+# the CLI/API (the backend's V1 allowlist), but have no portal entry point
+# today, so they're intentionally left out of this map and fall back to
+# showing the wire value as-is.
+#
+# High-confidence but NOT create-and-inspect-confirmed correlations (strong
+# naming match between the wire value and a catalog card's Title/
+# description, but the actual wire value that card persists as has not
+# been verified by creating one and reading back dataConnectorType):
+#   - KustoUser ~ "Database query connector (user)" (subtitle "Azure Data
+#     Explorer"; "Query Azure Data Explorer using your own identity via
+#     OAuth sign-in").
+#   - KustoDataIndexer ~ "Database indexing connector" (subtitle "Azure
+#     Data Explorer"; "generates queries by learning about your logs,
+#     telemetry, and time series data").
+#   - AzureDevOpsBuiltinMcp ~ "Azure DevOps AI Search" (subtitle "Azure
+#     DevOps"; "AI-powered remote code search across Azure DevOps
+#     repositories").
+# Mapped below since the correlation is strong, but flagged here for a
+# future live create+inspect test to fully confirm.
+#
+# Unresolved ambiguity: the portal shows exactly one "Application Insights"
+# card, but the wire-type allowlist has two distinct accepted values,
+# 'AppInsights' and 'ApplicationInsights'. Which one that card actually
+# persists as has not been confirmed by an actual create-and-inspect test,
+# so neither is mapped here yet -- do not guess.
+#
+# The 4 Knowledge* types are confirmed NOT reachable through this same
+# "Connectors" picker at all (empty search, absent from the full catalog
+# export) -- they live in a separate portal section, consistent with this
+# CLI's separate 'sre knowledge' noun.
+#
+# Also found in the full portal catalog export but NOT present anywhere in
+# this CLI's current DATA_CONNECTOR_TYPES wire-value allowlist -- these are
+# real backend connector types this CLI does not yet expose at all, a gap
+# for future investigation (same methodology as the 2026-11-02 discovery:
+# confirm the exact wire value from sreagent-runtime's DataConnectorTypes.cs
+# before adding): "Azure Managed Grafana", "Datadog", "Elasticsearch",
+# "Dynatrace", "New Relic", "Splunk", "Hawkeye" (NeuBird), "Limn",
+# "Engineering Hub", and a dedicated "GitHub" card (distinct from the
+# existing --github shortcut on the Mcp type -- worth double-checking
+# whether GitHub is really its own wire value or just another Mcp-backed
+# card). NOTE: this also means the existing help text's claim that
+# "PagerDuty/ServiceNow/Datadog/Splunk/S360/Ev2/etc." are all reached via
+# the generic 'Mcp' type "differentiated by endpoint, not a separate type"
+# may be stale/inaccurate for Datadog/Splunk/S360/Ev2 specifically, since
+# the catalog shows them as distinct dedicated cards with their own
+# descriptions -- needs re-verification, not yet corrected pending a
+# backend source check.
 CONNECTOR_TYPE_PORTAL_NAMES = {
     "KustoClient": "Azure Data Explorer",
     "Kusto": "Azure Data Explorer Cluster",
-    "Mcp": "Custom MCP",
+    "Mcp": "MCP server",
     "Outlook": "Office 365 Outlook",
     "Teams": "Microsoft Teams",
-    "Icm": "Microsoft IcM",
-    "Dgrep": "Microsoft DGrep",
+    "Icm": "IcM connector",
+    "Dgrep": "DGrep",
+    "LogAnalytics": "Log Analytics Workspace",
+    "Ev2Mcp": "EV2",
+    "GenevaMetrics": "Geneva Metrics",
+    "S360": "S360 connector",
+    "Documentation": "Documentation connector",
+    "KustoUser": "Database query connector (user)",
+    "KustoDataIndexer": "Database indexing connector",
+    "AzureDevOpsBuiltinMcp": "Azure DevOps AI Search",
 }
 
 
@@ -750,19 +825,22 @@ class _ConnectorGroup(AAZCommandGroup):
     """Connect an SRE Agent to an external data source it can query or act on.
 
     Supports Azure Data Explorer/Kusto (direct or via the Azure MCP server),
-    Custom MCP servers (GitHub, PagerDuty, ServiceNow, Datadog, Splunk, and
-    other MCP-compatible endpoints), Office 365 Outlook, Microsoft Teams,
-    Microsoft IcM (incident management), Microsoft DGrep, and knowledge
+    the generic MCP server type (portal name: 'MCP server', a.k.a. 'User
+    provided connector' -- GitHub, PagerDuty, ServiceNow, and other
+    MCP-compatible endpoints), Office 365 Outlook, Microsoft Teams, IcM
+    connector (incident management), DGrep, Log Analytics Workspace, EV2,
+    Geneva Metrics, S360 connector, Documentation connector, and knowledge
     sources (text/file/web page/repository). Use 'sre connector create' to
     add one, 'sre connector list'/'sre connector show' to see what's
     connected (including OAuth consent status for connectors that need a
     sign-in).
 
     Note: this only covers the fixed, ARM-reachable connector catalog listed
-    above. The portal's much larger Connector Gateway catalog (Jira, Slack,
-    SharePoint, SQL Server, Key Vault, and 30+ others at connectors.azure.com)
-    is a real, separate platform the agent also integrates with, but it has
-    no public control-plane API yet -- those connectors can only be created
+    above. The portal's much larger "Additional connectors" catalog (Gmail,
+    Yammer, OneDrive, SharePoint, Box, Power BI, Confluence, and 20+ others,
+    almost all marked Preview) is a real, separate Connector Gateway
+    platform the agent also integrates with, but it has no public
+    control-plane API yet -- those connectors can only be created
     through the portal today, not this CLI. See docs/operations.md.
     """
 
@@ -792,23 +870,36 @@ class _DataConnectorTypeArgMixin:
                 "Explorer' option exactly; no --data-source needed), "
                 "'Azure Data Explorer Cluster' (Kusto -- legacy, pinned to "
                 "one cluster via --data-source, no portal entry point), "
-                "'Custom MCP' (Mcp -- PagerDuty/ServiceNow/Datadog/Splunk/"
-                "S360/Ev2/etc., differentiated by endpoint, not a separate "
-                "type), 'Office 365 Outlook' (Outlook), 'Microsoft Teams' "
-                "(Teams), 'Microsoft IcM' (Icm, singleton per agent), "
-                "'Microsoft DGrep' (Dgrep, singleton per agent), and four "
-                "knowledge-item types that need --extended-properties "
-                "instead of --data-source: 'KnowledgeText', 'KnowledgeFile', "
-                "'KnowledgeWebPage', 'KnowledgeRepository'. Also accepts 14 "
-                "more real backend types unlocked 2026-11-02 (no confirmed "
-                "portal display name yet, so only the wire value is shown): "
-                "'AppInsights', 'LogAnalytics', 'KustoUser', "
-                "'KustoDataIndexer', 'TsgCrawler', 'Ev2Mcp', 'GenevaMetrics' "
-                "(restricted to Microsoft's 13 known first-party tenants, "
-                "matching the portal's own connector-picker gate), 'S360', "
-                "'ConnectorGateway', 'Documentation', "
-                "'AzureDevOpsBuiltinMcp', 'ApplicationInsights', "
-                "'AzureMonitor', 'MonitorClient'."
+                "'MCP server' (Mcp, a.k.a. 'User provided connector' -- "
+                "possibly also PagerDuty/ServiceNow/etc. via a custom "
+                "endpoint, not a separate type; note Datadog/Splunk/S360/"
+                "EV2 have their own dedicated portal cards and may not "
+                "actually route through this generic type -- unverified), "
+                "'Office 365 Outlook' (Outlook), 'Microsoft Teams' "
+                "(Teams), 'IcM connector' (Icm, a.k.a. 'Microsoft IcM', "
+                "singleton per agent), 'DGrep' (Dgrep, a.k.a. 'Microsoft "
+                "DGrep', singleton per agent), 'Log Analytics Workspace' "
+                "(LogAnalytics), 'EV2' (Ev2Mcp), 'Geneva Metrics' "
+                "(GenevaMetrics -- restricted to Microsoft's 13 known "
+                "first-party tenants, matching the portal's own "
+                "connector-picker gate), 'S360 connector' (S360), "
+                "'Documentation connector' (Documentation), 'Database "
+                "query connector (user)' (KustoUser -- correlation not "
+                "create-and-inspect confirmed), 'Database indexing "
+                "connector' (KustoDataIndexer -- same caveat), 'Azure "
+                "DevOps AI Search' (AzureDevOpsBuiltinMcp -- same caveat), "
+                "and four knowledge-item types that need "
+                "--extended-properties instead of --data-source: "
+                "'KnowledgeText', 'KnowledgeFile', 'KnowledgeWebPage', "
+                "'KnowledgeRepository' (none of these four appear in the "
+                "portal's Connectors picker -- they live in a separate "
+                "portal section). Also accepts 'TsgCrawler', "
+                "'ConnectorGateway', 'AzureMonitor', 'MonitorClient' (no "
+                "portal picker card found for any of these), and one of "
+                "'AppInsights'/'ApplicationInsights' (the portal shows a "
+                "single 'Application Insights' card, but which of these "
+                "two wire values it persists as is not yet confirmed -- "
+                "both are accepted here)."
             )
         data_source = getattr(schema, "data_source", None)
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
