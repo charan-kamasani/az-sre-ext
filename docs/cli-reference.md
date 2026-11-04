@@ -565,7 +565,10 @@ Create or update a hook.
   `az sre hook create --agent-name myagent --resource-group myrg --name post-tool-echo \ --value '{"eventType": "PostToolUse", "activationMode": "always", "description": "Blocks dangerous commands", "hook": {"type": "command", "command": "echo ok", "matcher": "Bash.*", "timeout": 30, "failMode": "Allow"}}'`
 - Windows PowerShell -- inline JSON with embedded quotes does not
 
-  `survive the az.cmd wrapper here; wrap the whole command in 'cmd /c' and backslash-escape the inner double quotes instead (live-verified, this is the one syntax confirmed to work on powershell.exe/pwsh) cmd /c 'az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check --value "{\"eventType\": \"PostToolUse\", \"activationMode\": \"always\", \"description\": \"Flag risky commands\", \"hook\": {\"type\": \"prompt\", \"prompt\": \"Review the last tool call. If it looks destructive, warn the user.\", \"matcher\": \"Bash.*\", \"failMode\": \"Allow\"}}" --overwrite true'`
+  `survive az.cmd's batch-file argument re-tokenizing here. Recommended fix: write the JSON to a file and pass --value @path instead (live-verified, no quoting at all, works in plain powershell.exe/pwsh) @' {"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands", "hook": {"type": "prompt", "prompt": "Review the last tool call. If it looks destructive, warn the user.", "matcher": "Bash.*", "failMode": "Allow"}} '@ \| Set-Content -Path "$env:TEMP\hook.json" az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check --value "@$env:TEMP\hook.json" --overwrite true`
+- Windows PowerShell -- alternative if you'd rather not write a
+
+  `temp file: wrap the whole command in 'cmd /c' and backslash-escape the inner double quotes (live-verified, also works, but --value @path above is simpler and preferred) cmd /c 'az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check --value "{\"eventType\": \"PostToolUse\", \"activationMode\": \"always\", \"description\": \"Flag risky commands\", \"hook\": {\"type\": \"prompt\", \"prompt\": \"Review the last tool call. If it looks destructive, warn the user.\", \"matcher\": \"Bash.*\", \"failMode\": \"Allow\"}}" --overwrite true'`
 
 ### `az sre hook delete`
 
@@ -818,9 +821,12 @@ There is only one instructions block per agent; use the same --name (e.g. "defau
 - Set an agent's custom instructions
 
   `az sre instructions create -g myrg --agent-name myagent --name default \ --value '{"prompt": "Always cite the runbook section you used."}'`
-- Windows PowerShell -- same 'cmd /c' wrapper pattern as 'sre hook
+- Windows PowerShell -- same --value @file pattern as 'sre hook
 
-  `create' (live-verified, see 'sre hook create -h' for why) cmd /c 'az sre instructions create --agent-name myagent --resource-group myrg --name default --value "{\"prompt\": \"Be concise.\"}" --overwrite true'`
+  `create' (live-verified, recommended; see 'sre hook create -h' for why) '{"prompt": "Be concise."}' \| Set-Content -Path "$env:TEMP\instructions.json" az sre instructions create -g myrg --agent-name myagent --name default --value "@$env:TEMP\instructions.json" --overwrite true`
+- Windows PowerShell -- alternative 'cmd /c' wrapper, if you'd
+
+  `rather not write a temp file (live-verified, also works) cmd /c 'az sre instructions create --agent-name myagent --resource-group myrg --name default --value "{\"prompt\": \"Be concise.\"}" --overwrite true'`
 
 ### `az sre instructions delete`
 
