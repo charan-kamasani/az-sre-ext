@@ -46,8 +46,9 @@ from functools import partial
 # reproduced on every 'az sre agent create' with no --mi-* flags given.
 # Importing it here, synchronously, during module load (which always
 # happens single-threaded, well before any poller thread exists) guarantees
-# it is already in sys.modules and the race can never occur.
-import requests  # noqa: F401  pylint: disable=unused-import
+# it is already in sys.modules and the race can never occur. Also used
+# directly by the GitHub OAuth Device Flow fallback in _github_token.
+import requests
 
 from azure.cli.core.aaz import (
     AAZBoolArg,
@@ -4593,36 +4594,116 @@ class PluginInstallDelete(_PinnedExtensionDelete):
 ADO_PAT_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
 
 
-def _github_cli_token(account=None):
-    """Fetch the already-authenticated GitHub token from the GitHub CLI.
+# GitHub CLI's own public OAuth App client ID -- cli/cli is open source and
+# this ID is published in its source (internal/config), with no client
+# secret (device flow apps don't need one). Reusing it here, per Paul's
+# guidance, lets az sre do a real GitHub OAuth Device Flow (RFC 8628)
+# without az depending on 'gh' being installed, and without us needing to
+# register and maintain our own GitHub OAuth App just for this.
+GITHUB_DEVICE_FLOW_CLIENT_ID = "178c6fc778ccc68e1d6a"
 
-    Borrows the user's existing `gh auth login` session instead of asking
-    them to mint and paste a PAT.
+
+def _github_device_flow(hostname="github.com", scope="repo"):
+    """Native GitHub OAuth Device Flow (RFC 8628) -- no 'gh' CLI, no client
+    secret. Prints a user code, opens the verification page in a browser,
+    then polls until the user approves it there."""
+    import time
+    import webbrowser
+
+    code_response = requests.post(
+        f"https://{hostname}/login/device/code",
+        headers={"Accept": "application/json"},
+        data={"client_id": GITHUB_DEVICE_FLOW_CLIENT_ID, "scope": scope},
+        timeout=30,
+    )
+    code_response.raise_for_status()
+    code_data = code_response.json()
+    if "error" in code_data:
+        raise CLIError(f"GitHub device code request failed: {code_data.get('error_description', code_data['error'])}")
+    device_code = code_data["device_code"]
+    user_code = code_data["user_code"]
+    verification_uri = code_data.get("verification_uri", f"https://{hostname}/login/device")
+    interval = code_data.get("interval", 5)
+    expires_in = code_data.get("expires_in", 900)
+
+    print(f"To authenticate with GitHub, go to {verification_uri}")
+    print(f"and enter code: {user_code}")
+    try:
+        webbrowser.open(verification_uri)
+    except Exception:  # pylint: disable=broad-except
+        pass  # headless/CI environment -- the printed URL above is enough
+
+    deadline = time.time() + expires_in
+    while time.time() < deadline:
+        time.sleep(interval)
+        token_response = requests.post(
+            f"https://{hostname}/login/oauth/access_token",
+            headers={"Accept": "application/json"},
+            data={
+                "client_id": GITHUB_DEVICE_FLOW_CLIENT_ID,
+                "device_code": device_code,
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            },
+            timeout=30,
+        )
+        token_response.raise_for_status()
+        token_data = token_response.json()
+        if "access_token" in token_data:
+            return token_data["access_token"]
+        error = token_data.get("error")
+        if error == "authorization_pending":
+            continue
+        if error == "slow_down":
+            interval = token_data.get("interval", interval + 5)
+            continue
+        raise CLIError(f"GitHub device flow authorization failed: {token_data.get('error_description', error)}")
+    raise CLIError("GitHub device flow authorization timed out before you approved it.")
+
+
+def _github_token(account=None, explicit_token=None, hostname="github.com"):
+    """Resolve a GitHub token with no hard 'gh' CLI dependency, in three
+    layers (per Paul's researched guidance, matching how az staticwebapp /
+    az containerapp github-action / az functionapp deployment github-actions
+    already avoid this dependency):
+
+    1. Explicit/CI first: --github-token, or GITHUB_TOKEN/GH_TOKEN env vars.
+    2. Opportunistic 'gh' check (optional): if 'gh' happens to be installed
+       and logged in, silently reuse it for a zero-prompt experience -- but
+       this is never required.
+    3. Native GitHub OAuth Device Flow fallback: works with nothing but a
+       web browser, no 'gh' CLI and no client secret needed.
     """
+    import shutil
     import subprocess
 
-    command = ["gh", "auth", "token", "--hostname", "github.com"]
-    if account:
-        command.extend(("--user", account))
-    environment = os.environ.copy()
-    environment.pop("GITHUB_TOKEN", None)
-    try:
-        result = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            env=environment,
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError) as ex:
-        raise CLIError(
-            "GitHub authentication is required. Run "
-            "'gh auth login --hostname github.com', or pass --pat yourself."
-        ) from ex
-    token = result.stdout.strip()
-    if not token:
-        raise CLIError("GitHub CLI returned an empty credential.")
-    return token
+    if explicit_token:
+        return explicit_token
+    for env_var in ("GITHUB_TOKEN", "GH_TOKEN"):
+        env_token = os.environ.get(env_var)
+        if env_token:
+            return env_token
+
+    if shutil.which("gh"):
+        command = ["gh", "auth", "token", "--hostname", hostname]
+        if account:
+            command.extend(("--user", account))
+        environment = os.environ.copy()
+        environment.pop("GITHUB_TOKEN", None)
+        try:
+            result = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            token = result.stdout.strip()
+            if token:
+                return token
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            pass  # fall through to the device flow -- 'gh' existing doesn't mean it's logged in
+
+    return _github_device_flow(hostname=hostname)
 
 
 def _devops_pat_token(cli_ctx, organization, display_name):
@@ -4687,14 +4768,27 @@ def _detect_repo_provider(repo_url):
 class RepoConnect(AAZCommand):
     """Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 
-    Fetches your existing 'gh auth login' credential (GitHub) or mints a
-    fresh PAT via the Azure DevOps REST API (Azure DevOps) and wires up both
-    the auth extension and the repositories extension for you, instead of
-    requiring two manual hand-built JSON payloads.
+    For GitHub, resolves a token with no hard 'gh'/'az' CLI dependency, in
+    layers: an explicit --github-token (or GITHUB_TOKEN/GH_TOKEN env var)
+    first; otherwise an installed 'gh auth token' is reused opportunistically
+    if present; otherwise a native GitHub OAuth Device Flow runs in your
+    browser (just open the printed URL and enter the code -- no 'gh' CLI
+    install required). For Azure DevOps, mints a fresh PAT via the Azure
+    DevOps REST API, or uses a managed identity. Either way, this wires up
+    both the auth extension and the repositories extension for you, instead
+    of requiring two manual hand-built JSON payloads.
 
-    :example: Connect a GitHub repo (provider auto-detected from the URL)
+    :example: Connect a GitHub repo (provider auto-detected from the URL;
+        resolves a token automatically -- explicit flag, 'gh' reuse, or a
+        browser-based device-flow prompt, in that order)
         az sre repo connect --agent-name myagent --resource-group myrg \\
             --repo-url https://github.com/contoso/my-service
+
+    :example: Connect a GitHub repo with an explicit token (e.g. in CI, where
+        no interactive browser is available)
+        az sre repo connect --agent-name myagent --resource-group myrg \\
+            --repo-url https://github.com/contoso/my-service \\
+            --github-token $env:GITHUB_TOKEN
 
     :example: Connect an Azure DevOps repo
         az sre repo connect --agent-name myagent --resource-group myrg \\
@@ -4743,7 +4837,16 @@ class RepoConnect(AAZCommand):
         schema.github_account = AAZStrArg(
             options=["--github-account"],
             help="GitHub account to use when 'gh' is logged into more than one "
-            "(GitHub repos only; passed to 'gh auth token --user').",
+            "(GitHub repos only; only used by the optional 'gh auth token "
+            "--user' reuse step -- ignored otherwise).",
+        )
+        schema.github_token = AAZStrArg(
+            options=["--github-token"],
+            help="GitHub token to use directly (GitHub repos only). No 'gh' "
+            "CLI or Azure CLI needed when this, or the GITHUB_TOKEN/GH_TOKEN "
+            "env vars, are set. If omitted, this command tries an installed "
+            "'gh auth token' opportunistically, then falls back to a native "
+            "GitHub OAuth Device Flow in your browser -- no 'gh' required.",
         )
         schema.devops_organization = AAZStrArg(
             options=["--devops-organization"],
@@ -4794,6 +4897,7 @@ class RepoConnect(AAZCommand):
         display_name = _arg_value(self.ctx.args.display_name) or repo_url.rstrip("/").rsplit("/", 1)[-1]
         branch = _arg_value(self.ctx.args.branch)
         github_account = _arg_value(self.ctx.args.github_account)
+        github_token = _arg_value(self.ctx.args.github_token)
         devops_organization = _arg_value(self.ctx.args.devops_organization)
         devops_auth_type = _arg_value(self.ctx.args.devops_auth_type) or "pat"
         devops_identity = _arg_value(self.ctx.args.devops_identity)
@@ -4801,7 +4905,7 @@ class RepoConnect(AAZCommand):
         devops_federated_tenant_id = _arg_value(self.ctx.args.devops_federated_tenant_id)
 
         if provider == "GitHub":
-            token = _github_cli_token(github_account)
+            token = _github_token(account=github_account, explicit_token=github_token)
             try:
                 auth_value = json.dumps({"authType": "Pat", "pat": token})
             finally:

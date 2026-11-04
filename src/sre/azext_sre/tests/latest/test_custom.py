@@ -93,6 +93,8 @@ from azext_sre.custom import (
     _extension_resource_create,
     _extension_resource_show,
     _extension_resource_list,
+    _github_device_flow,
+    _github_token,
     _extension_resource_delete,
     _is_microsoft_first_party_tenant,
     _normalize_data_connector_type,
@@ -1394,7 +1396,7 @@ class RepoConnectTests(unittest.TestCase):
         args = {
             "agent_name": "myagent", "resource_group": "rg", "repo_url": repo_url,
             "provider": None, "display_name": None, "branch": None,
-            "github_account": None, "devops_organization": None,
+            "github_account": None, "github_token": None, "devops_organization": None,
             "devops_auth_type": "pat", "devops_identity": None,
             "devops_federated_client_id": None, "devops_federated_tenant_id": None,
         }
@@ -1410,7 +1412,7 @@ class RepoConnectTests(unittest.TestCase):
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create), \
-             patch("azext_sre.custom._github_cli_token", lambda account=None: "gh-token-123"):
+             patch("azext_sre.custom._github_token", lambda account=None, explicit_token=None: "gh-token-123"):
             result = command._handler({})
         return result, calls
 
@@ -1443,7 +1445,7 @@ class RepoConnectTests(unittest.TestCase):
             "agent_name": "myagent", "resource_group": "rg",
             "repo_url": "https://dev.azure.com/contoso/project/_git/repo",
             "provider": None, "display_name": None, "branch": None,
-            "github_account": None, "devops_organization": None,
+            "github_account": None, "github_token": None, "devops_organization": None,
             "devops_auth_type": "pat", "devops_identity": None,
             "devops_federated_client_id": None, "devops_federated_tenant_id": None,
         }
@@ -1556,7 +1558,7 @@ class RepoConnectTests(unittest.TestCase):
         command = _bare_command(
             RepoConnect, agent_name="myagent", resource_group="rg",
             repo_url="https://github.com/org/repo", provider=None, display_name=None,
-            branch=None, github_account=None, devops_organization=None,
+            branch=None, github_account=None, github_token=None, devops_organization=None,
             devops_auth_type="pat", devops_identity=None,
             devops_federated_client_id=None, devops_federated_tenant_id=None,
         )
@@ -1570,10 +1572,136 @@ class RepoConnectTests(unittest.TestCase):
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create_with_real_pat), \
-             patch("azext_sre.custom._github_cli_token", lambda account=None: "gh-token-123"):
+             patch("azext_sre.custom._github_token", lambda account=None, explicit_token=None: "gh-token-123"):
             result = command._handler({})
 
         self.assertEqual(result["auth"]["properties"]["value"]["pat"], "******")
+
+
+class GithubTokenResolutionTests(unittest.TestCase):
+    """_github_token's three-layer resolution (explicit/env -> optional 'gh'
+    reuse -> native OAuth Device Flow fallback) must try each layer in order
+    and stop at the first one that yields a token, per Paul's researched
+    no-hard-'gh'-dependency plan."""
+
+    def setUp(self):
+        self._env_backup = {k: os.environ.get(k) for k in ("GITHUB_TOKEN", "GH_TOKEN")}
+        os.environ.pop("GITHUB_TOKEN", None)
+        os.environ.pop("GH_TOKEN", None)
+
+    def tearDown(self):
+        for key, value in self._env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_explicit_token_wins_over_everything_else(self):
+        with patch("azext_sre.custom._github_device_flow") as fake_device_flow:
+            token = _github_token(explicit_token="explicit-123")
+        self.assertEqual(token, "explicit-123")
+        fake_device_flow.assert_not_called()
+
+    def test_github_token_env_var_is_used_when_no_explicit_token(self):
+        os.environ["GITHUB_TOKEN"] = "env-token-456"
+        with patch("azext_sre.custom._github_device_flow") as fake_device_flow:
+            token = _github_token()
+        self.assertEqual(token, "env-token-456")
+        fake_device_flow.assert_not_called()
+
+    def test_gh_token_env_var_is_used_as_a_fallback_name(self):
+        os.environ["GH_TOKEN"] = "gh-env-789"
+        with patch("azext_sre.custom._github_device_flow") as fake_device_flow:
+            token = _github_token()
+        self.assertEqual(token, "gh-env-789")
+        fake_device_flow.assert_not_called()
+
+    def test_falls_back_to_installed_gh_cli_when_no_explicit_or_env_token(self):
+        fake_result = SimpleNamespace(stdout="gh-cli-token\n")
+        with patch("shutil.which", return_value="/usr/bin/gh"), \
+             patch("subprocess.run", return_value=fake_result) as fake_run, \
+             patch("azext_sre.custom._github_device_flow") as fake_device_flow:
+            token = _github_token()
+        self.assertEqual(token, "gh-cli-token")
+        fake_device_flow.assert_not_called()
+        self.assertIn("gh", fake_run.call_args[0][0])
+
+    def test_falls_back_to_device_flow_when_gh_is_not_installed(self):
+        with patch("shutil.which", return_value=None), \
+             patch("azext_sre.custom._github_device_flow", return_value="device-flow-token") as fake_device_flow:
+            token = _github_token()
+        self.assertEqual(token, "device-flow-token")
+        fake_device_flow.assert_called_once()
+
+    def test_falls_back_to_device_flow_when_gh_is_installed_but_not_logged_in(self):
+        import subprocess
+
+        with patch("shutil.which", return_value="/usr/bin/gh"), \
+             patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, ["gh"])), \
+             patch("azext_sre.custom._github_device_flow", return_value="device-flow-token") as fake_device_flow:
+            token = _github_token()
+        self.assertEqual(token, "device-flow-token")
+        fake_device_flow.assert_called_once()
+
+
+class GithubDeviceFlowTests(unittest.TestCase):
+    """_github_device_flow implements RFC 8628 against GitHub's two public
+    endpoints -- no 'gh' CLI, no client secret."""
+
+    def test_happy_path_polls_until_authorized_and_returns_the_token(self):
+        code_response = SimpleNamespace(
+            json=lambda: {
+                "device_code": "devcode-abc",
+                "user_code": "ABCD-1234",
+                "verification_uri": "https://github.com/login/device",
+                "interval": 0,
+                "expires_in": 900,
+            },
+            raise_for_status=lambda: None,
+        )
+        token_responses = iter([
+            SimpleNamespace(json=lambda: {"error": "authorization_pending"}, raise_for_status=lambda: None),
+            SimpleNamespace(json=lambda: {"access_token": "real-device-flow-token"}, raise_for_status=lambda: None),
+        ])
+
+        def fake_post(url, **kwargs):
+            if url.endswith("/login/device/code"):
+                return code_response
+            return next(token_responses)
+
+        with patch("requests.post", side_effect=fake_post), \
+             patch("time.sleep"), \
+             patch("webbrowser.open"):
+            token = _github_device_flow()
+        self.assertEqual(token, "real-device-flow-token")
+
+    def test_denied_authorization_raises_a_clear_error(self):
+        code_response = SimpleNamespace(
+            json=lambda: {
+                "device_code": "devcode-abc",
+                "user_code": "ABCD-1234",
+                "verification_uri": "https://github.com/login/device",
+                "interval": 0,
+                "expires_in": 900,
+            },
+            raise_for_status=lambda: None,
+        )
+        denied_response = SimpleNamespace(
+            json=lambda: {"error": "access_denied", "error_description": "The user denied the request"},
+            raise_for_status=lambda: None,
+        )
+
+        def fake_post(url, **kwargs):
+            if url.endswith("/login/device/code"):
+                return code_response
+            return denied_response
+
+        with patch("requests.post", side_effect=fake_post), \
+             patch("time.sleep"), \
+             patch("webbrowser.open"), \
+             self.assertRaises(CLIError) as raised:
+            _github_device_flow()
+        self.assertIn("denied", str(raised.exception))
 
 
 class HttpTriggersShapeValidationTests(unittest.TestCase):

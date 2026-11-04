@@ -1122,17 +1122,17 @@ Connect a code repository so the agent can read source during investigations.
 
 | Verb | Exact syntax |
 | --- | --- |
-| `connect` | `az sre repo connect --agent-name <value> --resource-group <value> --repo-url <value> [--provider {GitHub,AzureDevOps}] [--display-name <value>] [--branch <value>] [--github-account <value>] [--devops-organization <value>] [--devops-auth-type {pat,managed-identity}] [--devops-identity <value>] [--devops-federated-client-id <value>] [--devops-federated-tenant-id <value>]` |
+| `connect` | `az sre repo connect --agent-name <value> --resource-group <value> --repo-url <value> [--provider {GitHub,AzureDevOps}] [--display-name <value>] [--branch <value>] [--github-account <value>] [--github-token <value>] [--devops-organization <value>] [--devops-auth-type {pat,managed-identity}] [--devops-identity <value>] [--devops-federated-client-id <value>] [--devops-federated-tenant-id <value>]` |
 
 ### `az sre repo connect`
 
 Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 
-Fetches your existing 'gh auth login' credential (GitHub) or mints a fresh PAT via the Azure DevOps REST API (Azure DevOps) and wires up both the auth extension and the repositories extension for you, instead of requiring two manual hand-built JSON payloads.
+For GitHub, resolves a token with no hard 'gh'/'az' CLI dependency, in layers: an explicit --github-token (or GITHUB_TOKEN/GH_TOKEN env var) first; otherwise an installed 'gh auth token' is reused opportunistically if present; otherwise a native GitHub OAuth Device Flow runs in your browser (just open the printed URL and enter the code -- no 'gh' CLI install required). For Azure DevOps, mints a fresh PAT via the Azure DevOps REST API, or uses a managed identity. Either way, this wires up both the auth extension and the repositories extension for you, instead of requiring two manual hand-built JSON payloads.
 
 **Syntax**
 
-`az sre repo connect --agent-name <value> --resource-group <value> --repo-url <value> [--provider {GitHub,AzureDevOps}] [--display-name <value>] [--branch <value>] [--github-account <value>] [--devops-organization <value>] [--devops-auth-type {pat,managed-identity}] [--devops-identity <value>] [--devops-federated-client-id <value>] [--devops-federated-tenant-id <value>]`
+`az sre repo connect --agent-name <value> --resource-group <value> --repo-url <value> [--provider {GitHub,AzureDevOps}] [--display-name <value>] [--branch <value>] [--github-account <value>] [--github-token <value>] [--devops-organization <value>] [--devops-auth-type {pat,managed-identity}] [--devops-identity <value>] [--devops-federated-client-id <value>] [--devops-federated-tenant-id <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -1142,7 +1142,8 @@ Fetches your existing 'gh auth login' credential (GitHub) or mints a fresh PAT v
 | `--provider` | String | No |  | `GitHub`, `AzureDevOps` | Repo provider. Auto-detected from --repo-url's host when omitted. |
 | `--display-name`, `--name`, `-n` | String | No |  |  | Display name for the repo. Defaults to the last path segment of --repo-url. |
 | `--branch` | String | No |  |  | Branch to check out. Defaults to the repo's default branch. |
-| `--github-account` | String | No |  |  | GitHub account to use when 'gh' is logged into more than one (GitHub repos only; passed to 'gh auth token --user'). |
+| `--github-account` | String | No |  |  | GitHub account to use when 'gh' is logged into more than one (GitHub repos only; only used by the optional 'gh auth token --user' reuse step -- ignored otherwise). |
+| `--github-token` | String | No |  |  | GitHub token to use directly (GitHub repos only). No 'gh' CLI or Azure CLI needed when this, or the GITHUB_TOKEN/GH_TOKEN env vars, are set. If omitted, this command tries an installed 'gh auth token' opportunistically, then falls back to a native GitHub OAuth Device Flow in your browser -- no 'gh' required. |
 | `--devops-organization` | String | No |  |  | Azure DevOps organization name, e.g. 'contoso' for dev.azure.com/contoso (Azure DevOps repos only; auto-detected from --repo-url when it is a dev.azure.com URL). |
 | `--devops-auth-type` | String | No | pat | `pat`, `managed-identity` | Azure DevOps auth mechanism. 'pat' (default) mints a PAT via the vssps REST API -- some orgs block this with a 'DisablePatCreationPolicyViolation' org policy, in which case use 'managed-identity' with --devops-identity instead (the identity must already be added as a user/group member of the Azure DevOps org -- this command does not grant that membership). |
 | `--devops-identity` | String | No |  |  | Resource ID of the user- or system-assigned managed identity to authenticate with Azure DevOps as (required when --devops-auth-type managed-identity). Typically the SRE Agent's own identity -- see 'az sre agent show --query identity'. |
@@ -1151,9 +1152,12 @@ Fetches your existing 'gh auth login' credential (GitHub) or mints a fresh PAT v
 
 **Examples**
 
-- Connect a GitHub repo (provider auto-detected from the URL)
+- Connect a GitHub repo (provider auto-detected from the URL;
 
-  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service`
+  `resolves a token automatically -- explicit flag, 'gh' reuse, or a browser-based device-flow prompt, in that order) az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service`
+- Connect a GitHub repo with an explicit token (e.g. in CI, where
+
+  `no interactive browser is available) az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service \ --github-token $env:GITHUB_TOKEN`
 - Connect an Azure DevOps repo
 
   `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo`
