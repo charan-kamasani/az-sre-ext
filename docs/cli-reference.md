@@ -392,6 +392,12 @@ Create an Agent Connector.
 - Connect an agent's GitHub MCP connector using your own gh auth
 
   `az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp --data-connector-type Mcp --github true`
+- Connect a custom MCP server by its own endpoint (live-verified payload)
+
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp-custom --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp"`
+- Connect a single Kusto/Azure Data Explorer cluster+database directly
+
+  `(legacy 'Kusto' type, as opposed to the default 'KustoClient'/"Azure Data Explorer" type above -- --data-source must include the database name, live-verified payload) az sre connector create --agent-name myagent --resource-group myrg \ --name my-cluster --data-connector-type Kusto \ --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"`
 
 ### `az sre connector delete`
 
@@ -557,6 +563,9 @@ Create or update a hook.
 - Create a command-based hook that runs after every Bash tool call (live-verified payload)
 
   `az sre hook create --agent-name myagent --resource-group myrg --name post-tool-echo \ --value '{"eventType": "PostToolUse", "activationMode": "always", "description": "Blocks dangerous commands", "hook": {"type": "command", "command": "echo ok", "matcher": "Bash.*", "timeout": 30, "failMode": "Allow"}}'`
+- Windows PowerShell -- inline JSON with embedded quotes does not
+
+  `survive the az.cmd wrapper here; wrap the whole command in 'cmd /c' and backslash-escape the inner double quotes instead (live-verified, this is the one syntax confirmed to work on powershell.exe/pwsh) cmd /c 'az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check --value "{\"eventType\": \"PostToolUse\", \"activationMode\": \"always\", \"description\": \"Flag risky commands\", \"hook\": {\"type\": \"prompt\", \"prompt\": \"Review the last tool call. If it looks destructive, warn the user.\", \"matcher\": \"Bash.*\", \"failMode\": \"Allow\"}}" --overwrite true'`
 
 ### `az sre hook delete`
 
@@ -809,6 +818,9 @@ There is only one instructions block per agent; use the same --name (e.g. "defau
 - Set an agent's custom instructions
 
   `az sre instructions create -g myrg --agent-name myagent --name default \ --value '{"prompt": "Always cite the runbook section you used."}'`
+- Windows PowerShell -- same 'cmd /c' wrapper pattern as 'sre hook
+
+  `create' (live-verified, see 'sre hook create -h' for why) cmd /c 'az sre instructions create --agent-name myagent --resource-group myrg --name default --value "{\"prompt\": \"Be concise.\"}" --overwrite true'`
 
 ### `az sre instructions delete`
 
@@ -1139,6 +1151,9 @@ Fetches your existing 'gh auth login' credential (GitHub) or mints a fresh PAT v
 - Connect an Azure DevOps repo
 
   `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo`
+- Azure DevOps org blocks PAT creation (confirmed live error:
+
+  `"org has a policy blocking PAT creation") -- use the agent's own managed identity instead az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo \ --devops-auth-type managed-identity --devops-identity <agent-identity-resource-id>`
 
 ## `az sre skill`
 
