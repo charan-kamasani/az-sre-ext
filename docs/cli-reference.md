@@ -335,7 +335,7 @@ Place the CLI in a waiting state until a condition is met.
 
 Manage agent automations.
 
-Covers scheduled tasks (run the agent on a timer) and HTTP triggers (run the agent from an inbound webhook) -- confirmed against the portal's own "Automation" tab, which holds exactly these two things. Incident filters live under 'az sre incident-filter' instead (portal: Incidents > "Triggers & response plans" -- a different top-level section, not Automation; confirmed by walking the live portal nav). Subagents are CONFIRMED NOT buildable here: the portal's real "Create a custom agent" dialog bypasses the ARM extensions proxy entirely and PUTs a raw YAML document (kind: AgentConfiguration) straight to the agent's data-plane 'api/v1/extendedAgent/apply' endpoint -- a route this ARM-only CLI never reaches (confirmed live: 'extension create --extension-type subagents' does reach the data plane's ARM-proxied ExtendedAgentView route, but that is the wrong/ unsupported schema and is rejected). Use the portal or srectl to create subagents instead. Release triggers, S360 triggers, and incident retrospectives are data-plane-only features of the agent's own runtime (confirmed via sreagent-runtime's Agent.Web v1 controllers) with no corresponding ARM resource -- they are out of scope for this ARM-based control-plane CLI entirely.
+Covers scheduled tasks (run the agent on a timer) and HTTP triggers (run the agent from an inbound webhook). Incident filters live under 'az sre incident-filter' instead. Subagents, release/S360 triggers, and incident retrospectives aren't exposed by this CLI -- use the portal or srectl for those.
 
 | Subgroup | Summary |
 | --- | --- |
@@ -573,6 +573,12 @@ Delete a hook.
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
+**Examples**
+
+- Delete a hook
+
+  `az sre hook delete -g myrg --agent-name myagent --name post-tool-check`
+
 ### `az sre hook list`
 
 List hooks.
@@ -585,6 +591,12 @@ List hooks.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List an agent's hooks
+
+  `az sre hook list -g myrg --agent-name myagent`
 
 ### `az sre hook show`
 
@@ -599,6 +611,12 @@ Show a hook.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+
+**Examples**
+
+- Show one hook
+
+  `az sre hook show -g myrg --agent-name myagent --name post-tool-check`
 
 ## `az sre identity`
 
@@ -676,7 +694,7 @@ Show the managed identity (-ies) currently assigned to an SRE Agent.
 
 Manage incident filters (portal: Incidents > "Triggers & response
 
-plans"): match incoming incidents by platform/title/team/etc. and route matches to a handling agent. Incident handlers are a legacy predecessor to incident filters that the service itself is migrating away from (confirmed via its own 'DeleteLegacyIncidentHandlerDocument'/'MigrateLegacyIncidentHandler' admin actions) -- intentionally not exposed here to avoid steering anyone onto a deprecated path. Note: live create against a fresh sandbox agent was rejected in our testing with a generic "extension configuration is invalid" error even with a matching data connector configured -- this is consistent with needing real IcM/PagerDuty team-identity resolution the sandbox tenant doesn't have, not a shape problem (the same payload shape is used successfully by the service's own PagerDutySetupFixture.cs/ IcmSetupFixture.cs E2E tests). See _validate_incident_filters_shape in this file for the shape-level validation that does run locally.
+plans"): match incoming incidents by platform/title/team/etc. and route matches to a handling agent. Incident handlers are a legacy predecessor the service is migrating away from and are intentionally not exposed here. See 'sre incident-filter create -h' for the full --value shape.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -688,6 +706,8 @@ plans"): match incoming incidents by platform/title/team/etc. and route matches 
 ### `az sre incident-filter create`
 
 Create or update an incident filter.
+
+KNOWN ISSUE (live-confirmed): every schema-valid payload tried against a real agent -- including the minimal {"incidentPlatform": "Icm"} -- is rejected server-side with a generic Bad Request ("InvalidRequestParameter"/"The extension configuration is invalid."), even though the shape matches _VALUE_HELP and the real E2E test fixtures this was derived from (IcmSetupFixture.cs). No working example payload has been found yet; treat 'incidentFilters' as unverified end-to-end until this is root-caused with the data-plane team.
 
 **Syntax**
 
@@ -704,6 +724,8 @@ Create or update an incident filter.
 ### `az sre incident-filter delete`
 
 Delete an incident filter.
+
+Syntax reference only -- see 'sre incident-filter create -h' for a known issue blocking creation of a real filter to delete today.
 
 **Syntax**
 
@@ -729,9 +751,17 @@ List incident filters.
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
+**Examples**
+
+- List an agent's incident filters
+
+  `az sre incident-filter list -g myrg --agent-name myagent`
+
 ### `az sre incident-filter show`
 
 Show an incident filter.
+
+Syntax reference only -- see 'sre incident-filter create -h' for a known issue blocking creation of a real filter to show today.
 
 **Syntax**
 
@@ -774,6 +804,12 @@ There is only one instructions block per agent; use the same --name (e.g. "defau
 | `--value` | String | Yes |  |  | Instructions as a JSON document of the form {"prompt": "..."} -- the "prompt" field holds the free text (confirmed live round-trip). |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
+**Examples**
+
+- Set an agent's custom instructions
+
+  `az sre instructions create -g myrg --agent-name myagent --name default \ --value '{"prompt": "Always cite the runbook section you used."}'`
+
 ### `az sre instructions delete`
 
 Delete the agent's custom instructions.
@@ -789,6 +825,12 @@ Delete the agent's custom instructions.
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
+**Examples**
+
+- Delete an agent's custom instructions
+
+  `az sre instructions delete -g myrg --agent-name myagent --name default`
+
 ### `az sre instructions list`
 
 List the agent's custom instructions entries.
@@ -801,6 +843,12 @@ List the agent's custom instructions entries.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List an agent's custom instructions entries
+
+  `az sre instructions list -g myrg --agent-name myagent`
 
 ### `az sre instructions show`
 
@@ -815,6 +863,12 @@ Show the agent's custom instructions.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+
+**Examples**
+
+- Show an agent's current custom instructions
+
+  `az sre instructions show -g myrg --agent-name myagent --name default`
 
 ## `az sre knowledge`
 
@@ -872,6 +926,12 @@ Remove a knowledge source.
 | `--name`, `-n` | String | Yes |  |  | Name of the knowledge source. |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
+**Examples**
+
+- Remove a knowledge source
+
+  `az sre knowledge delete -g myrg --agent-name myagent --name docs-site`
+
 ### `az sre knowledge list`
 
 List an SRE Agent's knowledge sources (files and web pages).
@@ -900,6 +960,12 @@ Show a knowledge source.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n` | String | Yes |  |  | Name of the knowledge source. |
+
+**Examples**
+
+- Show one knowledge source
+
+  `az sre knowledge show -g myrg --agent-name myagent --name docs-site`
 
 ## `az sre managed-resource`
 
@@ -1130,6 +1196,12 @@ Delete a custom skill.
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
+**Examples**
+
+- Delete a custom skill
+
+  `az sre skill delete -g myrg --agent-name myagent --name triage-skill`
+
 ### `az sre skill list`
 
 List custom skills.
@@ -1142,6 +1214,12 @@ List custom skills.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List an agent's custom skills
+
+  `az sre skill list -g myrg --agent-name myagent`
 
 ### `az sre skill show`
 
@@ -1156,6 +1234,12 @@ Show a custom skill.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+
+**Examples**
+
+- Show one custom skill
+
+  `az sre skill show -g myrg --agent-name myagent --name triage-skill`
 
 ## `az sre tool`
 
@@ -1186,6 +1270,12 @@ Create or update a custom tool.
 | `--value` | String | Yes |  |  | Tool configuration as a JSON document. Discriminator field is "type" (not "toolType"), one of: KustoTool/LinkTool/PythonTool/HttpClientTool. Common fields: type/name/description/connector/toolMode/parameters. Per-type fields -- LinkTool: "template" (not "url") e.g. {"type": "LinkTool", "name": "docs", "description": "...", "template": "https://..."}; KustoTool: database/query/clusterHint; HttpClientTool: url/method/body/headers/auth (this is the one type that really does use "url"); PythonTool: functionCode/timeoutSeconds/dependencies/authEnabled/authScopes. Live-confirmed shape -- "toolType"/"url" at the top level (an earlier, now-fixed example) silently fails server-side with an opaque InternalServerError, only "type"/"template" works for LinkTool. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
+**Examples**
+
+- Create an HTTP tool
+
+  `az sre tool create -g myrg --agent-name myagent --name docs-link \ --value '{"type": "LinkTool", "name": "docs", "description": "Link to docs", "template": "https://learn.microsoft.com/azure/"}'`
+
 ### `az sre tool delete`
 
 Delete a custom tool.
@@ -1201,6 +1291,12 @@ Delete a custom tool.
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
+**Examples**
+
+- Delete a custom tool
+
+  `az sre tool delete -g myrg --agent-name myagent --name docs-link`
+
 ### `az sre tool list`
 
 List custom tools.
@@ -1213,6 +1309,12 @@ List custom tools.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List an agent's custom tools
+
+  `az sre tool list -g myrg --agent-name myagent`
 
 ### `az sre tool show`
 
@@ -1227,6 +1329,12 @@ Show a custom tool.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+
+**Examples**
+
+- Show one custom tool
+
+  `az sre tool show -g myrg --agent-name myagent --name docs-link`
 
 ## `az sre usage`
 
@@ -1329,6 +1437,12 @@ Create or update an HTTP trigger.
 | `--value` | String | Yes |  |  | HTTP trigger configuration as a JSON document. Fields: "agentPrompt" (what to ask the agent when the webhook fires), "description", "agent" (name of a connected sub-agent to target instead of the primary agent), "threadId" (continue an existing conversation thread instead of starting a new one each call -- same unset-vs-pinned behavior as scheduled-task's threadId above), "modelTier", "agentMode". Example: {"agentPrompt": "Investigate the attached alert payload", "description": "Webhook from external monitor"}. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
+**Examples**
+
+- Create a webhook that runs the agent against a prompt
+
+  `az sre automation http-trigger create -g myrg --agent-name myagent --name alert-webhook \ --value '{"agentPrompt": "Investigate the attached alert payload"}'`
+
 ### `az sre automation http-trigger delete`
 
 Delete an HTTP trigger.
@@ -1344,6 +1458,12 @@ Delete an HTTP trigger.
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
+**Examples**
+
+- Delete an HTTP trigger
+
+  `az sre automation http-trigger delete -g myrg --agent-name myagent --name alert-webhook`
+
 ### `az sre automation http-trigger list`
 
 List HTTP triggers.
@@ -1356,6 +1476,12 @@ List HTTP triggers.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List an agent's HTTP triggers
+
+  `az sre automation http-trigger list -g myrg --agent-name myagent`
 
 ### `az sre automation http-trigger show`
 
@@ -1370,6 +1496,12 @@ Show an HTTP trigger.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+
+**Examples**
+
+- Show one HTTP trigger
+
+  `az sre automation http-trigger show -g myrg --agent-name myagent --name alert-webhook`
 
 ## `az sre automation scheduled-task`
 
@@ -1400,6 +1532,12 @@ Create or update a scheduled task.
 | `--value` | String | Yes |  |  | Scheduled task configuration as a JSON document. Fields: "cronExpression" (standard 5-field cron, e.g. "0 */6 * * *" for every 6 hours), "agentPrompt" (what to ask the agent each run), "description", "agent" (name of a connected sub-agent to target instead of the primary agent), "threadId" (continue an existing conversation thread instead of starting a new one each run -- confirmed via sreagent-runtime: leaving this unset lets each run get its own thread, pinning it to a fixed value reuses that one thread across every run (the portal's "Message grouping for updates" dropdown is UI sugar over this same field)), "startTime"/"endTime" (ISO 8601, bound the schedule's active window), "maxExecutions" (stop after N runs), "notificationChannel", "modelTier", "agentMode". Example: {"cronExpression": "0 9 * * 1-5", "agentPrompt": "Summarize overnight alerts", "description": "Daily alert digest"}. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
+**Examples**
+
+- Run the agent on a timer against a prompt
+
+  `az sre automation scheduled-task create -g myrg --agent-name myagent --name daily-digest \ --value '{"cronExpression": "0 9 * * 1-5", "agentPrompt": "Summarize overnight alerts"}'`
+
 ### `az sre automation scheduled-task delete`
 
 Delete a scheduled task.
@@ -1415,6 +1553,12 @@ Delete a scheduled task.
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
+**Examples**
+
+- Delete a scheduled task
+
+  `az sre automation scheduled-task delete -g myrg --agent-name myagent --name daily-digest`
+
 ### `az sre automation scheduled-task list`
 
 List scheduled tasks.
@@ -1427,6 +1571,12 @@ List scheduled tasks.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List an agent's scheduled tasks
+
+  `az sre automation scheduled-task list -g myrg --agent-name myagent`
 
 ### `az sre automation scheduled-task show`
 
@@ -1441,6 +1591,12 @@ Show a scheduled task.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+
+**Examples**
+
+- Show one scheduled task
+
+  `az sre automation scheduled-task show -g myrg --agent-name myagent --name daily-digest`
 
 ## `az sre plugin install`
 
@@ -1468,8 +1624,14 @@ Install a plugin from a connected marketplace.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Plugin install configuration as a JSON document, e.g. {"marketplaceName": "<name from 'sre plugin marketplace list'>", "pluginName": "<plugin>"}. |
+| `--value` | String | Yes |  |  | Plugin install configuration as a JSON document, e.g. {"marketplaceName": "<name from 'sre plugin marketplace list'>", "pluginName": "<plugin>", "source": {"type": "relative", "repo": "<marketplace sourceUrl>", "url": "<plugin's path in the repo>"}}. The 'source' block is required on create -- the service does not auto-resolve it from marketplaceName/pluginName alone. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
+
+**Examples**
+
+- Install a plugin from a connected marketplace
+
+  `az sre plugin install create -g myrg --agent-name myagent --name datadog \ --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", \ "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}' KNOWN LIMITATION (live-confirmed): unlike every other extension type, the 'marketplaceName'/'pluginName' fields alone are NOT enough here -- the service requires the full 'source' block ({"type", "repo", "url"}) naming the plugin's exact path inside the marketplace repo up front, on create. This is because the generic ARM-proxy PUT route this CLI uses writes the raw installation record directly; it does not run the richer, catalog-resolving install pipeline the portal's dedicated install button uses (which looks up the path for you and also clones the repo, imports the plugin's skills, and snapshots its MCP server config). A CLI-created record like the one above round-trips correctly on show/list/delete, but will be missing 'importedSkills'/'sourceCommit' /a resolved 'mcpConnectorStatus' compared to a real portal install -- confirmed by comparing the two side by side. Until the portal's install pipeline is reachable through this control-plane API, treat this as syntax-correct but not a full substitute for portal Install.`
 
 ### `az sre plugin install delete`
 
@@ -1486,6 +1648,12 @@ Uninstall a plugin.
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
+**Examples**
+
+- Uninstall a plugin
+
+  `az sre plugin install delete -g myrg --agent-name myagent --name datadog`
+
 ### `az sre plugin install list`
 
 List installed plugins.
@@ -1498,6 +1666,12 @@ List installed plugins.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List an agent's installed plugins
+
+  `az sre plugin install list -g myrg --agent-name myagent`
 
 ### `az sre plugin install show`
 
@@ -1512,6 +1686,12 @@ Show an installed plugin.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+
+**Examples**
+
+- Show one installed plugin
+
+  `az sre plugin install show -g myrg --agent-name myagent --name datadog`
 
 ## `az sre plugin marketplace`
 
@@ -1539,8 +1719,14 @@ Connect a plugin marketplace.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Marketplace configuration as a JSON document, e.g. {"sourceType": "github", "sourceUrl": "https://github.com/owner/repo"}. |
+| `--value` | String | Yes |  |  | Marketplace configuration as a JSON document. Fields: sourceType ("github"), sourceUrl ("owner/repo" short form, NOT a full https:// URL -- a full URL is rejected server-side as an invalid extension configuration), owner ({"name": "..."}), description. Example: {"sourceType": "github", "sourceUrl": "owner/repo", "owner": {"name": "owner"}, "description": "..."}. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
+
+**Examples**
+
+- Connect a GitHub repo as a plugin marketplace
+
+  `az sre plugin marketplace create -g myrg --agent-name myagent --name contoso-plugins \ --value '{"sourceType": "github", "sourceUrl": "owner/repo"}'`
 
 ### `az sre plugin marketplace delete`
 
@@ -1557,6 +1743,12 @@ Disconnect a plugin marketplace.
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
+**Examples**
+
+- Disconnect a plugin marketplace
+
+  `az sre plugin marketplace delete -g myrg --agent-name myagent --name contoso-plugins`
+
 ### `az sre plugin marketplace list`
 
 List connected plugin marketplaces.
@@ -1569,6 +1761,12 @@ List connected plugin marketplaces.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List an agent's connected plugin marketplaces
+
+  `az sre plugin marketplace list -g myrg --agent-name myagent`
 
 ### `az sre plugin marketplace show`
 
@@ -1583,3 +1781,9 @@ Show a connected plugin marketplace.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+
+**Examples**
+
+- Show one connected plugin marketplace
+
+  `az sre plugin marketplace show -g myrg --agent-name myagent --name contoso-plugins`

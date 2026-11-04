@@ -2362,6 +2362,28 @@ class ConnectorConvenienceArgsTests(unittest.TestCase):
             {"transport": "Http", "endpoint": "https://example.com/mcp"},
         )
 
+    def test_mcp_endpoint_merges_with_caller_supplied_extended_properties(self):
+        # Regression test: --mcp-endpoint must merge into, not clobber, any
+        # --extended-properties the caller already supplied (e.g. {"headers":
+        # {...}} for an MCP server's auth headers, matching the portal's
+        # "Configure connector" custom headers field). Found live: a prior
+        # version of this mixin unconditionally overwrote extended_properties,
+        # silently dropping caller-supplied headers.
+        args = self._run(
+            data_connector_type="Mcp",
+            mcp_endpoint="https://example.com/mcp",
+            extended_properties={"headers": {"X-Api-Key": "secret"}},
+        )
+        self.assertEqual(args.data_source, "https://example.com/mcp")
+        self.assertEqual(
+            args.extended_properties,
+            {
+                "headers": {"X-Api-Key": "secret"},
+                "transport": "Http",
+                "endpoint": "https://example.com/mcp",
+            },
+        )
+
     def test_github_flag_rejects_non_mcp_type(self):
         with self.assertRaises(CLIError) as raised:
             self._run(data_connector_type="Kusto", github=True)

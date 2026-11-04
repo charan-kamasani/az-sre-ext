@@ -134,8 +134,8 @@ def _camelize_keys(value):
     _arg_value(): those are pure CLI-argument-parsing schemas with no
     serialized_name/JSON mapping, so AAZHttpOperation.serialize_content()
     returns dicts keyed by the raw Python attribute name (snake_case), e.g.
-    "allowed_hosts" instead of "allowedHosts". Confirmed live against
-    mytestagent: ARM rejects the un-camelized body with "Unknown properties
+    "allowed_hosts" instead of "allowedHosts". Confirmed live against a
+    real test agent: ARM rejects the un-camelized body with "Unknown properties
     allowed_hosts ... are not supported" (2026-10-26). Generated aaz commands
     never hit this because their request body comes from a real AAZObjectType
     schema with camelCase serialized_name baked in from swagger -- only
@@ -1033,7 +1033,18 @@ class _ConnectorConvenienceArgsMixin:
                 raise CLIError("--github/--mcp-endpoint require --data-connector-type Mcp.")
             endpoint = GITHUB_COPILOT_MCP_ENDPOINT if github else mcp_endpoint
             args.data_source = endpoint
-            args.extended_properties = {"transport": "Http", "endpoint": endpoint}
+            existing = _arg_value(getattr(args, "extended_properties", None)) or {}
+            if not isinstance(existing, dict):
+                existing = {}
+            # Merge, don't overwrite: a caller combining --mcp-endpoint with their
+            # own --extended-properties (e.g. {"headers": {...}} for a plugin's
+            # MCP server auth, matching the portal's "Configure connector" custom
+            # headers field) previously had that silently discarded here.
+            args.extended_properties = {
+                **existing,
+                "transport": "Http",
+                "endpoint": endpoint,
+            }
         elif file_path:
             if connector_type not in ("KnowledgeFile", "KnowledgeText"):
                 raise CLIError(
@@ -1987,7 +1998,11 @@ class KnowledgeCreate(AAZCommand):
 
 @register_command("sre knowledge show")
 class KnowledgeShow(AAZCommand):
-    """Show a knowledge source."""
+    """Show a knowledge source.
+
+    :example: Show one knowledge source
+        az sre knowledge show -g myrg --agent-name myagent --name docs-site
+    """
 
     _args_schema = None
 
@@ -2074,7 +2089,11 @@ class KnowledgeList(AAZCommand):
     confirmation="Are you sure you want to perform this operation?",
 )
 class KnowledgeDelete(AAZCommand):
-    """Remove a knowledge source."""
+    """Remove a knowledge source.
+
+    :example: Remove a knowledge source
+        az sre knowledge delete -g myrg --agent-name myagent --name docs-site
+    """
 
     _args_schema = None
 
@@ -2793,20 +2812,20 @@ EXTENSION_TYPES = [
 # system_prompt/agent_type) directly to sreagent-runtime's
 # Agent.Web/Controllers/v1/ExtendedAgentController.cs's PUT api/v1/
 # extendedAgent/apply -- a data-plane-only endpoint this ARM-only CLI
-# cannot and should not call directly. A live test against mytestagent via
-# 'extension create --extension-type subagents' confirmed this: the
-# request does reach the data plane's ExtendedAgentView-shaped v2 route,
-# but is rejected with a generic error, consistent with that being the
-# wrong/unsupported schema for subagent creation).
+# cannot and should not call directly. A live test against a real test
+# agent via 'extension create --extension-type subagents' confirmed this:
+# the request does reach the data plane's ExtendedAgentView-shaped v2
+# route, but is rejected with a generic error, consistent with that being
+# the wrong/unsupported schema for subagent creation).
 #
-# commonPrompts: CORRECTED after live verification against the real
-# mytestagent data-plane (2026-10-25). The earlier reading of
+# commonPrompts: CORRECTED after live verification against a real test
+# agent's data-plane (2026-10-25). The earlier reading of
 # DebugApp/Client/ModelPromptsViewer.tsx's TS prop type
 # (`commonPrompts?: string | Array<{ name: string; content: string }>`) was
 # WRONG for the per-resource wire shape -- that type describes an
 # aggregated, multi-resource UI display value, not what a single PUT
 # accepts. Live testing (PUT with --debug + raw `az rest` probes against
-# mytestagent) proved: the real data-plane requires the decoded root value
+# a real test agent) proved: the real data-plane requires the decoded root value
 # to be a JSON OBJECT for every extension type (a bare array is always
 # rejected as "invalid or unrecognized property", confirmed to repro for
 # commonPrompts AND tools with []), and for commonPrompts specifically the
@@ -3722,7 +3741,12 @@ class _ToolGroup(AAZCommandGroup):
 
 @register_command("sre tool create")
 class ToolCreate(_PinnedExtensionCreate):
-    """Create or update a custom tool."""
+    """Create or update a custom tool.
+
+    :example: Create an HTTP tool
+        az sre tool create -g myrg --agent-name myagent --name docs-link \\
+            --value '{"type": "LinkTool", "name": "docs", "description": "Link to docs", "template": "https://learn.microsoft.com/azure/"}'
+    """
 
     _EXTENSION_TYPE = "tools"
     _args_schema = None
@@ -3745,7 +3769,11 @@ class ToolCreate(_PinnedExtensionCreate):
 
 @register_command("sre tool show")
 class ToolShow(_PinnedExtensionShow):
-    """Show a custom tool."""
+    """Show a custom tool.
+
+    :example: Show one custom tool
+        az sre tool show -g myrg --agent-name myagent --name docs-link
+    """
 
     _EXTENSION_TYPE = "tools"
     _args_schema = None
@@ -3753,7 +3781,11 @@ class ToolShow(_PinnedExtensionShow):
 
 @register_command("sre tool list")
 class ToolList(_PinnedExtensionList):
-    """List custom tools."""
+    """List custom tools.
+
+    :example: List an agent's custom tools
+        az sre tool list -g myrg --agent-name myagent
+    """
 
     _EXTENSION_TYPE = "tools"
     _args_schema = None
@@ -3764,7 +3796,11 @@ class ToolList(_PinnedExtensionList):
     confirmation="Are you sure you want to perform this operation?",
 )
 class ToolDelete(_PinnedExtensionDelete):
-    """Delete a custom tool."""
+    """Delete a custom tool.
+
+    :example: Delete a custom tool
+        az sre tool delete -g myrg --agent-name myagent --name docs-link
+    """
 
     _EXTENSION_TYPE = "tools"
     _args_schema = None
@@ -3778,24 +3814,10 @@ class _AutomationGroup(AAZCommandGroup):
     """Manage agent automations.
 
     Covers scheduled tasks (run the agent on a timer) and HTTP triggers
-    (run the agent from an inbound webhook) -- confirmed against the
-    portal's own "Automation" tab, which holds exactly these two things.
-    Incident filters live under 'az sre incident-filter' instead (portal:
-    Incidents > "Triggers & response plans" -- a different top-level
-    section, not Automation; confirmed by walking the live portal nav).
-    Subagents are CONFIRMED NOT buildable here: the portal's real
-    "Create a custom agent" dialog bypasses the ARM extensions proxy
-    entirely and PUTs a raw YAML document (kind: AgentConfiguration)
-    straight to the agent's data-plane 'api/v1/extendedAgent/apply'
-    endpoint -- a route this ARM-only CLI never reaches (confirmed live:
-    'extension create --extension-type subagents' does reach the data
-    plane's ARM-proxied ExtendedAgentView route, but that is the wrong/
-    unsupported schema and is rejected). Use the portal or srectl to
-    create subagents instead. Release triggers, S360 triggers, and
-    incident retrospectives are data-plane-only features of the agent's
-    own runtime (confirmed via sreagent-runtime's Agent.Web v1
-    controllers) with no corresponding ARM resource -- they are out of
-    scope for this ARM-based control-plane CLI entirely.
+    (run the agent from an inbound webhook). Incident filters live under
+    'az sre incident-filter' instead. Subagents, release/S360 triggers,
+    and incident retrospectives aren't exposed by this CLI -- use the
+    portal or srectl for those.
     """
 
 
@@ -3807,7 +3829,12 @@ class _AutomationScheduledTaskGroup(AAZCommandGroup):
 
 @register_command("sre automation scheduled-task create")
 class AutomationScheduledTaskCreate(_PinnedExtensionCreate):
-    """Create or update a scheduled task."""
+    """Create or update a scheduled task.
+
+    :example: Run the agent on a timer against a prompt
+        az sre automation scheduled-task create -g myrg --agent-name myagent --name daily-digest \\
+            --value '{"cronExpression": "0 9 * * 1-5", "agentPrompt": "Summarize overnight alerts"}'
+    """
 
     _EXTENSION_TYPE = "scheduledTasks"
     _args_schema = None
@@ -3833,7 +3860,11 @@ class AutomationScheduledTaskCreate(_PinnedExtensionCreate):
 
 @register_command("sre automation scheduled-task show")
 class AutomationScheduledTaskShow(_PinnedExtensionShow):
-    """Show a scheduled task."""
+    """Show a scheduled task.
+
+    :example: Show one scheduled task
+        az sre automation scheduled-task show -g myrg --agent-name myagent --name daily-digest
+    """
 
     _EXTENSION_TYPE = "scheduledTasks"
     _args_schema = None
@@ -3841,7 +3872,11 @@ class AutomationScheduledTaskShow(_PinnedExtensionShow):
 
 @register_command("sre automation scheduled-task list")
 class AutomationScheduledTaskList(_PinnedExtensionList):
-    """List scheduled tasks."""
+    """List scheduled tasks.
+
+    :example: List an agent's scheduled tasks
+        az sre automation scheduled-task list -g myrg --agent-name myagent
+    """
 
     _EXTENSION_TYPE = "scheduledTasks"
     _args_schema = None
@@ -3852,7 +3887,11 @@ class AutomationScheduledTaskList(_PinnedExtensionList):
     confirmation="Are you sure you want to perform this operation?",
 )
 class AutomationScheduledTaskDelete(_PinnedExtensionDelete):
-    """Delete a scheduled task."""
+    """Delete a scheduled task.
+
+    :example: Delete a scheduled task
+        az sre automation scheduled-task delete -g myrg --agent-name myagent --name daily-digest
+    """
 
     _EXTENSION_TYPE = "scheduledTasks"
     _args_schema = None
@@ -3866,7 +3905,12 @@ class _AutomationHttpTriggerGroup(AAZCommandGroup):
 
 @register_command("sre automation http-trigger create")
 class AutomationHttpTriggerCreate(_PinnedExtensionCreate):
-    """Create or update an HTTP trigger."""
+    """Create or update an HTTP trigger.
+
+    :example: Create a webhook that runs the agent against a prompt
+        az sre automation http-trigger create -g myrg --agent-name myagent --name alert-webhook \\
+            --value '{"agentPrompt": "Investigate the attached alert payload"}'
+    """
 
     _EXTENSION_TYPE = "httpTriggers"
     _args_schema = None
@@ -3886,7 +3930,11 @@ class AutomationHttpTriggerCreate(_PinnedExtensionCreate):
 
 @register_command("sre automation http-trigger show")
 class AutomationHttpTriggerShow(_PinnedExtensionShow):
-    """Show an HTTP trigger."""
+    """Show an HTTP trigger.
+
+    :example: Show one HTTP trigger
+        az sre automation http-trigger show -g myrg --agent-name myagent --name alert-webhook
+    """
 
     _EXTENSION_TYPE = "httpTriggers"
     _args_schema = None
@@ -3894,7 +3942,11 @@ class AutomationHttpTriggerShow(_PinnedExtensionShow):
 
 @register_command("sre automation http-trigger list")
 class AutomationHttpTriggerList(_PinnedExtensionList):
-    """List HTTP triggers."""
+    """List HTTP triggers.
+
+    :example: List an agent's HTTP triggers
+        az sre automation http-trigger list -g myrg --agent-name myagent
+    """
 
     _EXTENSION_TYPE = "httpTriggers"
     _args_schema = None
@@ -3905,7 +3957,11 @@ class AutomationHttpTriggerList(_PinnedExtensionList):
     confirmation="Are you sure you want to perform this operation?",
 )
 class AutomationHttpTriggerDelete(_PinnedExtensionDelete):
-    """Delete an HTTP trigger."""
+    """Delete an HTTP trigger.
+
+    :example: Delete an HTTP trigger
+        az sre automation http-trigger delete -g myrg --agent-name myagent --name alert-webhook
+    """
 
     _EXTENSION_TYPE = "httpTriggers"
     _args_schema = None
@@ -3921,26 +3977,25 @@ class _IncidentFilterGroup(AAZCommandGroup):
     plans"): match incoming incidents by platform/title/team/etc. and
     route matches to a handling agent.
 
-    Incident handlers are a legacy predecessor to incident filters that
-    the service itself is migrating away from (confirmed via its own
-    'DeleteLegacyIncidentHandlerDocument'/'MigrateLegacyIncidentHandler'
-    admin actions) -- intentionally not exposed here to avoid steering
-    anyone onto a deprecated path.
-
-    Note: live create against a fresh sandbox agent was rejected in our
-    testing with a generic "extension configuration is invalid" error even
-    with a matching data connector configured -- this is consistent with
-    needing real IcM/PagerDuty team-identity resolution the sandbox tenant
-    doesn't have, not a shape problem (the same payload shape is used
-    successfully by the service's own PagerDutySetupFixture.cs/
-    IcmSetupFixture.cs E2E tests). See _validate_incident_filters_shape in
-    this file for the shape-level validation that does run locally.
+    Incident handlers are a legacy predecessor the service is migrating
+    away from and are intentionally not exposed here. See 'sre
+    incident-filter create -h' for the full --value shape.
     """
 
 
 @register_command("sre incident-filter create")
 class IncidentFilterCreate(_PinnedExtensionCreate):
-    """Create or update an incident filter."""
+    """Create or update an incident filter.
+
+    KNOWN ISSUE (live-confirmed): every schema-valid payload tried against a
+    real agent -- including the minimal {"incidentPlatform": "Icm"} -- is
+    rejected server-side with a generic Bad Request
+    ("InvalidRequestParameter"/"The extension configuration is invalid."),
+    even though the shape matches _VALUE_HELP and the real E2E test fixtures
+    this was derived from (IcmSetupFixture.cs). No working example payload
+    has been found yet; treat 'incidentFilters' as unverified end-to-end
+    until this is root-caused with the data-plane team.
+    """
 
     _EXTENSION_TYPE = "incidentFilters"
     _args_schema = None
@@ -3985,7 +4040,11 @@ class IncidentFilterCreate(_PinnedExtensionCreate):
 
 @register_command("sre incident-filter show")
 class IncidentFilterShow(_PinnedExtensionShow):
-    """Show an incident filter."""
+    """Show an incident filter.
+
+    Syntax reference only -- see 'sre incident-filter create -h' for a
+    known issue blocking creation of a real filter to show today.
+    """
 
     _EXTENSION_TYPE = "incidentFilters"
     _args_schema = None
@@ -3993,7 +4052,11 @@ class IncidentFilterShow(_PinnedExtensionShow):
 
 @register_command("sre incident-filter list")
 class IncidentFilterList(_PinnedExtensionList):
-    """List incident filters."""
+    """List incident filters.
+
+    :example: List an agent's incident filters
+        az sre incident-filter list -g myrg --agent-name myagent
+    """
 
     _EXTENSION_TYPE = "incidentFilters"
     _args_schema = None
@@ -4004,7 +4067,11 @@ class IncidentFilterList(_PinnedExtensionList):
     confirmation="Are you sure you want to perform this operation?",
 )
 class IncidentFilterDelete(_PinnedExtensionDelete):
-    """Delete an incident filter."""
+    """Delete an incident filter.
+
+    Syntax reference only -- see 'sre incident-filter create -h' for a
+    known issue blocking creation of a real filter to delete today.
+    """
 
     _EXTENSION_TYPE = "incidentFilters"
     _args_schema = None
@@ -4100,7 +4167,11 @@ class SkillCreate(_PinnedExtensionCreate):
 
 @register_command("sre skill show")
 class SkillShow(_PinnedExtensionShow):
-    """Show a custom skill."""
+    """Show a custom skill.
+
+    :example: Show one custom skill
+        az sre skill show -g myrg --agent-name myagent --name triage-skill
+    """
 
     _EXTENSION_TYPE = "skills"
     _args_schema = None
@@ -4108,7 +4179,11 @@ class SkillShow(_PinnedExtensionShow):
 
 @register_command("sre skill list")
 class SkillList(_PinnedExtensionList):
-    """List custom skills."""
+    """List custom skills.
+
+    :example: List an agent's custom skills
+        az sre skill list -g myrg --agent-name myagent
+    """
 
     _EXTENSION_TYPE = "skills"
     _args_schema = None
@@ -4119,7 +4194,11 @@ class SkillList(_PinnedExtensionList):
     confirmation="Are you sure you want to perform this operation?",
 )
 class SkillDelete(_PinnedExtensionDelete):
-    """Delete a custom skill."""
+    """Delete a custom skill.
+
+    :example: Delete a custom skill
+        az sre skill delete -g myrg --agent-name myagent --name triage-skill
+    """
 
     _EXTENSION_TYPE = "skills"
     _args_schema = None
@@ -4174,7 +4253,11 @@ class HookCreate(_PinnedExtensionCreate):
 
 @register_command("sre hook show")
 class HookShow(_PinnedExtensionShow):
-    """Show a hook."""
+    """Show a hook.
+
+    :example: Show one hook
+        az sre hook show -g myrg --agent-name myagent --name post-tool-check
+    """
 
     _EXTENSION_TYPE = "hooks"
     _args_schema = None
@@ -4182,7 +4265,11 @@ class HookShow(_PinnedExtensionShow):
 
 @register_command("sre hook list")
 class HookList(_PinnedExtensionList):
-    """List hooks."""
+    """List hooks.
+
+    :example: List an agent's hooks
+        az sre hook list -g myrg --agent-name myagent
+    """
 
     _EXTENSION_TYPE = "hooks"
     _args_schema = None
@@ -4193,7 +4280,11 @@ class HookList(_PinnedExtensionList):
     confirmation="Are you sure you want to perform this operation?",
 )
 class HookDelete(_PinnedExtensionDelete):
-    """Delete a hook."""
+    """Delete a hook.
+
+    :example: Delete a hook
+        az sre hook delete -g myrg --agent-name myagent --name post-tool-check
+    """
 
     _EXTENSION_TYPE = "hooks"
     _args_schema = None
@@ -4216,6 +4307,10 @@ class InstructionsCreate(_PinnedExtensionCreate):
     There is only one instructions block per agent; use the same --name
     (e.g. "default") each time to update it in place, or pass --overwrite
     to replace an existing one.
+
+    :example: Set an agent's custom instructions
+        az sre instructions create -g myrg --agent-name myagent --name default \\
+            --value '{"prompt": "Always cite the runbook section you used."}'
     """
 
     _EXTENSION_TYPE = "commonPrompts"
@@ -4229,7 +4324,11 @@ class InstructionsCreate(_PinnedExtensionCreate):
 
 @register_command("sre instructions show")
 class InstructionsShow(_PinnedExtensionShow):
-    """Show the agent's custom instructions."""
+    """Show the agent's custom instructions.
+
+    :example: Show an agent's current custom instructions
+        az sre instructions show -g myrg --agent-name myagent --name default
+    """
 
     _EXTENSION_TYPE = "commonPrompts"
     _args_schema = None
@@ -4237,7 +4336,11 @@ class InstructionsShow(_PinnedExtensionShow):
 
 @register_command("sre instructions list")
 class InstructionsList(_PinnedExtensionList):
-    """List the agent's custom instructions entries."""
+    """List the agent's custom instructions entries.
+
+    :example: List an agent's custom instructions entries
+        az sre instructions list -g myrg --agent-name myagent
+    """
 
     _EXTENSION_TYPE = "commonPrompts"
     _args_schema = None
@@ -4248,7 +4351,11 @@ class InstructionsList(_PinnedExtensionList):
     confirmation="Are you sure you want to perform this operation?",
 )
 class InstructionsDelete(_PinnedExtensionDelete):
-    """Delete the agent's custom instructions."""
+    """Delete the agent's custom instructions.
+
+    :example: Delete an agent's custom instructions
+        az sre instructions delete -g myrg --agent-name myagent --name default
+    """
 
     _EXTENSION_TYPE = "commonPrompts"
     _args_schema = None
@@ -4281,19 +4388,33 @@ class _PluginMarketplaceGroup(AAZCommandGroup):
 
 @register_command("sre plugin marketplace create")
 class PluginMarketplaceCreate(_PinnedExtensionCreate):
-    """Connect a plugin marketplace."""
+    """Connect a plugin marketplace.
+
+    :example: Connect a GitHub repo as a plugin marketplace
+        az sre plugin marketplace create -g myrg --agent-name myagent --name contoso-plugins \\
+            --value '{"sourceType": "github", "sourceUrl": "owner/repo"}'
+    """
 
     _EXTENSION_TYPE = "pluginMarketplaces"
     _args_schema = None
     _VALUE_HELP = (
-        "Marketplace configuration as a JSON document, e.g. "
-        "{\"sourceType\": \"github\", \"sourceUrl\": \"https://github.com/owner/repo\"}."
+        "Marketplace configuration as a JSON document. Fields: sourceType "
+        "(\"github\"), sourceUrl (\"owner/repo\" short form, NOT a full "
+        "https:// URL -- a full URL is rejected server-side as an invalid "
+        "extension configuration), owner ({\"name\": \"...\"}), "
+        "description. Example: {\"sourceType\": \"github\", \"sourceUrl\": "
+        "\"owner/repo\", \"owner\": {\"name\": \"owner\"}, \"description\": "
+        "\"...\"}."
     )
 
 
 @register_command("sre plugin marketplace show")
 class PluginMarketplaceShow(_PinnedExtensionShow):
-    """Show a connected plugin marketplace."""
+    """Show a connected plugin marketplace.
+
+    :example: Show one connected plugin marketplace
+        az sre plugin marketplace show -g myrg --agent-name myagent --name contoso-plugins
+    """
 
     _EXTENSION_TYPE = "pluginMarketplaces"
     _args_schema = None
@@ -4301,7 +4422,11 @@ class PluginMarketplaceShow(_PinnedExtensionShow):
 
 @register_command("sre plugin marketplace list")
 class PluginMarketplaceList(_PinnedExtensionList):
-    """List connected plugin marketplaces."""
+    """List connected plugin marketplaces.
+
+    :example: List an agent's connected plugin marketplaces
+        az sre plugin marketplace list -g myrg --agent-name myagent
+    """
 
     _EXTENSION_TYPE = "pluginMarketplaces"
     _args_schema = None
@@ -4312,7 +4437,11 @@ class PluginMarketplaceList(_PinnedExtensionList):
     confirmation="Are you sure you want to perform this operation?",
 )
 class PluginMarketplaceDelete(_PinnedExtensionDelete):
-    """Disconnect a plugin marketplace."""
+    """Disconnect a plugin marketplace.
+
+    :example: Disconnect a plugin marketplace
+        az sre plugin marketplace delete -g myrg --agent-name myagent --name contoso-plugins
+    """
 
     _EXTENSION_TYPE = "pluginMarketplaces"
     _args_schema = None
@@ -4329,20 +4458,49 @@ class _PluginInstallGroup(AAZCommandGroup):
 
 @register_command("sre plugin install create")
 class PluginInstallCreate(_PinnedExtensionCreate):
-    """Install a plugin from a connected marketplace."""
+    """Install a plugin from a connected marketplace.
+
+    :example: Install a plugin from a connected marketplace
+        az sre plugin install create -g myrg --agent-name myagent --name datadog \\
+            --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", \\
+            "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}'
+
+    KNOWN LIMITATION (live-confirmed): unlike every other extension type, the
+    'marketplaceName'/'pluginName' fields alone are NOT enough here -- the
+    service requires the full 'source' block ({"type", "repo", "url"})
+    naming the plugin's exact path inside the marketplace repo up front, on
+    create. This is because the generic ARM-proxy PUT route this CLI uses
+    writes the raw installation record directly; it does not run the
+    richer, catalog-resolving install pipeline the portal's dedicated
+    install button uses (which looks up the path for you and also clones
+    the repo, imports the plugin's skills, and snapshots its MCP server
+    config). A CLI-created record like the one above round-trips correctly
+    on show/list/delete, but will be missing 'importedSkills'/'sourceCommit'
+    /a resolved 'mcpConnectorStatus' compared to a real portal install --
+    confirmed by comparing the two side by side. Until the portal's install
+    pipeline is reachable through this control-plane API, treat this as
+    syntax-correct but not a full substitute for portal Install.
+    """
 
     _EXTENSION_TYPE = "pluginInstallations"
     _args_schema = None
     _VALUE_HELP = (
         "Plugin install configuration as a JSON document, e.g. "
         "{\"marketplaceName\": \"<name from 'sre plugin marketplace list'>\", "
-        "\"pluginName\": \"<plugin>\"}."
+        "\"pluginName\": \"<plugin>\", \"source\": {\"type\": \"relative\", "
+        "\"repo\": \"<marketplace sourceUrl>\", \"url\": \"<plugin's path in the repo>\"}}. "
+        "The 'source' block is required on create -- the service does not "
+        "auto-resolve it from marketplaceName/pluginName alone."
     )
 
 
 @register_command("sre plugin install show")
 class PluginInstallShow(_PinnedExtensionShow):
-    """Show an installed plugin."""
+    """Show an installed plugin.
+
+    :example: Show one installed plugin
+        az sre plugin install show -g myrg --agent-name myagent --name datadog
+    """
 
     _EXTENSION_TYPE = "pluginInstallations"
     _args_schema = None
@@ -4350,7 +4508,11 @@ class PluginInstallShow(_PinnedExtensionShow):
 
 @register_command("sre plugin install list")
 class PluginInstallList(_PinnedExtensionList):
-    """List installed plugins."""
+    """List installed plugins.
+
+    :example: List an agent's installed plugins
+        az sre plugin install list -g myrg --agent-name myagent
+    """
 
     _EXTENSION_TYPE = "pluginInstallations"
     _args_schema = None
@@ -4361,7 +4523,11 @@ class PluginInstallList(_PinnedExtensionList):
     confirmation="Are you sure you want to perform this operation?",
 )
 class PluginInstallDelete(_PinnedExtensionDelete):
-    """Uninstall a plugin."""
+    """Uninstall a plugin.
+
+    :example: Uninstall a plugin
+        az sre plugin install delete -g myrg --agent-name myagent --name datadog
+    """
 
     _EXTENSION_TYPE = "pluginInstallations"
     _args_schema = None

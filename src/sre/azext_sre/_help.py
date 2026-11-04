@@ -114,7 +114,7 @@ GROUP_EXAMPLES = {
     ],
     "sre instructions": [
         {"name": "Show an agent's current custom instructions.",
-         "text": "az sre instructions show -g myrg --agent-name myagent"},
+         "text": "az sre instructions show -g myrg --agent-name myagent --name default"},
         {"name": "Set an agent's custom instructions.",
          "text": 'az sre instructions create -g myrg --agent-name myagent --name default --value '
                  '\'{"prompt": "Always cite the runbook section you used."}\''},
@@ -140,8 +140,9 @@ GROUP_EXAMPLES = {
         {"name": "Connect a plugin marketplace, then install a plugin from it.",
          "text": ('az sre plugin marketplace create -g myrg --agent-name myagent -n contoso-plugins '
                    '--value \'{"sourceType": "github", "sourceUrl": "https://github.com/contoso/sre-plugins"}\'\n'
-                   'az sre plugin install create -g myrg --agent-name myagent -n pagerduty-triage '
-                   '--value \'{"marketplaceName": "contoso-plugins", "pluginName": "pagerduty-triage"}\'')},
+                   'az sre plugin install create -g myrg --agent-name myagent -n datadog --value '
+                   '\'{"marketplaceName": "contoso-plugins", "pluginName": "datadog", "source": '
+                   '{"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}\'')},
     ],
     "sre plugin marketplace": [
         {"name": "List an agent's connected plugin marketplaces.",
@@ -154,8 +155,9 @@ GROUP_EXAMPLES = {
         {"name": "List an agent's installed plugins.",
          "text": "az sre plugin install list -g myrg --agent-name myagent"},
         {"name": "Install a plugin from a connected marketplace.",
-         "text": 'az sre plugin install create -g myrg --agent-name myagent -n pagerduty-triage --value '
-                 '\'{"marketplaceName": "contoso-plugins", "pluginName": "pagerduty-triage"}\''},
+         "text": 'az sre plugin install create -g myrg --agent-name myagent -n datadog --value '
+                 '\'{"marketplaceName": "contoso-plugins", "pluginName": "datadog", "source": '
+                 '{"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}\''},
     ],
     "sre repo": [
         {"name": "Connect a GitHub repo to an agent.",
