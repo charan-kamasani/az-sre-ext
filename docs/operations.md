@@ -363,6 +363,39 @@ immediately fail server-side, because the ARM-exposed resource genuinely
 doesn't support them yet. Revisit this once/if the Connector Gateway
 control plane grows a public ARM surface.
 
+### Connector authentication reference: who actually needs consent?
+
+Captured 2026-11-05, in response to a question from Paul Yuknewicz about
+when `connector create` actually requires a user to click through a consent
+screen vs. just creating an ARM link that may or may not work. Answer: it
+depends entirely on the connector's auth mechanism, which varies per type —
+**not every connector needs consent, and the ones that don't still need an
+RBAC grant to actually work** (see the "happy path" section in
+`quickstart.md`). Sources: live portal wizard screenshots (Kusto, ICM, MCP)
+plus source-level confirmation against `sreagent-runtime`
+(`KustoClient.cs`, `McpDataConnector.cs`, `ICMAPIClient.cs`,
+`DGrepPluginClient.cs`, `ConnectorGatewayArmClient.cs`,
+`ExperimentalSettings.cs`) and
+`docs/ImplementationSpecs/mcp-aad-oauth-github-v2-clone.md`.
+
+| Connector type | Auth mechanism | Consent step? | Notes |
+|---|---|---|---|
+| `Kusto` / `KustoClient` | Agent's own managed identity (system- or user-assigned, per the connector's `identity` field) | **No** | RBAC-only. Live-verified this session: created ≠ working until the identity is granted a role (e.g. Viewer) on the target cluster/database. The portal wizard shows no auth picker at all for this type — it's implicit. |
+| `Icm` | Fixed **platform-wide** service-managed identity (a single shared AME-tenant App ID, `a67bb1ee-091f-46eb-a5f3-d45f1aed9332` — confirmed via live portal wizard screenshot, not the agent's own identity) | **No** | RBAC-only, same shape as Kusto but the identity is shared across all agents/tenants, not per-agent. Portal explicitly states "Authentication via certificate is deprecated by ICM. Managed identity is the only supported authentication method" — confirms `IcmDataConnectorCertAuthService.cs`'s cert path is legacy/being phased out. |
+| `Dgrep` | Managed identity or Key Vault certificate, scope `https://monitor.azure.com/` | **No** | RBAC/cert-only, not user-facing. |
+| `Mcp` | One of 5 types set via `extendedProperties.authType` (confirmed in `McpDataConnector.cs`): `None`, `BearerToken` (static key/PAT), `OAuth` (per-user delegated token), `EntraOAuth` (feature-flagged **off** by default — `EnableMcpEntraOAuth = false`), `SpecOAuth` (dynamic client registration / DCR) | **Depends on authType** — `OAuth`/`SpecOAuth` yes, others no | The real portal wizard for this type shows exactly 4 "Authentication method" choices: No authentication / Bearer token / Managed identity / OAuth (dynamic client registration) — the DCR option is live today and is the one that shows a real "Authorize" browser redirect. This CLI's `connector create --data-connector-type Mcp` currently only has convenience flags for the "no auth" case (`--github`, `--mcp-endpoint`) — **Bearer token, explicit Managed Identity+scope, and OAuth/DCR are not yet exposed as CLI flags**, a real gap vs. the portal. |
+| `Outlook` / `Teams` | Unresolved from code alone — likely resolves through the separate Connector Gateway platform at runtime, possibly pre-consented at tenant/platform level | **Unconfirmed** | Live-tested this session: `Outlook` create fails with a real `(InternalServerError)` in this tenant (pre-existing, documented below); `Teams` create succeeds but its ARM resource shows `extendedProperties: null` and `identity: ""` — **zero auth/consent signal visible from the CLI or ARM**, so this CLI's consent-status annotation can never fire for it regardless of what's actually happening at runtime. Flagged as an open question for the SRE Agent product team, not resolved here. |
+| Connector Gateway types (Jira, Slack, SharePoint, ServiceNow, Salesforce, "Engineering Hub", and 30+ others, each suffixed `*CG` in the runtime) | OAuth, always | **Yes, always** | Confirmed live: a real `login.microsoftonline.com/.../oauth2/v2.0/authorize` redirect was observed for an "Engineering Hub" connector. The lightweight `Microsoft.App/agents/connectors` ARM resource this CLI talks to is not the full picture for these — real config lives in a separate `Microsoft.Web/connectorGateways`/`connections` resource fetched via `ConnectorGatewayArmClient.cs`. None of these types are reachable through this CLI today (see Connector Gateway section above). |
+
+**Practical takeaway for CLI users**: after `connector create` succeeds,
+treat it as "ARM link created", not "agent can read data". For
+`Kusto`/`KustoClient` (and likely `Icm`/`Dgrep`), the CLI now warns you
+to grant RBAC (see `_connector_access_reminder()` in `custom.py`). For
+`Mcp` with `OAuth`/`EntraOAuth`/`SpecOAuth`, use the existing
+`_annotate_connector_consent_status()` output and the portal consent link.
+For `Outlook`/`Teams`, there is currently no reliable signal either way —
+verify by asking the agent to actually use the connector in chat.
+
 ### Per-`--data-connector-type` live-verification status
 
 All 11 real `--data-connector-type` values were probed end-to-end (create →
