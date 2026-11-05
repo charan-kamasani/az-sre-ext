@@ -65,7 +65,7 @@ Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "val
 
 Control who can manage or use an SRE Agent.
 
-Grants or revokes a built-in RBAC role (admin, user, author, or reader) on the agent itself, for a specific person, group, or service principal. Use 'sre access grant' to add someone, 'sre access list' to see who currently has access, and 'sre access revoke' to remove them. This is the mirror image of 'sre managed-resource', which grants the agent's own identity access to things outside itself -- not other people access to the agent.
+This is the mirror image of 'sre managed-resource': that group grants the agent's own identity access to things outside itself, while this group grants other people/principals access to the agent itself.
 
 | Verb | Exact syntax |
 | --- | --- |
