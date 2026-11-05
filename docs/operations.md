@@ -760,9 +760,12 @@ github-actions` already use -- `_github_token()` tries, in order:
    scheduled jobs, headless containers) -- device flow needs a human in a
    browser, so it can never substitute for this tier.
 2. **Native GitHub OAuth Device Flow (RFC 8628)** fallback, implemented
-   directly in Python with `requests` + `webbrowser` -- no `gh` CLI, no
-   client secret needed (device-flow apps are public clients by design).
-   Posts to `https://github.com/login/device/code`, prints the `user_code`,
+   directly in Python with `requests` + Azure CLI's own
+   `azure.cli.core.util.open_page_in_browser` -- no `gh` CLI, no client
+   secret needed (device-flow apps are public clients by design). Posts to
+   `https://github.com/login/device/code`, logs the `user_code` via the
+   CLI's standard `logger.warning()` (not a bare `print()`, so it respects
+   `--only-show-errors` and never pollutes `--query`/`-o json` output),
    opens `verification_uri` in the browser, then polls
    `https://github.com/login/oauth/access_token` until authorized.
 

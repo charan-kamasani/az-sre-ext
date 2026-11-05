@@ -1652,7 +1652,7 @@ class GithubDeviceFlowTests(unittest.TestCase):
 
         with patch("requests.post", side_effect=fake_post), \
              patch("time.sleep"), \
-             patch("webbrowser.open"):
+             patch("azure.cli.core.util.open_page_in_browser"):
             token = _github_device_flow()
         self.assertEqual(token, "real-device-flow-token")
 
@@ -1679,7 +1679,7 @@ class GithubDeviceFlowTests(unittest.TestCase):
 
         with patch("requests.post", side_effect=fake_post), \
              patch("time.sleep"), \
-             patch("webbrowser.open"), \
+             patch("azure.cli.core.util.open_page_in_browser"), \
              self.assertRaises(CLIError) as raised:
             _github_device_flow()
         self.assertIn("denied", str(raised.exception))

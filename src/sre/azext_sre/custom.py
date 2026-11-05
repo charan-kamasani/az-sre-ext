@@ -4618,7 +4618,7 @@ def _github_device_flow(hostname="github.com", scope=GITHUB_DEVICE_FLOW_SCOPES):
     secret. Prints a user code, opens the verification page in a browser,
     then polls until the user approves it there."""
     import time
-    import webbrowser
+    from azure.cli.core.util import open_page_in_browser
 
     code_response = requests.post(
         f"https://{hostname}/login/device/code",
@@ -4636,12 +4636,12 @@ def _github_device_flow(hostname="github.com", scope=GITHUB_DEVICE_FLOW_SCOPES):
     interval = code_data.get("interval", 5)
     expires_in = code_data.get("expires_in", 900)
 
-    print(f"To authenticate with GitHub, go to {verification_uri}")
-    print(f"and enter code: {user_code}")
+    logger.warning("To authenticate with GitHub, go to %s", verification_uri)
+    logger.warning("and enter code: %s", user_code)
     try:
-        webbrowser.open(verification_uri)
+        open_page_in_browser(verification_uri)
     except Exception:  # pylint: disable=broad-except
-        pass  # headless/CI environment -- the printed URL above is enough
+        pass  # headless/CI environment -- the printed message above is enough
 
     deadline = time.time() + expires_in
     while time.time() < deadline:
