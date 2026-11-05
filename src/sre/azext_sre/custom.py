@@ -755,6 +755,40 @@ KNOWLEDGE_DATA_CONNECTOR_TYPES = {
     "KnowledgeRepository",
 }
 
+# Connector types that create an ARM link to an external Azure resource the
+# agent will query directly, but grant the agent's identity no data-plane
+# read permission on that resource by themselves. Live-confirmed
+# (mytestagent/dnci, 2026-11-05): the connector reports provisioningState
+# Succeeded immediately, but a query through it fails with a Kusto 403
+# ("Principal '...' is not authorized to read database ...") until the
+# agent's identity is separately granted a role (e.g. Viewer) on the target
+# Kusto database -- see docs/quickstart.md's "connector created is not
+# connector working" section for the exact follow-up command.
+RBAC_GAP_CONNECTOR_TYPES = {"Kusto", "KustoClient"}
+
+
+def _connector_access_reminder(connector):
+    """Warn after creating an RBAC-gap connector type that the ARM link
+    alone does not grant query access yet."""
+    if not isinstance(connector, dict):
+        return
+    properties = connector.get("properties")
+    data_connector_type = (
+        properties.get("dataConnectorType")
+        if isinstance(properties, dict)
+        else connector.get("dataConnectorType")
+    )
+    if data_connector_type in RBAC_GAP_CONNECTOR_TYPES:
+        logger.warning(
+            "Connector '%s' is created, but the agent's identity has not "
+            "been granted access to query it yet -- queries will fail with "
+            "a 403 until you grant it a role (e.g. Viewer) on the target "
+            "Kusto database. Run 'az sre agent show --query identity' to "
+            "find the identity actually used, then 'az kusto database-"
+            "principal-assignment create' to grant it.",
+            connector.get("name"),
+        )
+
 # Wire value -> real portal display name, for the subset of types with a
 # confirmed portal picker entry. Confirmed live against the portal's
 # "Connectors" dialog (screenshots reviewed 2026-11-03, plus a full catalog
@@ -1203,6 +1237,7 @@ class ConnectorCreate(
 
     def _output(self, *args, **kwargs):
         result = super()._output(*args, **kwargs)
+        _connector_access_reminder(result)
         return _annotate_connector_consent_status(result)
 
 
