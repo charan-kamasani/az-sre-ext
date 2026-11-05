@@ -369,6 +369,18 @@ immediately fail server-side, because the ARM-exposed resource genuinely
 doesn't support them yet. Revisit this once/if the Connector Gateway
 control plane grows a public ARM surface.
 
+**Confirmed authoritatively 2026-11-05** by Dalibor Kovacevic (SRE Agent
+team) in response to a direct question: "yes they are a separate rp and a
+separate thing we hook into so the resource is as you noted connector
+gateway and they return some sort of tools payload we render." This
+confirms, from the source team, exactly what the code pointed to: Connector
+Gateway is a genuinely separate ARM **Resource Provider**, the agent
+runtime calls into it, and it hands back a tools payload the agent renders
+-- not something this CLI's `Microsoft.App/agents` surface owns or can
+extend into. Bruce Moe, Jitin John, and Jack Pa were named as the SMEs for
+deeper follow-up if/when `az`-level support for these connectors is
+pursued.
+
 ### Connector authentication reference: who actually needs consent?
 
 Captured 2026-11-05, in response to a question from Paul Yuknewicz about
