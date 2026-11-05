@@ -123,6 +123,71 @@ az sre connector create \
 > See [`operations.md`](operations.md#data-connectors) for the full
 > `Kusto`/`KustoClient` portal-mapping story.
 
+### The happy path: connector created is not connector working
+
+`connector create` only establishes the ARM link. It does **not** grant the
+agent permission to actually read the data behind it — that's a separate
+step, and its shape depends on the connector type:
+
+- **OAuth-backed connectors** (first-party types like Outlook/Teams/Icm/
+  Dgrep, and some `Mcp` variants) need a human to complete a browser OAuth
+  consent flow before `consentStatus` flips from `PendingConsent` to
+  `Consented`. `connector show`/`list` surface this status and a direct
+  portal link automatically when it's pending — there is no public ARM
+  action to drive consent from the CLI.
+- **RBAC-backed connectors** (Kusto/`KustoClient`, and anything else that
+  points at an Azure resource you already own) need the agent's managed
+  identity granted a role on that resource. Nothing in `connector create`
+  does this for you.
+
+Confirmed live end to end with the connector from the previous step. First,
+find which of the agent's two identities (system-assigned vs. user-assigned)
+the connector actually queries with — do not assume:
+
+```bash
+az sre agent show --resource-group "$RG" --name "$AGENT" --query identity
+```
+
+Granting the wrong identity looks identical to success (the role assignment
+is created fine) but the connector still fails — the real Kusto error names
+the AAD app actually used, e.g.:
+
+```
+Principal 'aadapp=<app-id>;<tenant-id>' is not authorized to read database 'dnci'.
+```
+
+Resolve that app ID to find out which identity it really is:
+
+```bash
+az ad sp show --id <app-id> --query "{displayName:displayName, id:id}"
+```
+
+`id` here is the principal (object) ID to grant — in the live test this
+turned out to be the agent's **system-assigned** identity, not the
+user-assigned one that seemed like the obvious choice. Grant it Viewer on
+the Kusto database (requires the `kusto` CLI extension):
+
+```bash
+az kusto database-principal-assignment create \
+  --cluster-name <cluster> --resource-group <cluster-rg> --database-name <db> \
+  --principal-assignment-name "$AGENT-viewer" \
+  --principal-id <resolved-identity-object-id> --principal-type App --role Viewer \
+  --tenant-id "$(az account show --query tenantId -o tsv)"
+```
+
+Then prove it end to end by asking the agent a question that forces it to
+use the connector (data-plane chat, portal only — see step 4 below):
+
+> "Using the \<connector-name\> Azure Data Explorer connector, run `.show
+> tables` on the `<db>` database and list what you find."
+
+A real response with actual table names (not an access error) is the
+complete happy path: connector created → access granted → agent queries
+live data. Live-verified this exact flow on 2026-11-05: the portal's
+Connectors blade flipped from `Failed: Forbidden (403)` to `Connected`
+after the correct identity was granted, and the agent's chat response came
+back with real Kusto table names from the live cluster.
+
 ## 3. Give it operational context
 
 Portal: *Team onboarding* and *Knowledge capture*.
@@ -277,9 +342,9 @@ unit tests.
 
 - Step 4 (chat-based investigation) has no CLI equivalent today and isn't
   planned, since it's a data-plane feature outside this CLI's control-plane
-  scope (see [PLAN.md](../PLAN.md)). Worth confirming with Paul whether that
-  gap should be called out more prominently, or left as portal-only by
-  design.
+  scope (see [PLAN.md](../PLAN.md)). The "happy path" section above shows
+  how to verify it manually in the portal chat once access is granted —
+  that verification step itself still can't be scripted from the CLI.
 
 ## Related docs
 
