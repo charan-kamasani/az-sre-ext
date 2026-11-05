@@ -1553,6 +1553,16 @@ class AgentSettingsUpdate(AAZCommand):
     an agent has exactly one). Safe to call repeatedly; each call replaces
     the whole settings object, so include every field you want to keep, not
     just the one you're changing.
+
+    This is also where the portal's single "Custom instructions" text box
+    (Build + setup > Settings) lives -- set it via this command's
+    --value.customInstructions field. 'az sre instructions create' is a
+    different, unrelated, named/keyed 'commonPrompts' collection despite
+    the similar name -- see 'sre instructions create -h'.
+
+    :example: Set the portal's "Custom instructions" text box
+        az sre agent settings update -g myrg --agent-name myagent \\
+            --value '{"customInstructions": "Always cite the runbook section you used."}'
     """
 
     _args_schema = None
@@ -4502,25 +4512,53 @@ class HookDelete(_PinnedExtensionDelete):
     _args_schema = None
 
 
-# ---- sre instructions (portal: Extensions > Custom instructions) ----
+# ---- sre instructions (NOT the portal's "Custom instructions" box --
+# see the warning in _InstructionsGroup below) ----
 @register_command_group("sre instructions")
 class _InstructionsGroup(AAZCommandGroup):
-    """Manage the agent's always-on custom instructions.
+    """Manage named, reusable prompt snippets ('commonPrompts').
 
-    A single free-text block (up to 16384 bytes) appended to the agent's
-    default system prompt.
+    WARNING -- this is NOT the portal's single "Custom instructions" text
+    box (Build + setup > Settings). That real singleton is a different
+    field, 'customInstructions', on the agent's global settings object --
+    set it with 'az sre agent settings update --value
+    '{"customInstructions": "..."}'' (live-confirmed round-trip; see
+    'sre agent settings update -h'). This command group instead manages
+    'commonPrompts', a separate, named/keyed collection of reusable prompt
+    snippets -- confirmed to exist and round-trip correctly via the
+    control-plane's own ARM-proxy route, but confirmed (live, 2026-11-05
+    benchmark against the microsoft/sre-agent zava-aks-postgres lab) to be
+    an unrelated concept from the portal's singleton instructions box,
+    despite the similar name. A previous version of this CLI's docs
+    incorrectly implied the two were the same thing -- they are not.
     """
 
 
 @register_command("sre instructions create")
 class InstructionsCreate(_PinnedExtensionCreate):
-    """Create or update the agent's custom instructions.
+    """Create or update a named, reusable prompt snippet ('commonPrompts').
 
-    There is only one instructions block per agent; use the same --name
-    (e.g. "default") each time to update it in place, or pass --overwrite
-    to replace an existing one.
+    WARNING -- this does NOT set the portal's single "Custom instructions"
+    text box. That is a different field ('customInstructions') on the
+    agent's global settings object; set it instead with
+    'az sre agent settings update --value \\'{"customInstructions":
+    "..."}\\'''  (live-confirmed round-trip against a real agent,
+    2026-11-05). This command instead creates/updates one named entry in
+    'commonPrompts', a separate, keyed collection this CLI confirmed works
+    via the normal ARM-proxied route but which is unrelated to the
+    portal's singleton box.
 
-    :example: Set an agent's custom instructions
+    Use the same --name (e.g. "default") each time to update a given
+    snippet in place, or pass --overwrite to replace an existing one.
+
+    :example: Set an agent's global custom instructions (the portal's real
+        singleton text box -- NOT this command; shown here to avoid the
+        mix-up)
+        az sre agent settings update -g myrg --agent-name myagent \\
+            --value '{"customInstructions": "Always cite the runbook section you used."}'
+
+    :example: Create a named, reusable prompt snippet instead (what this
+        command actually does)
         az sre instructions create -g myrg --agent-name myagent --name default \\
             --value '{"prompt": "Always cite the runbook section you used."}'
 
@@ -4537,15 +4575,21 @@ class InstructionsCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "commonPrompts"
     _args_schema = None
     _VALUE_HELP = (
-        "Instructions as a JSON document of the form "
+        "Prompt snippet as a JSON document of the form "
         "{\"prompt\": \"...\"} -- the \"prompt\" field holds the free text "
-        "(confirmed live round-trip)."
+        "(confirmed live round-trip). NOT the portal's 'Custom "
+        "instructions' box -- use 'az sre agent settings update "
+        "--value \\'{\"customInstructions\": \"...\"}\\'' for that."
     )
 
 
 @register_command("sre instructions show")
 class InstructionsShow(_PinnedExtensionShow):
-    """Show the agent's custom instructions.
+    """Show a named, reusable prompt snippet ('commonPrompts').
+
+    WARNING -- NOT the portal's "Custom instructions" box; see
+    'sre instructions create -h'. For the real singleton, use
+    'az sre agent settings show' and read its 'customInstructions' field.
 
     :example: Show an agent's current custom instructions
         az sre instructions show -g myrg --agent-name myagent --name default
@@ -4557,7 +4601,10 @@ class InstructionsShow(_PinnedExtensionShow):
 
 @register_command("sre instructions list")
 class InstructionsList(_PinnedExtensionList):
-    """List the agent's custom instructions entries.
+    """List an agent's named, reusable prompt snippets ('commonPrompts').
+
+    WARNING -- NOT the portal's "Custom instructions" box; see
+    'sre instructions create -h'.
 
     :example: List an agent's custom instructions entries
         az sre instructions list -g myrg --agent-name myagent
@@ -4572,7 +4619,11 @@ class InstructionsList(_PinnedExtensionList):
     confirmation="Are you sure you want to perform this operation?",
 )
 class InstructionsDelete(_PinnedExtensionDelete):
-    """Delete the agent's custom instructions.
+    """Delete a named, reusable prompt snippet ('commonPrompts').
+
+    WARNING -- NOT the portal's "Custom instructions" box; see
+    'sre instructions create -h'. To clear the real singleton instead, use
+    'az sre agent settings update --value \\'{"customInstructions": ""}\\''.
 
     :example: Delete an agent's custom instructions
         az sre instructions delete -g myrg --agent-name myagent --name default

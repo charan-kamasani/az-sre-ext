@@ -50,7 +50,7 @@ Windows PowerShell note: inline JSON passed to any --value/--extended-properties
 | `hook` | Manage lifecycle hooks that run a prompt or script at a specific agent event. |
 | `identity` | Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls. |
 | `incident-filter` | Manage incident filters (portal: Incidents > "Triggers & response |
-| `instructions` | Manage the agent's always-on custom instructions. |
+| `instructions` | Manage named, reusable prompt snippets ('commonPrompts'). |
 | `knowledge` | Add files or web pages the agent can read and reason over. |
 | `managed-resource` | Let the agent's own managed identity monitor resources outside its own resource group. |
 | `network` | Control an SRE Agent's sandbox networking (preview). |
@@ -788,9 +788,9 @@ Syntax reference only -- see 'sre incident-filter create -h' for a known issue b
 
 ## `az sre instructions`
 
-Manage the agent's always-on custom instructions.
+Manage named, reusable prompt snippets ('commonPrompts').
 
-A single free-text block (up to 16384 bytes) appended to the agent's default system prompt.
+WARNING -- this is NOT the portal's single "Custom instructions" text box (Build + setup > Settings). That real singleton is a different field, 'customInstructions', on the agent's global settings object -- set it with 'az sre agent settings update --value '{"customInstructions": "..."}'' (live-confirmed round-trip; see 'sre agent settings update -h'). This command group instead manages 'commonPrompts', a separate, named/keyed collection of reusable prompt snippets -- confirmed to exist and round-trip correctly via the control-plane's own ARM-proxy route, but confirmed (live, 2026-11-05 benchmark against the microsoft/sre-agent zava-aks-postgres lab) to be an unrelated concept from the portal's singleton instructions box, despite the similar name. A previous version of this CLI's docs incorrectly implied the two were the same thing -- they are not.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -801,9 +801,9 @@ A single free-text block (up to 16384 bytes) appended to the agent's default sys
 
 ### `az sre instructions create`
 
-Create or update the agent's custom instructions.
+Create or update a named, reusable prompt snippet ('commonPrompts').
 
-There is only one instructions block per agent; use the same --name (e.g. "default") each time to update it in place, or pass --overwrite to replace an existing one.
+WARNING -- this does NOT set the portal's single "Custom instructions" text box. That is a different field ('customInstructions') on the agent's global settings object; set it instead with 'az sre agent settings update --value \'{"customInstructions": "..."}\''' (live-confirmed round-trip against a real agent, 2026-11-05). This command instead creates/updates one named entry in 'commonPrompts', a separate, keyed collection this CLI confirmed works via the normal ARM-proxied route but which is unrelated to the portal's singleton box. Use the same --name (e.g. "default") each time to update a given snippet in place, or pass --overwrite to replace an existing one.
 
 **Syntax**
 
@@ -814,14 +814,17 @@ There is only one instructions block per agent; use the same --name (e.g. "defau
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Instructions as a JSON document of the form {"prompt": "..."} -- the "prompt" field holds the free text (confirmed live round-trip). |
+| `--value` | String | Yes |  |  | Prompt snippet as a JSON document of the form {"prompt": "..."} -- the "prompt" field holds the free text (confirmed live round-trip). NOT the portal's 'Custom instructions' box -- use 'az sre agent settings update --value \'{"customInstructions": "..."}\'' for that. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**
 
-- Set an agent's custom instructions
+- Set an agent's global custom instructions (the portal's real
 
-  `az sre instructions create -g myrg --agent-name myagent --name default \ --value '{"prompt": "Always cite the runbook section you used."}'`
+  `singleton text box -- NOT this command; shown here to avoid the mix-up) az sre agent settings update -g myrg --agent-name myagent \ --value '{"customInstructions": "Always cite the runbook section you used."}'`
+- Create a named, reusable prompt snippet instead (what this
+
+  `command actually does) az sre instructions create -g myrg --agent-name myagent --name default \ --value '{"prompt": "Always cite the runbook section you used."}'`
 - Windows PowerShell -- same --value @file pattern as 'sre hook
 
   `create' (live-verified, recommended; see 'sre hook create -h' for why) '{"prompt": "Be concise."}' \| Set-Content -Path "$env:TEMP\instructions.json" az sre instructions create -g myrg --agent-name myagent --name default --value "@$env:TEMP\instructions.json" --overwrite true`
@@ -831,7 +834,9 @@ There is only one instructions block per agent; use the same --name (e.g. "defau
 
 ### `az sre instructions delete`
 
-Delete the agent's custom instructions.
+Delete a named, reusable prompt snippet ('commonPrompts').
+
+WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions create -h'. To clear the real singleton instead, use 'az sre agent settings update --value \'{"customInstructions": ""}\''.
 
 **Syntax**
 
@@ -852,7 +857,9 @@ Delete the agent's custom instructions.
 
 ### `az sre instructions list`
 
-List the agent's custom instructions entries.
+List an agent's named, reusable prompt snippets ('commonPrompts').
+
+WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions create -h'.
 
 **Syntax**
 
@@ -871,7 +878,9 @@ List the agent's custom instructions entries.
 
 ### `az sre instructions show`
 
-Show the agent's custom instructions.
+Show a named, reusable prompt snippet ('commonPrompts').
+
+WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions create -h'. For the real singleton, use 'az sre agent settings show' and read its 'customInstructions' field.
 
 **Syntax**
 
@@ -1520,7 +1529,7 @@ Show an SRE Agent's global settings.
 
 Create or update an SRE Agent's global settings.
 
-Always targets the agent's single settings object (there is no --name -- an agent has exactly one). Safe to call repeatedly; each call replaces the whole settings object, so include every field you want to keep, not just the one you're changing.
+Always targets the agent's single settings object (there is no --name -- an agent has exactly one). Safe to call repeatedly; each call replaces the whole settings object, so include every field you want to keep, not just the one you're changing. This is also where the portal's single "Custom instructions" text box (Build + setup > Settings) lives -- set it via this command's --value.customInstructions field. 'az sre instructions create' is a different, unrelated, named/keyed 'commonPrompts' collection despite the similar name -- see 'sre instructions create -h'.
 
 **Syntax**
 
@@ -1531,6 +1540,12 @@ Always targets the agent's single settings object (there is no --name -- an agen
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--value` | String | Yes |  |  | Global settings as a JSON document (confirmed via the control plane's own real round-trip integration test, GlobalSettingsExtensionTests.cs). All top-level fields are optional: toolPermissions, toolStatuses/skillStatuses (arrays of {"name": ..., "enabled": true/false}), customInstructions (string), approvalExpirationSetting ({"enabled": true/false, "approvalExpirationInMinutes": <number>}). CAUTION: if you include toolPermissions at all, it must have all three of 'allow'/'ask'/'deny' (each an array of tool-name strings, [] if unused) -- live-confirmed the real API rejects a partial toolPermissions object (e.g. just 'deny') with a misleading "unrecognized property" error. |
+
+**Examples**
+
+- Set the portal's "Custom instructions" text box
+
+  `az sre agent settings update -g myrg --agent-name myagent \ --value '{"customInstructions": "Always cite the runbook section you used."}'`
 
 ## `az sre automation http-trigger`
 
