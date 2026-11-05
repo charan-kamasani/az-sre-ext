@@ -34,7 +34,7 @@ helps['sre'] = """
 type: group
 short-summary: Manage Azure SRE Agent resources -- the agent itself, what it can access, how it's customized, who can use it, and how it's doing.
 long-summary: |-
-  Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "value"}') can fail with a confusing "unrecognized arguments" error -- a PowerShell/.cmd quoting quirk, not an az sre bug. Workaround: pass --value @path\\to\\file.json instead. See docs/operations.md's "Windows PowerShell: JSON quoting" section for details.
+  Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "value"}') can fail with a confusing "unrecognized arguments" error -- a PowerShell/.cmd quoting quirk, not an az sre bug. Workaround: pass --value @path\\to\\file.json instead.
 examples:
   - name: Create an agent with an Anthropic default model.
     text: |-

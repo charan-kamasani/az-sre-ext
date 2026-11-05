@@ -38,7 +38,7 @@ These Azure CLI global options apply to every command and are not repeated in ea
 
 Manage Azure SRE Agent resources -- the agent itself, what it can access, how it's customized, who can use it, and how it's doing.
 
-Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "value"}') can fail with a confusing "unrecognized arguments" error -- a PowerShell/.cmd quoting quirk, not an az sre bug. Workaround: pass --value @path\to\file.json instead. See docs/operations.md's "Windows PowerShell: JSON quoting" section for details.
+Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "value"}') can fail with a confusing "unrecognized arguments" error -- a PowerShell/.cmd quoting quirk, not an az sre bug. Workaround: pass --value @path\to\file.json instead.
 
 | Subgroup | Summary |
 | --- | --- |
@@ -171,7 +171,7 @@ Create, show, list, update, delete, start, and stop an agent.
 
 Create an SRE Agent.
 
-If neither --mi-system-assigned nor --mi-user-assigned is passed, this matches the Azure Portal's own default: it creates a brand-new Microsoft.ManagedIdentity/userAssignedIdentities resource for you and enables both system-assigned and user-assigned identities on the agent (identity.type = "SystemAssigned, UserAssigned"). Pass --mi-system-assigned/--mi-user-assigned explicitly to opt out of the auto-created identity.
+If neither --mi-system-assigned nor --mi-user-assigned is passed, this matches the Azure Portal's own default: it creates a brand-new Microsoft.ManagedIdentity/userAssignedIdentities resource for you and enables both system-assigned and user-assigned identities on the agent (identity.type = "SystemAssigned, UserAssigned"). Pass --mi-system-assigned/--mi-user-assigned explicitly to opt out of the auto-created identity. If --log-configuration is omitted, the agent is still created successfully (the service does not require it), but a warning is printed: agent threads remain available either way, but without an Application Insights link you won't get trace view or detailed tracing.
 
 **Syntax**
 
@@ -389,7 +389,7 @@ Covers scheduled tasks (run the agent on a timer) and HTTP triggers (run the age
 
 Connect an SRE Agent to an external data source it can query or act on.
 
-Supports Azure Data Explorer/Kusto (direct or via the Azure MCP server), the generic MCP server type (portal name: 'MCP server', a.k.a. 'User provided connector' -- GitHub, PagerDuty, ServiceNow, and other MCP-compatible endpoints), Office 365 Outlook, Microsoft Teams, IcM connector (incident management), DGrep, Log Analytics Workspace, EV2, Geneva Metrics, S360 connector, Documentation connector, and knowledge sources (text/file/web page/repository). Use 'sre connector create' to add one, 'sre connector list'/'sre connector show' to see what's connected (including OAuth consent status for connectors that need a sign-in). Note: this only covers the fixed, ARM-reachable connector catalog listed above. The portal's much larger "Additional connectors" catalog (Gmail, Yammer, OneDrive, SharePoint, Box, Power BI, Confluence, and 20+ others, almost all marked Preview) is a real, separate Connector Gateway platform the agent also integrates with, but it has no public control-plane API yet -- those connectors can only be created through the portal today, not this CLI. See docs/operations.md.
+Supports Azure Data Explorer/Kusto (direct or via the Azure MCP server), the generic MCP server type (portal name: 'MCP server', a.k.a. 'User provided connector' -- GitHub, PagerDuty, ServiceNow, and other MCP-compatible endpoints), Office 365 Outlook, Microsoft Teams, IcM connector (incident management), DGrep, Log Analytics Workspace, EV2, Geneva Metrics, S360 connector, Documentation connector, and knowledge sources (text/file/web page/repository). Use 'sre connector create' to add one, 'sre connector list'/'sre connector show' to see what's connected (including OAuth consent status for connectors that need a sign-in). Note: this only covers the fixed, ARM-reachable connector catalog listed above. The portal's much larger "Additional connectors" catalog (Gmail, Yammer, OneDrive, SharePoint, Box, Power BI, Confluence, and 20+ others, almost all marked Preview) is a real, separate Connector Gateway platform the agent also integrates with, but it has no public control-plane API yet -- those connectors can only be created through the portal today, not this CLI.
 
 | Verb | Exact syntax |
 | --- | --- |

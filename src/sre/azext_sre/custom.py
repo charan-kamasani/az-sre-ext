@@ -541,8 +541,41 @@ class _DefaultSystemIdentityMixin:
         super().pre_operations()
 
 
+class _LogConfigurationWarningMixin:
+    """Warns (never blocks) 'agent create' when --log-configuration is
+    omitted.
+
+    WHY: the Azure Portal marks "Application Insights" as a required field
+    in its create wizard, but live-confirmed the ARM API itself has no such
+    requirement -- a create with zero --log-configuration fully succeeds
+    (provisioningState: Succeeded, logConfiguration: null). Confirmed
+    directly with Dalibor Kovacevic (SRE Agent team, 2026-11-05): it's an
+    un-enforced default, not a hard dependency -- "shouldn't be a hard
+    block but we should warn." Follow-up clarified the actual tradeoff:
+    agent threads remain available either way (you can still inspect/dump
+    them), but without an Application Insights link you lose trace view
+    and detailed tracing. This mixin implements exactly that: a non-fatal
+    warning describing the real tradeoff, not a CLI-level requirement
+    (which would be more restrictive than the real API).
+    """
+
+    def pre_operations(self):
+        args = self.ctx.args
+        if not has_value(getattr(args, "log_configuration", None)):
+            logger.warning(
+                "No --log-configuration specified; the agent will be "
+                "created without an Application Insights link. This is not "
+                "required by the service -- agent threads remain available "
+                "either way -- but without it you won't get trace view or "
+                "detailed tracing for the agent. Pass --log-configuration "
+                "to link an Application Insights resource (see --help for "
+                "the expected shape)."
+            )
+        super().pre_operations()
+
+
 @register_command("sre agent create")
-class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _GeneratedCreate):
+class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
     If neither --mi-system-assigned nor --mi-user-assigned is passed, this
@@ -552,6 +585,11 @@ class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdenti
     (identity.type = "SystemAssigned, UserAssigned"). Pass
     --mi-system-assigned/--mi-user-assigned explicitly to opt out of the
     auto-created identity.
+
+    If --log-configuration is omitted, the agent is still created
+    successfully (the service does not require it), but a warning is
+    printed: agent threads remain available either way, but without an
+    Application Insights link you won't get trace view or detailed tracing.
 
     :example: Create an agent with an Anthropic default model
         az sre agent create --name myagent --resource-group myrg \\
@@ -856,7 +894,7 @@ class _ConnectorGroup(AAZCommandGroup):
     almost all marked Preview) is a real, separate Connector Gateway
     platform the agent also integrates with, but it has no public
     control-plane API yet -- those connectors can only be created
-    through the portal today, not this CLI. See docs/operations.md.
+    through the portal today, not this CLI.
     """
 
 
