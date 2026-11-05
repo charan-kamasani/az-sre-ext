@@ -595,7 +595,12 @@ class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdenti
 
 @register_command("sre agent update")
 class Update(_ModelProviderArgMixin, _GeneratedUpdate):
-    """Update an SRE Agent."""
+    """Update an SRE Agent.
+
+    :example: Switch an agent's default model to MicrosoftFoundry
+        az sre agent update --name myagent --resource-group myrg \\
+            --default-model "{provider:MicrosoftFoundry,name:gpt-5}"
+    """
 
     _args_schema = None
 
@@ -1519,7 +1524,11 @@ class _AgentSettingsGroup(AAZCommandGroup):
 
 @register_command("sre agent settings show")
 class AgentSettingsShow(AAZCommand):
-    """Show an SRE Agent's global settings."""
+    """Show an SRE Agent's global settings.
+
+    :example: Show an agent's global settings
+        az sre agent settings show --agent-name myagent --resource-group myrg
+    """
 
     _args_schema = None
 
@@ -2163,27 +2172,53 @@ class KnowledgeDelete(AAZCommand):
 
 @register_command("sre agent show")
 class Show(_GeneratedShow):
-    """Show the details of an SRE Agent."""
+    """Show the details of an SRE Agent.
+
+    :example: Show one agent's details
+        az sre agent show --name myagent --resource-group myrg
+    """
 
 
 @register_command("sre agent list")
 class List(_GeneratedList):
-    """List SRE Agents in a subscription or resource group."""
+    """List SRE Agents in a subscription or resource group.
+
+    :example: List all agents in a resource group
+        az sre agent list --resource-group myrg
+
+    :example: List all agents in the current subscription
+        az sre agent list
+    """
 
 
 @register_command("sre agent delete")
 class Delete(_GeneratedDelete):
-    """Delete an SRE Agent."""
+    """Delete an SRE Agent.
+
+    :example: Delete an agent after confirming interactively
+        az sre agent delete --name myagent --resource-group myrg
+
+    :example: Delete an agent without an interactive confirmation prompt
+        az sre agent delete --name myagent --resource-group myrg --yes
+    """
 
 
 @register_command("sre agent start")
 class Start(_GeneratedStart):
-    """Start a stopped SRE Agent."""
+    """Start a stopped SRE Agent.
+
+    :example: Start a stopped agent
+        az sre agent start --name myagent --resource-group myrg
+    """
 
 
 @register_command("sre agent stop")
 class Stop(_GeneratedStop):
-    """Stop a running SRE Agent."""
+    """Stop a running SRE Agent.
+
+    :example: Stop a running agent
+        az sre agent stop --name myagent --resource-group myrg
+    """
 
 
 @register_command("sre endpoint show")

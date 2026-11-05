@@ -216,6 +216,15 @@ Delete an SRE Agent.
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
+**Examples**
+
+- Delete an agent after confirming interactively
+
+  `az sre agent delete --name myagent --resource-group myrg`
+- Delete an agent without an interactive confirmation prompt
+
+  `az sre agent delete --name myagent --resource-group myrg --yes`
+
 ### `az sre agent list`
 
 List SRE Agents in a subscription or resource group.
@@ -229,6 +238,15 @@ List SRE Agents in a subscription or resource group.
 | `--next-token` | String | No |  |  | Token to specify where to start paginating. This is the token value from a previously truncated response. |
 | `--max-items` | String | No |  |  | Total number of items to return in the command's output. If the total number of items available is more than the value specified, a token is provided in the command's output. To resume pagination, provide the token value in `--next-token` argument of a subsequent command. |
 | `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List all agents in a resource group
+
+  `az sre agent list --resource-group myrg`
+- List all agents in the current subscription
+
+  `az sre agent list`
 
 ### `az sre agent list-models`
 
@@ -265,6 +283,12 @@ Show the details of an SRE Agent.
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
+**Examples**
+
+- Show one agent's details
+
+  `az sre agent show --name myagent --resource-group myrg`
+
 ### `az sre agent start`
 
 Start a stopped SRE Agent.
@@ -279,6 +303,12 @@ Start a stopped SRE Agent.
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
+**Examples**
+
+- Start a stopped agent
+
+  `az sre agent start --name myagent --resource-group myrg`
+
 ### `az sre agent stop`
 
 Stop a running SRE Agent.
@@ -292,6 +322,12 @@ Stop a running SRE Agent.
 | `--no-wait` | Flag | No |  |  | Do not wait for the long-running operation to finish. |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- Stop a running agent
+
+  `az sre agent stop --name myagent --resource-group myrg`
 
 ### `az sre agent update`
 
@@ -318,6 +354,12 @@ Update an SRE Agent.
 | `--log-configuration` | Object | No |  |  | Log configurations |
 | `--upgrade-channel` | String | No |  | `Preview`, `Stable` | The upgrade channel of the agent |
 | `--tags` | Dictionary | No |  |  | Resource tags. |
+
+**Examples**
+
+- Switch an agent's default model to MicrosoftFoundry
+
+  `az sre agent update --name myagent --resource-group myrg \ --default-model "{provider:MicrosoftFoundry,name:gpt-5}"`
 
 ### `az sre agent wait`
 
@@ -1524,6 +1566,12 @@ Show an SRE Agent's global settings.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- Show an agent's global settings
+
+  `az sre agent settings show --agent-name myagent --resource-group myrg`
 
 ### `az sre agent settings update`
 
