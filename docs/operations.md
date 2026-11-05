@@ -751,41 +751,82 @@ user didn't have the `gh` CLI installed and logged in, the command just
 failed outright. That's not acceptable for an `az` extension to depend on a
 separate third-party tool for a core flow.
 
-Fixed with the same layered, no-hard-dependency pattern `az staticwebapp`,
+Fixed with the same no-hard-dependency pattern `az staticwebapp`,
 `az containerapp github-action`, and `az functionapp deployment
 github-actions` already use -- `_github_token()` tries, in order:
 
 1. **Explicit/CI**: `--github-token`, or `GITHUB_TOKEN`/`GH_TOKEN` env vars.
-2. **Optional `gh` reuse**: only if `shutil.which("gh")` finds it installed
-   *and* already logged in -- silently reused for zero-prompt UX, but never
-   required.
-3. **Native GitHub OAuth Device Flow (RFC 8628)** fallback, implemented
+   This remains required for any non-interactive use (CI/CD pipelines,
+   scheduled jobs, headless containers) -- device flow needs a human in a
+   browser, so it can never substitute for this tier.
+2. **Native GitHub OAuth Device Flow (RFC 8628)** fallback, implemented
    directly in Python with `requests` + `webbrowser` -- no `gh` CLI, no
-   client secret. Reuses GitHub CLI's own public OAuth client ID (open
-   source, no secret needed for device-flow apps): posts to
-   `https://github.com/login/device/code`, prints the `user_code`, opens
-   `verification_uri` in the browser, then polls
+   client secret needed (device-flow apps are public clients by design).
+   Posts to `https://github.com/login/device/code`, prints the `user_code`,
+   opens `verification_uri` in the browser, then polls
    `https://github.com/login/oauth/access_token` until authorized.
 
-Live-verified end to end (2026-11-04) against a real agent
-(`mytestagent`/`ckamasani-publishtest`), both with `gh` reused (tier 2) and
-with `gh` deliberately removed from `PATH` to force the native device flow
-(tier 3) -- browser opened to GitHub's real Device Activation page, user
-authorized as `charan-kamasani`, and the flow returned a real `gho_...`
-access token with no `gh` CLI involved. 63 new unit tests added (250/250
-passing). The rest of this extension was also audited for similar
-dependencies: the Azure DevOps PAT path (`_devops_pat_token`) was already
-dependency-free (calls the vssps REST API directly, no `az devops`
-extension needed), and `requests` is a hard transitive dependency of
-`azure-cli-core` itself, not something this extension adds.
+An earlier version of this fix had a middle tier that opportunistically
+reused an installed, already-logged-in `gh` CLI's token (via `gh auth
+token`) for a zero-prompt experience. Dropped after team feedback (Paul/
+Preeti, 2026-11-04): a dual-mode token source (gh vs. device flow) adds
+environment-dependent ambiguity -- which path actually ran becomes a
+guessing game -- with no real benefit once the device flow alone already
+removes the hard `gh` dependency. Two tiers only, now.
+
+**Which OAuth App client ID is used, and why:** `_github_device_flow()`
+sends GitHub a `client_id` of `8d8e1f6000648c575489` -- the same public,
+already-registered client ID Azure CLI's own `az containerapp
+github-action add --login-with-github` uses (confirmed directly from
+`azure-cli`'s own source,
+`command_modules/containerapp/_github_oauth.py`). Reused deliberately
+("steal what's tried and true" -- Paul, 2026-11-04) instead of registering
+a new one. On GitHub's real consent screen this client ID displays as
+**"Azure CLI" by "AzureAppServiceCLI"** (confirmed live, 2026-11-04 --
+earlier notes in this doc assumed it would show "Azure Container Apps";
+that was wrong, GitHub's actual registered app name is the more generic
+"Azure CLI"). That label is accurate for this use case too, since `az sre
+repo connect` is itself an Azure CLI extension command.
+
+Deliberately **not** replicated from `az containerapp`: its encrypted,
+on-disk token cache (`github_token_cache`, Windows DPAPI). `repo connect`
+is a one-time setup per repo, not a repeatedly-invoked command like
+`github-action add`, so there is nothing worth caching -- and therefore
+nothing that needs encrypting, since the token is only ever held in memory
+for the single API call it's used for, then cleared (`token = None`)
+before the command returns.
+
+Live-verified end to end (2026-11-04) in two independent runs against a
+real agent (`mytestagent`/`ckamasani-publishtest`):
+
+- Standalone test of `_github_device_flow()` directly: produced a real
+  device code, user approved in browser, returned a real `gho_...` access
+  token -- confirming the device-flow mechanism works with `gh` entirely
+  absent from `PATH`.
+- A full, later `repo connect` run performed independently by the user in
+  their own terminal: printed a device code, browser flow through GitHub's
+  real "Authorize Azure CLI" consent screen (as `charan-kamasani`),
+  "Confirm access" 2FA step, and GitHub's "Congratulations, you're all
+  set!" success page -- then successfully created the `githubAuths` and
+  `repositories` extension resources on the agent, with the PAT correctly
+  redacted (`"pat": "******"`) in the command's own output.
+
+248 unit tests passing after the two-tier simplification (down from an
+earlier 250 with the dropped `gh`-reuse-specific test cases removed). The
+rest of this extension was also audited for similar dependencies: the
+Azure DevOps PAT path (`_devops_pat_token`) was already dependency-free
+(calls the vssps REST API directly, no `az devops` extension needed), and
+`requests` is a hard transitive dependency of `azure-cli-core` itself, not
+something this extension adds.
 
 ```bash
-# No token needed up front -- resolves one automatically (gh reuse, then
-# a browser-based device-flow prompt if gh isn't available):
+# No token needed up front -- opens a browser-based device-flow prompt
+# automatically if no token is already available:
 az sre repo connect --agent-name myagent --resource-group myrg \
   --repo-url https://github.com/contoso/my-service
 
-# Or pass a token explicitly (e.g. in CI, where no browser is available):
+# Or pass a token explicitly (required in CI, where no browser is
+# available -- device flow cannot run unattended):
 az sre repo connect --agent-name myagent --resource-group myrg \
   --repo-url https://github.com/contoso/my-service --github-token $env:GITHUB_TOKEN
 ```

@@ -1579,10 +1579,12 @@ class RepoConnectTests(unittest.TestCase):
 
 
 class GithubTokenResolutionTests(unittest.TestCase):
-    """_github_token's three-layer resolution (explicit/env -> optional 'gh'
-    reuse -> native OAuth Device Flow fallback) must try each layer in order
-    and stop at the first one that yields a token, per Paul's researched
-    no-hard-'gh'-dependency plan."""
+    """_github_token's two-layer resolution (explicit/env -> native OAuth
+    Device Flow) must try each layer in order and stop at the first one
+    that yields a token. The earlier 'gh' CLI reuse tier was dropped per
+    Paul/Preeti's feedback that a dual-mode token source (gh vs. device
+    flow) would add environment-dependent ambiguity with no real benefit,
+    since the device flow alone already removes the hard 'gh' dependency."""
 
     def setUp(self):
         self._env_backup = {k: os.environ.get(k) for k in ("GITHUB_TOKEN", "GH_TOKEN")}
@@ -1616,29 +1618,8 @@ class GithubTokenResolutionTests(unittest.TestCase):
         self.assertEqual(token, "gh-env-789")
         fake_device_flow.assert_not_called()
 
-    def test_falls_back_to_installed_gh_cli_when_no_explicit_or_env_token(self):
-        fake_result = SimpleNamespace(stdout="gh-cli-token\n")
-        with patch("shutil.which", return_value="/usr/bin/gh"), \
-             patch("subprocess.run", return_value=fake_result) as fake_run, \
-             patch("azext_sre.custom._github_device_flow") as fake_device_flow:
-            token = _github_token()
-        self.assertEqual(token, "gh-cli-token")
-        fake_device_flow.assert_not_called()
-        self.assertIn("gh", fake_run.call_args[0][0])
-
-    def test_falls_back_to_device_flow_when_gh_is_not_installed(self):
-        with patch("shutil.which", return_value=None), \
-             patch("azext_sre.custom._github_device_flow", return_value="device-flow-token") as fake_device_flow:
-            token = _github_token()
-        self.assertEqual(token, "device-flow-token")
-        fake_device_flow.assert_called_once()
-
-    def test_falls_back_to_device_flow_when_gh_is_installed_but_not_logged_in(self):
-        import subprocess
-
-        with patch("shutil.which", return_value="/usr/bin/gh"), \
-             patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, ["gh"])), \
-             patch("azext_sre.custom._github_device_flow", return_value="device-flow-token") as fake_device_flow:
+    def test_falls_back_to_device_flow_when_no_explicit_or_env_token(self):
+        with patch("azext_sre.custom._github_device_flow", return_value="device-flow-token") as fake_device_flow:
             token = _github_token()
         self.assertEqual(token, "device-flow-token")
         fake_device_flow.assert_called_once()

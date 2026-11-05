@@ -76,7 +76,7 @@ Portal: *Connect sources* (repositories, logs, Azure resources).
 Connect a code repository in one step — this detects GitHub vs. Azure DevOps
 from the URL and wires up authentication for you. For GitHub, no pre-existing
 `gh auth login` is required: this resolves a token automatically (an
-installed+logged-in `gh` is reused opportunistically if present, otherwise a
+explicit `--github-token`/`GITHUB_TOKEN`/`GH_TOKEN` if set, otherwise a
 browser-based GitHub OAuth Device Flow prompt runs — see
 [operations.md](operations.md#repo-connect-no-longer-hard-depends-on-the-gh-cli-github-oauth-device-flow)):
 

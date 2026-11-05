@@ -4575,15 +4575,17 @@ class PluginInstallDelete(_PinnedExtensionDelete):
 # "sre repo connect" -- a one-command golden path for the GitHub/Azure
 # DevOps repo-connection flow. Collapses what would otherwise be a manual
 # PAT-copy-paste + hand-built JSON payload into one flag because it already
-# has a locally authenticated credential available (gh auth token) and a
-# canonical payload shape it can build for the user.
+# resolves a credential itself (an explicit token or a native GitHub OAuth
+# Device Flow -- no 'gh' CLI needed) and a canonical payload shape it can
+# build for the user.
 #
 # Before this command, connecting one repo required two raw extension
 # creates the user had to build by hand:
 #   1. githubAuths/azureDevOpsAuths, with a manually-pasted PAT
 #   2. repositories, with a hand-written JSON --value
-# This command does both, using a token it fetches itself -- `gh auth token`
-# for GitHub, or a freshly minted
+# This command does both, using a token it fetches itself -- an explicit
+# --github-token/GITHUB_TOKEN env var or a native OAuth Device Flow for
+# GitHub, or a freshly minted
 # Azure DevOps PAT via the vssps.dev.azure.com REST API for Azure DevOps
 # (ADO PAT creation has no `az devops` command; see running notes section on
 # ADO PAT generation). Nothing here bypasses the real extension model --
@@ -4594,16 +4596,24 @@ class PluginInstallDelete(_PinnedExtensionDelete):
 ADO_PAT_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
 
 
-# GitHub CLI's own public OAuth App client ID -- cli/cli is open source and
-# this ID is published in its source (internal/config), with no client
-# secret (device flow apps don't need one). Reusing it here, per Paul's
-# guidance, lets az sre do a real GitHub OAuth Device Flow (RFC 8628)
-# without az depending on 'gh' being installed, and without us needing to
-# register and maintain our own GitHub OAuth App just for this.
-GITHUB_DEVICE_FLOW_CLIENT_ID = "178c6fc778ccc68e1d6a"
+# Azure CLI's own registered GitHub OAuth App client ID (and its scope
+# list) used by `az containerapp github-action add --login-with-github`,
+# reused here per Paul's "steal what's tried and true" guidance -- device
+# flow apps don't need a client secret, so this ID is already public in
+# azure-cli's own source (command_modules/containerapp/_github_oauth.py).
+# On GitHub's real consent screen this displays as "Azure CLI" by
+# "AzureAppServiceCLI" (confirmed live, 2026-11-04) -- an accurate label,
+# since `az sre repo connect` is itself an Azure CLI extension command.
+# Matches ACA's device-flow mechanism and error handling exactly; the only
+# thing intentionally not replicated is ACA's encrypted disk token cache,
+# since `repo connect` is a one-time setup per repo (not a
+# repeatedly-invoked command like `github-action add`), so there is
+# nothing worth caching or needing to encrypt in the first place.
+GITHUB_DEVICE_FLOW_CLIENT_ID = "8d8e1f6000648c575489"
+GITHUB_DEVICE_FLOW_SCOPES = "admin:repo_hook repo workflow"
 
 
-def _github_device_flow(hostname="github.com", scope="repo"):
+def _github_device_flow(hostname="github.com", scope=GITHUB_DEVICE_FLOW_SCOPES):
     """Native GitHub OAuth Device Flow (RFC 8628) -- no 'gh' CLI, no client
     secret. Prints a user code, opens the verification page in a browser,
     then polls until the user approves it there."""
@@ -4660,48 +4670,22 @@ def _github_device_flow(hostname="github.com", scope="repo"):
     raise CLIError("GitHub device flow authorization timed out before you approved it.")
 
 
-def _github_token(account=None, explicit_token=None, hostname="github.com"):
-    """Resolve a GitHub token with no hard 'gh' CLI dependency, in three
-    layers (per Paul's researched guidance, matching how az staticwebapp /
-    az containerapp github-action / az functionapp deployment github-actions
-    already avoid this dependency):
+def _github_token(explicit_token=None, hostname="github.com"):
+    """Resolve a GitHub token with no 'gh' CLI dependency at all, in two
+    layers (per Paul/Preeti's feedback: a 'gh' CLI reuse tier would just add
+    a second, environment-dependent code path -- dropped in favor of one
+    deterministic fallback):
 
     1. Explicit/CI first: --github-token, or GITHUB_TOKEN/GH_TOKEN env vars.
-    2. Opportunistic 'gh' check (optional): if 'gh' happens to be installed
-       and logged in, silently reuse it for a zero-prompt experience -- but
-       this is never required.
-    3. Native GitHub OAuth Device Flow fallback: works with nothing but a
+    2. Native GitHub OAuth Device Flow fallback: works with nothing but a
        web browser, no 'gh' CLI and no client secret needed.
     """
-    import shutil
-    import subprocess
-
     if explicit_token:
         return explicit_token
     for env_var in ("GITHUB_TOKEN", "GH_TOKEN"):
         env_token = os.environ.get(env_var)
         if env_token:
             return env_token
-
-    if shutil.which("gh"):
-        command = ["gh", "auth", "token", "--hostname", hostname]
-        if account:
-            command.extend(("--user", account))
-        environment = os.environ.copy()
-        environment.pop("GITHUB_TOKEN", None)
-        try:
-            result = subprocess.run(
-                command,
-                check=True,
-                capture_output=True,
-                text=True,
-                env=environment,
-            )
-            token = result.stdout.strip()
-            if token:
-                return token
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            pass  # fall through to the device flow -- 'gh' existing doesn't mean it's logged in
 
     return _github_device_flow(hostname=hostname)
 
@@ -4768,19 +4752,18 @@ def _detect_repo_provider(repo_url):
 class RepoConnect(AAZCommand):
     """Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 
-    For GitHub, resolves a token with no hard 'gh'/'az' CLI dependency, in
-    layers: an explicit --github-token (or GITHUB_TOKEN/GH_TOKEN env var)
-    first; otherwise an installed 'gh auth token' is reused opportunistically
-    if present; otherwise a native GitHub OAuth Device Flow runs in your
-    browser (just open the printed URL and enter the code -- no 'gh' CLI
-    install required). For Azure DevOps, mints a fresh PAT via the Azure
-    DevOps REST API, or uses a managed identity. Either way, this wires up
-    both the auth extension and the repositories extension for you, instead
-    of requiring two manual hand-built JSON payloads.
+    For GitHub, resolves a token with no 'gh'/'az' CLI dependency at all, in
+    two layers: an explicit --github-token (or GITHUB_TOKEN/GH_TOKEN env var)
+    first; otherwise a native GitHub OAuth Device Flow runs in your browser
+    (just open the printed URL and enter the code -- no 'gh' CLI install
+    required). For Azure DevOps, mints a fresh PAT via the Azure DevOps REST
+    API, or uses a managed identity. Either way, this wires up both the auth
+    extension and the repositories extension for you, instead of requiring
+    two manual hand-built JSON payloads.
 
     :example: Connect a GitHub repo (provider auto-detected from the URL;
-        resolves a token automatically -- explicit flag, 'gh' reuse, or a
-        browser-based device-flow prompt, in that order)
+        resolves a token automatically -- explicit flag, or a browser-based
+        device-flow prompt, in that order)
         az sre repo connect --agent-name myagent --resource-group myrg \\
             --repo-url https://github.com/contoso/my-service
 
@@ -4834,19 +4817,13 @@ class RepoConnect(AAZCommand):
             options=["--branch"],
             help="Branch to check out. Defaults to the repo's default branch.",
         )
-        schema.github_account = AAZStrArg(
-            options=["--github-account"],
-            help="GitHub account to use when 'gh' is logged into more than one "
-            "(GitHub repos only; only used by the optional 'gh auth token "
-            "--user' reuse step -- ignored otherwise).",
-        )
         schema.github_token = AAZStrArg(
             options=["--github-token"],
             help="GitHub token to use directly (GitHub repos only). No 'gh' "
             "CLI or Azure CLI needed when this, or the GITHUB_TOKEN/GH_TOKEN "
-            "env vars, are set. If omitted, this command tries an installed "
-            "'gh auth token' opportunistically, then falls back to a native "
-            "GitHub OAuth Device Flow in your browser -- no 'gh' required.",
+            "env vars, are set. If omitted, this command falls back to a "
+            "native GitHub OAuth Device Flow in your browser -- no 'gh' "
+            "required.",
         )
         schema.devops_organization = AAZStrArg(
             options=["--devops-organization"],
@@ -4896,7 +4873,6 @@ class RepoConnect(AAZCommand):
         provider = _arg_value(self.ctx.args.provider) or _detect_repo_provider(repo_url)
         display_name = _arg_value(self.ctx.args.display_name) or repo_url.rstrip("/").rsplit("/", 1)[-1]
         branch = _arg_value(self.ctx.args.branch)
-        github_account = _arg_value(self.ctx.args.github_account)
         github_token = _arg_value(self.ctx.args.github_token)
         devops_organization = _arg_value(self.ctx.args.devops_organization)
         devops_auth_type = _arg_value(self.ctx.args.devops_auth_type) or "pat"
@@ -4905,7 +4881,7 @@ class RepoConnect(AAZCommand):
         devops_federated_tenant_id = _arg_value(self.ctx.args.devops_federated_tenant_id)
 
         if provider == "GitHub":
-            token = _github_token(account=github_account, explicit_token=github_token)
+            token = _github_token(explicit_token=github_token)
             try:
                 auth_value = json.dumps({"authType": "Pat", "pat": token})
             finally:
