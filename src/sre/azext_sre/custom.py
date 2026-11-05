@@ -578,19 +578,6 @@ class _LogConfigurationWarningMixin:
 class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
-    If neither --mi-system-assigned nor --mi-user-assigned is passed, this
-    matches the Azure Portal's own default: it creates a brand-new
-    Microsoft.ManagedIdentity/userAssignedIdentities resource for you and
-    enables both system-assigned and user-assigned identities on the agent
-    (identity.type = "SystemAssigned, UserAssigned"). Pass
-    --mi-system-assigned/--mi-user-assigned explicitly to opt out of the
-    auto-created identity.
-
-    If --log-configuration is omitted, the agent is still created
-    successfully (the service does not require it), but a warning is
-    printed: agent threads remain available either way, but without an
-    Application Insights link you won't get trace view or detailed tracing.
-
     :example: Create an agent with an Anthropic default model
         az sre agent create --name myagent --resource-group myrg \\
             --location eastus2 --default-model "{provider:anthropic,name:automatic}"
@@ -626,6 +613,11 @@ class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdenti
             "--mi-system-assigned are both omitted, a new user-assigned "
             "identity is auto-created and both are enabled, matching the "
             "portal's own default."
+        )
+        schema.log_configuration._help["short-summary"] = (
+            "Log configurations. If omitted, the agent is created without "
+            "an Application Insights link (not required by the service, "
+            "but you lose trace view -- a warning is printed)."
         )
         cls._args_schema = schema
         return cls._args_schema
@@ -877,24 +869,10 @@ def _normalize_data_connector_type(value):
 class _ConnectorGroup(AAZCommandGroup):
     """Connect an SRE Agent to an external data source it can query or act on.
 
-    Supports Azure Data Explorer/Kusto (direct or via the Azure MCP server),
-    the generic MCP server type (portal name: 'MCP server', a.k.a. 'User
-    provided connector' -- GitHub, PagerDuty, ServiceNow, and other
-    MCP-compatible endpoints), Office 365 Outlook, Microsoft Teams, IcM
-    connector (incident management), DGrep, Log Analytics Workspace, EV2,
-    Geneva Metrics, S360 connector, Documentation connector, and knowledge
-    sources (text/file/web page/repository). Use 'sre connector create' to
-    add one, 'sre connector list'/'sre connector show' to see what's
-    connected (including OAuth consent status for connectors that need a
-    sign-in).
-
-    Note: this only covers the fixed, ARM-reachable connector catalog listed
-    above. The portal's much larger "Additional connectors" catalog (Gmail,
-    Yammer, OneDrive, SharePoint, Box, Power BI, Confluence, and 20+ others,
-    almost all marked Preview) is a real, separate Connector Gateway
-    platform the agent also integrates with, but it has no public
-    control-plane API yet -- those connectors can only be created
-    through the portal today, not this CLI.
+    Use 'sre connector create' to add one, 'sre connector list'/'show' to
+    see what's connected (see --help on those for the full supported type
+    list). The portal's larger "Additional connectors" catalog (Gmail,
+    SharePoint, OneDrive, etc.) has no public API yet -- portal-only.
     """
 
 
@@ -1323,11 +1301,7 @@ def _annotate_connector_consent_status(connector):
 @register_command("sre connector show")
 class ConnectorShow(_GeneratedConnectorShow):
     """Show the details of an Agent Connector, including OAuth consent
-    status (consentStatus: Consented/PendingConsent) for EntraOAuth-backed
-    Mcp connectors. If PendingConsent, a warning is printed with a portal
-    link to finish the sign-in -- the CLI cannot complete OAuth consent
-    itself, since the service only exposes it as an interactive browser
-    flow, not a public ARM action."""
+    status for EntraOAuth-backed Mcp connectors."""
 
     _args_schema = None
 
@@ -1418,12 +1392,8 @@ class ConnectorListSecret(_ConnectorNameAliasMixin, _GeneratedConnectorListSecre
 class _IdentityGroup(AAZCommandGroup):
     """Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls.
 
-    A managed identity is the credential the agent itself runs as when it
-    calls Azure APIs on your behalf (for example, to read a monitored
-    resource). Use 'sre identity assign' to turn one on (system-assigned
-    and/or user-assigned), 'sre identity show' to see what's assigned, and
-    'sre identity remove' to turn it off. Not to be confused with 'sre
-    access' (who can manage/use the agent) or 'sre repo connect' (repo auth).
+    Not to be confused with 'sre access' (who can manage/use the agent) or
+    'sre repo connect' (repo auth).
     """
 
 
@@ -1605,16 +1575,10 @@ class AgentSettingsShow(AAZCommand):
 class AgentSettingsUpdate(AAZCommand):
     """Create or update an SRE Agent's global settings.
 
-    Always targets the agent's single settings object (there is no --name --
-    an agent has exactly one). Safe to call repeatedly; each call replaces
-    the whole settings object, so include every field you want to keep, not
-    just the one you're changing.
-
-    This is also where the portal's single "Custom instructions" text box
-    (Build + setup > Settings) lives -- set it via this command's
-    --value.customInstructions field. 'az sre instructions create' is a
-    different, unrelated, named/keyed 'commonPrompts' collection despite
-    the similar name -- see 'sre instructions create -h'.
+    Always targets the agent's single settings object (there is no --name).
+    Each call replaces the whole object, so include every field you want
+    to keep. Sets the portal's "Custom instructions" box via
+    --value.customInstructions (unrelated to 'sre instructions create').
 
     :example: Set the portal's "Custom instructions" text box
         az sre agent settings update -g myrg --agent-name myagent \\
@@ -1837,10 +1801,7 @@ class _ManagedResourceGroup(AAZCommandGroup):
     """Let the agent's own managed identity monitor resources outside its own resource group.
 
     Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles
-    together (the same pair, no individual role choice) on a subscription,
-    resource group, or management group. Use 'sre managed-resource grant' to
-    add a scope, 'sre managed-resource list' to see what's granted, and 'sre
-    managed-resource revoke' to remove it.
+    together on a subscription, resource group, or management group.
     """
 
 
@@ -2116,13 +2077,7 @@ class KnowledgeShow(AAZCommand):
 
 @register_command("sre knowledge list")
 class KnowledgeList(AAZCommand):
-    """List an SRE Agent's knowledge sources (files and web pages).
-
-    Self-invokes 'sre connector list' (knowledge items are connectors under
-    the hood -- see module comment above) and filters to just the
-    Knowledge* dataConnectorType values, so non-knowledge connectors
-    (Kusto/Mcp/etc.) configured on the same agent don't show up here.
-    """
+    """List an SRE Agent's knowledge sources (files and web pages)."""
 
     _args_schema = None
 
@@ -2263,20 +2218,9 @@ class Stop(_GeneratedStop):
 class GetConnection(AAZCommand):
     """Resolve and save an SRE Agent's data-plane connection.
 
-    Reads the agent's control-plane resource (ARM), extracts the
-    'agentEndpoint' property (the data-plane base URL, pattern
-    'https://{name}--{id}.{hash}.{region}.azuresre.ai' -- see running notes
-    section 1a), and writes it to a local connections file for the
-    separate, standalone data-plane 'sre' CLI to read. Mirrors
-    'az aks get-credentials' writing kubeconfig for kubectl: the control
-    plane and data plane are two different CLIs/binaries by design (see
-    running notes section 1), and this command is their only bridge.
-
-    Renamed from 'sre connection show' to 'sre endpoint show' per live
-    naming feedback: seeing 'connection' and 'connector' listed next to
-    each other in the command reference was a guaranteed source of
-    confusion, and this command is really just resolving the agent's
-    endpoint URL.
+    Mirrors 'az aks get-credentials' writing kubeconfig for kubectl: the
+    control plane and data plane are separate CLIs/binaries, and this
+    command is their only bridge.
 
     :example: Resolve and save the data-plane endpoint for an agent
         az sre endpoint show --agent-name myagent --resource-group myrg
@@ -2376,11 +2320,6 @@ class GetConnection(AAZCommand):
 class ListUsage(AAZCommand):
     """List monthly or daily agent-unit usage for an SRE Agent.
 
-    Wraps the dedicated 'usages'/'dailyusages' read-only ARM child
-    collections (confirmed real in running notes section 1a) -- these are
-    plain GETs with no Create/Update verb, so aaz-dev-tools has nothing to
-    anchor a generated command group on. Hand-written instead.
-
     :example: List this month's usage for an agent
         az sre usage list --agent-name myagent --resource-group myrg
     """
@@ -2452,10 +2391,7 @@ class _AccessGroup(AAZCommandGroup):
 class _EndpointGroup(AAZCommandGroup):
     """Resolve the URL used to actually talk to an SRE Agent's data plane.
 
-    Every agent has a control-plane (ARM) resource and a separate
-    data-plane endpoint it runs on. Use 'sre endpoint show' to look up
-    and save that live endpoint -- for example, before calling the agent
-    directly or configuring another tool to talk to it.
+    Use 'sre endpoint show' to look up and save that live endpoint.
     """
 
 
@@ -2472,10 +2408,8 @@ class _UsageGroup(AAZCommandGroup):
 class _NetworkGroup(AAZCommandGroup):
     """Control an SRE Agent's sandbox networking (preview).
 
-    Configures VNet injection and the sandbox's outbound (egress)
-    allowlist -- the network the agent's own sandboxed tool/code execution
-    can reach, not the agent resource's own inbound access. Use 'sre
-    network update' to change these settings.
+    Configures VNet injection and outbound egress for the agent's own
+    sandboxed tool/code execution -- not the agent resource's inbound access.
     """
 
 
@@ -2483,11 +2417,7 @@ class _NetworkGroup(AAZCommandGroup):
 class _RepoGroup(AAZCommandGroup):
     """Connect a code repository so the agent can read source during investigations.
 
-    'sre repo connect' supports GitHub and Azure DevOps in a single step (it
-    wires up both the auth and the repository extension for you). GitLab
-    repos are also supported at the data-plane level (a 'repositories'
-    extension resource, same as GitHub/Azure DevOps), but this CLI doesn't
-    yet expose a path to create one.
+    Supports GitHub and Azure DevOps. GitLab isn't exposed by this CLI yet.
     """
 
 
@@ -2564,13 +2494,6 @@ class _RoleAssignmentScopeCommand(AAZCommand):
 class GrantAccess(_RoleAssignmentScopeCommand):
     """Grant a built-in SRE Agent RBAC role to a user, group, or principal.
 
-    Thin convenience wrapper over 'az role assignment create' that builds
-    the agent's full resource-ID scope for you (see running notes section
-    0's "Role assignment" row) -- not a new ARM operation, just a shortcut
-    so callers do not need to construct the scope string by hand. Pass
-    --assignee-me to grant yourself access without looking up your own
-    object ID first.
-
     :example: Grant yourself admin access to an agent
         az sre access grant --name myagent --resource-group myrg --role admin --assignee-me
 
@@ -2603,11 +2526,6 @@ class GrantAccess(_RoleAssignmentScopeCommand):
 class RevokeAccess(_RoleAssignmentScopeCommand):
     """Revoke a built-in SRE Agent RBAC role from a user, group, or principal.
 
-    Mirrors 'access grant': thin convenience wrapper over 'az role
-    assignment delete' that builds the agent's full resource-ID scope for
-    you, so callers do not need to construct the scope string (or look up
-    their own object ID, via --assignee-me) by hand.
-
     :example: Revoke a user's access to an agent
         az sre access revoke --name myagent --resource-group myrg --role user --assignee someone@contoso.com
     """
@@ -2636,13 +2554,7 @@ class RevokeAccess(_RoleAssignmentScopeCommand):
 @register_command("sre access list")
 class AccessList(AAZCommand):
     """List who currently has access to an SRE Agent -- every role
-    assignment scoped to the agent itself, across all four built-in roles
-    (admin, user, author, reader).
-
-    Thin convenience wrapper over 'az role assignment list --scope
-    <agent-resource-id>' (the agent's own resource ID, resolved for you via
-    'sre agent show'), the same way 'access grant'/'access revoke' build
-    that scope automatically.
+    assignment scoped to the agent itself.
 
     :example: List everyone with access to an agent
         az sre access list --name myagent --resource-group myrg
@@ -2677,15 +2589,6 @@ class AccessList(AAZCommand):
 @register_command("sre network update")
 class UpdateNetwork(AAZCommand):
     """Configure VNet injection and sandbox egress for an SRE Agent (preview).
-
-    Hand-written, NOT generated -- there is no public swagger for the
-    api-version that actually supports these fields in production
-    (2026-11-01-preview; see NETWORK_API_VERSION comment above). Does a
-    real ARM read-modify-write (GET then full PUT, matching the pattern
-    the generated 'agent update' command itself uses for every other
-    property) directly against that api-version, merging only the
-    networking properties the caller actually supplied and leaving
-    everything else on the resource untouched.
 
     :example: Limit the agent's sandbox egress to one allowed host
         az sre network update --name myagent --resource-group myrg \\
@@ -3968,11 +3871,8 @@ class ToolDelete(_PinnedExtensionDelete):
 class _AutomationGroup(AAZCommandGroup):
     """Manage agent automations.
 
-    Covers scheduled tasks (run the agent on a timer) and HTTP triggers
-    (run the agent from an inbound webhook). Incident filters live under
-    'az sre incident-filter' instead. Subagents, release/S360 triggers,
-    and incident retrospectives aren't exposed by this CLI -- use the
-    portal or srectl for those.
+    Covers scheduled tasks and HTTP triggers. Incident filters live under
+    'az sre incident-filter' instead.
     """
 
 
@@ -4131,10 +4031,6 @@ class _IncidentFilterGroup(AAZCommandGroup):
     """Manage incident filters (portal: Incidents > "Triggers & response
     plans"): match incoming incidents by platform/title/team/etc. and
     route matches to a handling agent.
-
-    Incident handlers are a legacy predecessor the service is migrating
-    away from and are intentionally not exposed here. See 'sre
-    incident-filter create -h' for the full --value shape.
     """
 
 
@@ -4142,14 +4038,10 @@ class _IncidentFilterGroup(AAZCommandGroup):
 class IncidentFilterCreate(_PinnedExtensionCreate):
     """Create or update an incident filter.
 
-    KNOWN ISSUE (live-confirmed): every schema-valid payload tried against a
-    real agent -- including the minimal {"incidentPlatform": "Icm"} -- is
-    rejected server-side with a generic Bad Request
-    ("InvalidRequestParameter"/"The extension configuration is invalid."),
-    even though the shape matches _VALUE_HELP and the real E2E test fixtures
-    this was derived from (IcmSetupFixture.cs). No working example payload
-    has been found yet; treat 'incidentFilters' as unverified end-to-end
-    until this is root-caused with the data-plane team.
+    KNOWN ISSUE (live-confirmed): every payload tried against a real agent
+    is rejected server-side with a generic Bad Request, even when it
+    matches the documented shape. Treat 'incidentFilters' as unverified
+    end-to-end for now.
     """
 
     _EXTENSION_TYPE = "incidentFilters"
@@ -4365,10 +4257,7 @@ class _SubagentGroup(AAZCommandGroup):
     """Manage named sub-agents the meta-agent can hand off work to.
 
     A sub-agent is a scoped specialist with its own instructions, tools,
-    and skills -- the portal's Agent Canvas "Create subagent" dialog. Use
-    'sre subagent create -h' for the full --value shape, including how to
-    attach a per-subagent PreToolUse hook (the dialog's "Manage Hooks"
-    button) via --pre-tool-use-script-file.
+    and skills -- the portal's Agent Canvas "Create subagent" dialog.
     """
 
 
@@ -4597,18 +4486,8 @@ class _InstructionsGroup(AAZCommandGroup):
     """Manage named, reusable prompt snippets ('commonPrompts').
 
     WARNING -- this is NOT the portal's single "Custom instructions" text
-    box (Build + setup > Settings). That real singleton is a different
-    field, 'customInstructions', on the agent's global settings object --
-    set it with 'az sre agent settings update --value
-    '{"customInstructions": "..."}'' (live-confirmed round-trip; see
-    'sre agent settings update -h'). This command group instead manages
-    'commonPrompts', a separate, named/keyed collection of reusable prompt
-    snippets -- confirmed to exist and round-trip correctly via the
-    control-plane's own ARM-proxy route, but confirmed (live, 2026-11-05
-    benchmark against the microsoft/sre-agent zava-aks-postgres lab) to be
-    an unrelated concept from the portal's singleton instructions box,
-    despite the similar name. A previous version of this CLI's docs
-    incorrectly implied the two were the same thing -- they are not.
+    box. That is a different field, 'customInstructions', on the agent's
+    global settings object -- set it with 'az sre agent settings update'.
     """
 
 
@@ -4617,14 +4496,7 @@ class InstructionsCreate(_PinnedExtensionCreate):
     """Create or update a named, reusable prompt snippet ('commonPrompts').
 
     WARNING -- this does NOT set the portal's single "Custom instructions"
-    text box. That is a different field ('customInstructions') on the
-    agent's global settings object; set it instead with
-    'az sre agent settings update --value \\'{"customInstructions":
-    "..."}\\'''  (live-confirmed round-trip against a real agent,
-    2026-11-05). This command instead creates/updates one named entry in
-    'commonPrompts', a separate, keyed collection this CLI confirmed works
-    via the normal ARM-proxied route but which is unrelated to the
-    portal's singleton box.
+    text box. Use 'az sre agent settings update' for that instead.
 
     Use the same --name (e.g. "default") each time to update a given
     snippet in place, or pass --overwrite to replace an existing one.
@@ -5064,14 +4936,8 @@ def _detect_repo_provider(repo_url):
 class RepoConnect(AAZCommand):
     """Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 
-    For GitHub, resolves a token with no 'gh'/'az' CLI dependency at all, in
-    two layers: an explicit --github-token (or GITHUB_TOKEN/GH_TOKEN env var)
-    first; otherwise a native GitHub OAuth Device Flow runs in your browser
-    (just open the printed URL and enter the code -- no 'gh' CLI install
-    required). For Azure DevOps, mints a fresh PAT via the Azure DevOps REST
-    API, or uses a managed identity. Either way, this wires up both the auth
-    extension and the repositories extension for you, instead of requiring
-    two manual hand-built JSON payloads.
+    If no GitHub token is supplied, a browser-based OAuth device-flow
+    sign-in prompt runs automatically (no 'gh' CLI required).
 
     :example: Connect a GitHub repo (provider auto-detected from the URL;
         resolves a token automatically -- explicit flag, or a browser-based
