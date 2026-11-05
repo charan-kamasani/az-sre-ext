@@ -387,7 +387,7 @@ Use 'sre connector create' to add one, 'sre connector list'/'show' to see what's
 
 | Verb | Exact syntax |
 | --- | --- |
-| `create` | `az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}] [--tool-access {false,true}]` |
+| `create` | `az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}] [--tool-access {false,true}] [--bearer-token <value>] [--managed-identity-auth {false,true}] [--mi-token-scope <value>] [--oauth-dcr {false,true}] [--oauth-scopes <value>] [--oauth-client-name <value>]` |
 | `delete` | `az sre connector delete [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--yes]` |
 | `list` | `az sre connector list [--next-token <value>] [--max-items <value>] --agent-name <value> --resource-group <value>` |
 | `list-secret` | `az sre connector list-secret --agent-name <value> --name <value> --resource-group <value>` |
@@ -400,7 +400,7 @@ Create an Agent Connector.
 
 **Syntax**
 
-`az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}] [--tool-access {false,true}]`
+`az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}] [--tool-access {false,true}] [--bearer-token <value>] [--managed-identity-auth {false,true}] [--mi-token-scope <value>] [--oauth-dcr {false,true}] [--oauth-scopes <value>] [--oauth-client-name <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -417,6 +417,12 @@ Create an Agent Connector.
 | `--mcp-endpoint` | String | No |  |  | For --data-connector-type Mcp: the MCP server's HTTP endpoint URL. Builds both --data-source and the nested extended-properties.transport/endpoint the service actually requires (confirmed live: a bare --data-source alone is rejected with 'Endpoint value is required for MCP connector with HTTP transport.'). |
 | `--github` | Boolean | No |  | `false`, `true` | For --data-connector-type Mcp: shortcut for --mcp-endpoint pointed at the real public GitHub Copilot MCP server (https://api.githubcopilot.com/mcp/). |
 | `--tool-access` | Boolean | No |  | `false`, `true` | For --data-connector-type KustoClient/'Azure Data Explorer': shortcut for the portal's 'Allow agent to use query tools from this connector' checkbox (Review + add step). Builds extended-properties.toolsVisibleToMetaAgent -- true sets it to ['*'], false to [] (confirmed live: both values persist and read back correctly). |
+| `--bearer-token` | String | No |  |  | For --data-connector-type Mcp: a static bearer token/PAT/API key sent on every request to the MCP server (the portal wizard's 'Bearer token' authentication method). Builds extended-properties.authType=BearerToken + bearerToken. |
+| `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For --data-connector-type Mcp: authenticate to the MCP server using the agent's managed identity (the portal wizard's 'Managed identity' authentication method; combine with --identity to pick a user-assigned identity instead of the system-assigned default, same as other connector types). Builds extended-properties.authType=AzureARM. Implied by --mi-token-scope if that is passed alone. |
+| `--mi-token-scope` | String | No |  |  | For --data-connector-type Mcp with --managed-identity-auth: the Azure AD token scope/audience to request (the portal wizard's 'Azure AD token scope' free-text field). Builds extended-properties.armScope. Defaults to 'https://management.azure.com/.default' if omitted, matching the portal's own default. |
+| `--oauth-dcr` | Boolean | No |  | `false`, `true` | For --data-connector-type Mcp: use OAuth with Dynamic Client Registration (the portal wizard's 'OAuth (dynamic client registration)' authentication method -- the one that shows a real browser 'Authorize' consent redirect; pre-registered client IDs/secrets are not supported, matching the portal's own text). Builds extended-properties.authType=SpecOAuth. Consent is completed afterwards in the portal, not by this command. |
+| `--oauth-scopes` | String | No |  |  | For --data-connector-type Mcp with --oauth-dcr true: comma-separated OAuth scopes to request during the DCR consent flow. Builds extended-properties.scopes. |
+| `--oauth-client-name` | String | No |  |  | For --data-connector-type Mcp with --oauth-dcr true: the client name to register during Dynamic Client Registration. Builds extended-properties.dcrClientName. Optional -- the service picks a default name if omitted. |
 
 **Examples**
 
@@ -432,6 +438,15 @@ Create an Agent Connector.
 - Connect a custom MCP server by its own endpoint (live-verified payload)
 
   `az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp-custom --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp"`
+- Connect a custom MCP server using a static bearer token/PAT
+
+  `(portal's "Bearer token" authentication method) az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp-bearer --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --bearer-token "$MY_SERVER_TOKEN"`
+- Connect a custom MCP server using the agent's managed identity
+
+  `(portal's "Managed identity" authentication method; combine with --identity to use a user-assigned identity instead of the system-assigned default) az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp-mi --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --managed-identity-auth true --mi-token-scope "api://myserver/.default"`
+- Connect a custom MCP server using OAuth with Dynamic Client
+
+  `Registration (portal's "OAuth (dynamic client registration)" authentication method -- finish consent afterwards in the portal) az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp-oauth --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" --oauth-dcr true`
 - Connect a single Kusto/Azure Data Explorer cluster+database directly
 
   `(legacy 'Kusto' type, as opposed to the default 'KustoClient'/"Azure Data Explorer" type above -- --data-source must include the database name, live-verified payload) az sre connector create --agent-name myagent --resource-group myrg \ --name my-cluster --data-connector-type Kusto \ --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"`

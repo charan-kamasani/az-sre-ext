@@ -2636,6 +2636,93 @@ class ConnectorConvenienceArgsTests(unittest.TestCase):
             self._run(data_connector_type="Kusto", github=True)
         self.assertIn("Mcp", str(raised.exception))
 
+    def test_bearer_token_builds_auth_type_and_token(self):
+        args = self._run(
+            data_connector_type="Mcp",
+            mcp_endpoint="https://example.com/mcp",
+            bearer_token="secret-pat",
+        )
+        self.assertEqual(
+            args.extended_properties,
+            {
+                "transport": "Http",
+                "endpoint": "https://example.com/mcp",
+                "authType": "BearerToken",
+                "bearerToken": "secret-pat",
+            },
+        )
+
+    def test_bearer_token_rejects_non_mcp_type(self):
+        with self.assertRaises(CLIError) as raised:
+            self._run(data_connector_type="Kusto", bearer_token="secret-pat")
+        self.assertIn("Mcp", str(raised.exception))
+
+    def test_managed_identity_auth_defaults_arm_scope(self):
+        args = self._run(data_connector_type="Mcp", managed_identity_auth=True)
+        self.assertEqual(
+            args.extended_properties,
+            {"authType": "AzureARM", "armScope": "https://management.azure.com/.default"},
+        )
+
+    def test_mi_token_scope_implies_managed_identity_auth(self):
+        # --mi-token-scope alone (without --managed-identity-auth true) still
+        # triggers the AzureARM auth type, matching the help text's "implied
+        # by --mi-token-scope if that is passed alone".
+        args = self._run(
+            data_connector_type="Mcp",
+            mi_token_scope="api://myserver/.default",
+        )
+        self.assertEqual(
+            args.extended_properties,
+            {"authType": "AzureARM", "armScope": "api://myserver/.default"},
+        )
+
+    def test_oauth_dcr_builds_spec_oauth_with_scopes_and_client_name(self):
+        args = self._run(
+            data_connector_type="Mcp",
+            oauth_dcr=True,
+            oauth_scopes="scope1,scope2",
+            oauth_client_name="my-client",
+        )
+        self.assertEqual(
+            args.extended_properties,
+            {
+                "authType": "SpecOAuth",
+                "scopes": "scope1,scope2",
+                "dcrClientName": "my-client",
+            },
+        )
+
+    def test_oauth_scopes_without_oauth_dcr_is_rejected(self):
+        with self.assertRaises(CLIError) as raised:
+            self._run(data_connector_type="Mcp", oauth_scopes="scope1")
+        self.assertIn("--oauth-dcr", str(raised.exception))
+
+    def test_auth_flags_are_mutually_exclusive(self):
+        with self.assertRaises(CLIError) as raised:
+            self._run(
+                data_connector_type="Mcp",
+                bearer_token="secret-pat",
+                oauth_dcr=True,
+            )
+        self.assertIn("Only one of", str(raised.exception))
+
+    def test_auth_flags_merge_with_github_endpoint(self):
+        # Combining --github with an explicit auth flag is a real use case
+        # (e.g. a custom MCP server reached through the GitHub Copilot MCP
+        # endpoint, but guarded by the caller's own bearer token) -- both
+        # must merge into the same extended-properties dict, not clobber.
+        args = self._run(data_connector_type="Mcp", github=True, bearer_token="secret-pat")
+        self.assertEqual(
+            args.extended_properties,
+            {
+                "transport": "Http",
+                "endpoint": GITHUB_COPILOT_MCP_ENDPOINT,
+                "authType": "BearerToken",
+                "bearerToken": "secret-pat",
+            },
+        )
+
     def test_file_path_base64_encodes_knowledge_file(self):
         import tempfile
 
@@ -2686,6 +2773,12 @@ class ConnectorConvenienceArgsTests(unittest.TestCase):
         self.assertIsNotNone(schema.file_path)
         self.assertIsNotNone(schema.mcp_endpoint)
         self.assertIsNotNone(schema.github)
+        self.assertIsNotNone(schema.bearer_token)
+        self.assertIsNotNone(schema.managed_identity_auth)
+        self.assertIsNotNone(schema.mi_token_scope)
+        self.assertIsNotNone(schema.oauth_dcr)
+        self.assertIsNotNone(schema.oauth_scopes)
+        self.assertIsNotNone(schema.oauth_client_name)
 
 
 class _StubOutputBase:

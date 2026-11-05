@@ -1056,6 +1056,73 @@ class _ConnectorConvenienceArgsMixin:
             "true sets it to ['*'], false to [] (confirmed live: both "
             "values persist and read back correctly).",
         )
+        # --bearer-token / --managed-identity-auth / --mi-token-scope /
+        # --oauth-dcr / --oauth-scopes / --oauth-client-name: convenience
+        # flags for the Mcp connector's 'extendedProperties.authType',
+        # matching the real portal wizard's 4 "Authentication method"
+        # choices (No authentication / Bearer token / Managed identity /
+        # OAuth (dynamic client registration)). Wire shapes confirmed by
+        # reading sreagent-runtime's McpDataConnector.cs
+        # BuildAuthenticationConfig (authType values: "BearerToken",
+        # "AzureARM", "SpecOAuth" -- dictionary keys are matched
+        # case-insensitively there, so lowerCamelCase here is fine, same
+        # as the pre-existing "transport"/"endpoint" keys above).
+        schema.bearer_token = AAZStrArg(
+            options=["--bearer-token"],
+            arg_group="Properties",
+            help="For --data-connector-type Mcp: a static bearer token/PAT/"
+            "API key sent on every request to the MCP server (the portal "
+            "wizard's 'Bearer token' authentication method). Builds "
+            "extended-properties.authType=BearerToken + bearerToken.",
+        )
+        schema.managed_identity_auth = AAZBoolArg(
+            options=["--managed-identity-auth"],
+            arg_group="Properties",
+            help="For --data-connector-type Mcp: authenticate to the MCP "
+            "server using the agent's managed identity (the portal "
+            "wizard's 'Managed identity' authentication method; combine "
+            "with --identity to pick a user-assigned identity instead of "
+            "the system-assigned default, same as other connector types). "
+            "Builds extended-properties.authType=AzureARM. Implied by "
+            "--mi-token-scope if that is passed alone.",
+        )
+        schema.mi_token_scope = AAZStrArg(
+            options=["--mi-token-scope"],
+            arg_group="Properties",
+            help="For --data-connector-type Mcp with --managed-identity-"
+            "auth: the Azure AD token scope/audience to request (the "
+            "portal wizard's 'Azure AD token scope' free-text field). "
+            "Builds extended-properties.armScope. Defaults to "
+            "'https://management.azure.com/.default' if omitted, matching "
+            "the portal's own default.",
+        )
+        schema.oauth_dcr = AAZBoolArg(
+            options=["--oauth-dcr"],
+            arg_group="Properties",
+            help="For --data-connector-type Mcp: use OAuth with Dynamic "
+            "Client Registration (the portal wizard's 'OAuth (dynamic "
+            "client registration)' authentication method -- the one that "
+            "shows a real browser 'Authorize' consent redirect; "
+            "pre-registered client IDs/secrets are not supported, "
+            "matching the portal's own text). Builds "
+            "extended-properties.authType=SpecOAuth. Consent is completed "
+            "afterwards in the portal, not by this command.",
+        )
+        schema.oauth_scopes = AAZStrArg(
+            options=["--oauth-scopes"],
+            arg_group="Properties",
+            help="For --data-connector-type Mcp with --oauth-dcr true: "
+            "comma-separated OAuth scopes to request during the DCR "
+            "consent flow. Builds extended-properties.scopes.",
+        )
+        schema.oauth_client_name = AAZStrArg(
+            options=["--oauth-client-name"],
+            arg_group="Properties",
+            help="For --data-connector-type Mcp with --oauth-dcr true: "
+            "the client name to register during Dynamic Client "
+            "Registration. Builds extended-properties.dcrClientName. "
+            "Optional -- the service picks a default name if omitted.",
+        )
         return schema
 
     # Set by pre_operations() when --file-path was used, so _output() (see
@@ -1130,6 +1197,57 @@ class _ConnectorConvenienceArgsMixin:
                     text = handle.read()
                 args.extended_properties = {"content": text}
             self._file_path_used = True
+
+        bearer_token = _arg_value(getattr(args, "bearer_token", None))
+        managed_identity_auth = _arg_value(getattr(args, "managed_identity_auth", None))
+        mi_token_scope = _arg_value(getattr(args, "mi_token_scope", None))
+        oauth_dcr = _arg_value(getattr(args, "oauth_dcr", None))
+        oauth_scopes = _arg_value(getattr(args, "oauth_scopes", None))
+        oauth_client_name = _arg_value(getattr(args, "oauth_client_name", None))
+
+        auth_flags_used = [
+            bool(bearer_token),
+            bool(managed_identity_auth or mi_token_scope),
+            bool(oauth_dcr),
+        ]
+        if sum(auth_flags_used) > 1:
+            raise CLIError(
+                "Only one of --bearer-token, --managed-identity-auth/"
+                "--mi-token-scope, or --oauth-dcr can be used at a time -- "
+                "each sets a different extended-properties.authType."
+            )
+        if oauth_scopes or oauth_client_name:
+            if not oauth_dcr:
+                raise CLIError("--oauth-scopes/--oauth-client-name require --oauth-dcr true.")
+
+        if any(auth_flags_used):
+            if connector_type != "Mcp":
+                raise CLIError(
+                    "--bearer-token/--managed-identity-auth/--mi-token-scope/"
+                    "--oauth-dcr require --data-connector-type Mcp."
+                )
+            existing = _arg_value(getattr(args, "extended_properties", None)) or {}
+            if not isinstance(existing, dict):
+                existing = {}
+            if bearer_token:
+                existing = {
+                    **existing,
+                    "authType": "BearerToken",
+                    "bearerToken": bearer_token,
+                }
+            elif managed_identity_auth or mi_token_scope:
+                existing = {
+                    **existing,
+                    "authType": "AzureARM",
+                    "armScope": mi_token_scope or "https://management.azure.com/.default",
+                }
+            elif oauth_dcr:
+                existing = {**existing, "authType": "SpecOAuth"}
+                if oauth_scopes:
+                    existing["scopes"] = oauth_scopes
+                if oauth_client_name:
+                    existing["dcrClientName"] = oauth_client_name
+            args.extended_properties = existing
 
         super().pre_operations()
 
@@ -1223,6 +1341,29 @@ class ConnectorCreate(
         az sre connector create --agent-name myagent --resource-group myrg \\
             --name conn-mcp-custom --data-connector-type Mcp \\
             --mcp-endpoint "https://myserver.contoso.com/mcp"
+
+    :example: Connect a custom MCP server using a static bearer token/PAT
+        (portal's "Bearer token" authentication method)
+        az sre connector create --agent-name myagent --resource-group myrg \\
+            --name conn-mcp-bearer --data-connector-type Mcp \\
+            --mcp-endpoint "https://myserver.contoso.com/mcp" \\
+            --bearer-token "$MY_SERVER_TOKEN"
+
+    :example: Connect a custom MCP server using the agent's managed identity
+        (portal's "Managed identity" authentication method; combine with
+        --identity to use a user-assigned identity instead of the
+        system-assigned default)
+        az sre connector create --agent-name myagent --resource-group myrg \\
+            --name conn-mcp-mi --data-connector-type Mcp \\
+            --mcp-endpoint "https://myserver.contoso.com/mcp" \\
+            --managed-identity-auth true --mi-token-scope "api://myserver/.default"
+
+    :example: Connect a custom MCP server using OAuth with Dynamic Client
+        Registration (portal's "OAuth (dynamic client registration)"
+        authentication method -- finish consent afterwards in the portal)
+        az sre connector create --agent-name myagent --resource-group myrg \\
+            --name conn-mcp-oauth --data-connector-type Mcp \\
+            --mcp-endpoint "https://myserver.contoso.com/mcp" --oauth-dcr true
 
     :example: Connect a single Kusto/Azure Data Explorer cluster+database directly
         (legacy 'Kusto' type, as opposed to the default 'KustoClient'/"Azure Data
