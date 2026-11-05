@@ -252,12 +252,19 @@ _CONNECTIONS_FILE = os.path.join(
 
 
 # Real API enum values confirmed from the merged stable/2026-07-01 TypeSpec
-# source (agent.models.tsp DefaultModel.provider doc comment) and the SRE
-# Agent docs. The portal UI shows a friendly label ("Azure OpenAI") that does
-# NOT match the wire value -- the CLI must always send/accept the real
-# values below, surfacing the friendly names only in --help text.
+# source (agent.models.tsp DefaultModel.provider doc comment), the SRE Agent
+# docs, and a live ARM PATCH round-trip against a real agent (2026-11-05),
+# whose rejection error for an unsupported value is authoritative:
+#   "Provider 'X' is not supported. Supported providers: Anthropic,
+#    GitHubCopilot, MicrosoftFoundry"
+# The portal UI shows friendly labels that do NOT match the wire values
+# ("Azure OpenAI" -> MicrosoftFoundry, "GitHub Copilot" -> GitHubCopilot) --
+# the CLI must always send/accept the real values below, surfacing the
+# friendly names only in --help text. GitHubCopilot is portal-flagged
+# "non-production only" but is a fully valid, API-accepted wire value.
 MODEL_PROVIDERS = {
     "anthropic": "Anthropic",
+    "githubcopilot": "GitHubCopilot",
     "microsoftfoundry": "MicrosoftFoundry",
 }
 
@@ -300,10 +307,12 @@ class _ModelProviderArgMixin:
             if provider is not None and isinstance(getattr(provider, "_help", None), dict):
                 provider._help["short-summary"] = (
                     "AI provider for the agent's default model. Real API "
-                    "values are 'Anthropic' and 'MicrosoftFoundry' -- note "
-                    "the Azure Portal shows 'Azure OpenAI' as a friendly "
-                    "label for MicrosoftFoundry, but the API never accepts "
-                    "that string. Case-insensitive."
+                    "values are 'Anthropic', 'GitHubCopilot', and "
+                    "'MicrosoftFoundry' -- note the Azure Portal shows "
+                    "'Azure OpenAI' as a friendly label for MicrosoftFoundry "
+                    "(GitHubCopilot is flagged non-production only in the "
+                    "portal), but the API never accepts those friendly "
+                    "strings. Case-insensitive."
                 )
         return schema
 

@@ -138,6 +138,12 @@ class ModelProviderNormalizationTests(unittest.TestCase):
         self.assertEqual(
             _normalize_model_provider("microsoftfoundry"), "MicrosoftFoundry"
         )
+        self.assertEqual(
+            _normalize_model_provider("GitHubCopilot"), "GitHubCopilot"
+        )
+        self.assertEqual(
+            _normalize_model_provider("githubcopilot"), "GitHubCopilot"
+        )
 
     def test_none_passes_through_unchanged(self):
         self.assertIsNone(_normalize_model_provider(None))
