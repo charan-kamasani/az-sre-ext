@@ -342,7 +342,13 @@ most just take raw `--data-source`/`--extended-properties` JSON.
 The agent genuinely integrates with Azure's real **Connector Namespace /
 Connector Gateway** platform (`connectors.azure.com`) — confirmed by reading
 `sreagent-runtime`'s own source (`ConnectorGatewayArmClient.cs`,
-`ConnectorGatewayMcpSyncService.cs`, `ConnectorType.ts`), not assumed. That
+`ConnectorGatewayMcpSyncService.cs`, `ConnectorType.ts`), not assumed --
+further confirmed 2026-11-05 by the platform's own dedicated management
+portal at https://connectors.azure.com/ ("Connector Namespaces"), a
+separate React SPA that authenticates via Entra ID and calls ARM directly
+from the browser -- independent, out-of-band evidence that this is a real,
+separately-managed first-party control plane, not something this CLI's
+agent-scoped ARM surface can or should try to reach into. That
 platform's catalog is much larger than the list above: 30+ managed
 connectors (Jira, Slack, SharePoint, SQL Server, Key Vault, Service Bus,
 Confluence, GitLab, GitHub, Azure DevOps, and more, each suffixed `*CG` in
