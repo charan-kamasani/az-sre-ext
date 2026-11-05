@@ -756,7 +756,7 @@ plans"): match incoming incidents by platform/title/team/etc. and route matches 
 
 Create or update an incident filter.
 
-KNOWN ISSUE (live-confirmed): every payload tried against a real agent is rejected server-side with a generic Bad Request, even when it matches the documented shape. Treat 'incidentFilters' as unverified end-to-end for now.
+Every payload tried against a real agent is rejected server-side with a generic Bad Request, even when it matches the documented shape. Treat 'incidentFilters' as unverified end-to-end for now.
 
 **Syntax**
 
@@ -1170,8 +1170,6 @@ Supports GitHub and Azure DevOps. GitLab isn't exposed by this CLI yet.
 
 Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 
-If no GitHub token is supplied, a browser-based OAuth device-flow sign-in prompt runs automatically (no 'gh' CLI required).
-
 **Syntax**
 
 `az sre repo connect --agent-name <value> --resource-group <value> --repo-url <value> [--provider {GitHub,AzureDevOps}] [--display-name <value>] [--branch <value>] [--github-token <value>] [--devops-organization <value>] [--devops-auth-type {pat,managed-identity}] [--devops-identity <value>] [--devops-federated-client-id <value>] [--devops-federated-tenant-id <value>]`
@@ -1202,9 +1200,9 @@ If no GitHub token is supplied, a browser-based OAuth device-flow sign-in prompt
 - Connect an Azure DevOps repo
 
   `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo`
-- Azure DevOps org blocks PAT creation (confirmed live error:
+- Azure DevOps org blocks PAT creation ("org has a policy
 
-  `"org has a policy blocking PAT creation") -- use the agent's own managed identity instead az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo \ --devops-auth-type managed-identity --devops-identity <agent-identity-resource-id>`
+  `blocking PAT creation") -- use the agent's own managed identity instead az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo \ --devops-auth-type managed-identity --devops-identity <agent-identity-resource-id>`
 
 ## `az sre skill`
 
@@ -1790,6 +1788,8 @@ Run 'sre plugin marketplace create' first if you haven't connected a marketplace
 
 Install a plugin from a connected marketplace.
 
+Unlike other extension types, 'marketplaceName'/'pluginName' alone are not enough -- supply the full 'source' block ({"type", "repo", "url"}) naming the plugin's exact path in the marketplace repo. This CLI writes the installation record directly and does not run the portal's install pipeline, so the result is missing 'importedSkills'/ 'sourceCommit'/a resolved 'mcpConnectorStatus' compared to a portal install.
+
 **Syntax**
 
 `az sre plugin install create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]`
@@ -1806,7 +1806,7 @@ Install a plugin from a connected marketplace.
 
 - Install a plugin from a connected marketplace
 
-  `az sre plugin install create -g myrg --agent-name myagent --name datadog \ --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", \ "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}' KNOWN LIMITATION (live-confirmed): unlike every other extension type, the 'marketplaceName'/'pluginName' fields alone are NOT enough here -- the service requires the full 'source' block ({"type", "repo", "url"}) naming the plugin's exact path inside the marketplace repo up front, on create. This is because the generic ARM-proxy PUT route this CLI uses writes the raw installation record directly; it does not run the richer, catalog-resolving install pipeline the portal's dedicated install button uses (which looks up the path for you and also clones the repo, imports the plugin's skills, and snapshots its MCP server config). A CLI-created record like the one above round-trips correctly on show/list/delete, but will be missing 'importedSkills'/'sourceCommit' /a resolved 'mcpConnectorStatus' compared to a real portal install -- confirmed by comparing the two side by side. Until the portal's install pipeline is reachable through this control-plane API, treat this as syntax-correct but not a full substitute for portal Install.`
+  `az sre plugin install create -g myrg --agent-name myagent --name datadog \ --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", \ "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}'`
 
 ### `az sre plugin install delete`
 
