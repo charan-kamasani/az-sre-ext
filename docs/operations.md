@@ -743,6 +743,53 @@ az sre repo connect -g myrg --agent-name myagent \
   --repo-url https://dev.azure.com/myorg/myproject/_git/myrepo --provider AzureDevOps
 ```
 
+### `repo connect` no longer hard-depends on the `gh` CLI (GitHub OAuth Device Flow)
+
+Paul (SRE Agent team) researched and proposed this fix after flagging that
+`repo connect`'s GitHub path used to call `gh auth token` directly -- if a
+user didn't have the `gh` CLI installed and logged in, the command just
+failed outright. That's not acceptable for an `az` extension to depend on a
+separate third-party tool for a core flow.
+
+Fixed with the same layered, no-hard-dependency pattern `az staticwebapp`,
+`az containerapp github-action`, and `az functionapp deployment
+github-actions` already use -- `_github_token()` tries, in order:
+
+1. **Explicit/CI**: `--github-token`, or `GITHUB_TOKEN`/`GH_TOKEN` env vars.
+2. **Optional `gh` reuse**: only if `shutil.which("gh")` finds it installed
+   *and* already logged in -- silently reused for zero-prompt UX, but never
+   required.
+3. **Native GitHub OAuth Device Flow (RFC 8628)** fallback, implemented
+   directly in Python with `requests` + `webbrowser` -- no `gh` CLI, no
+   client secret. Reuses GitHub CLI's own public OAuth client ID (open
+   source, no secret needed for device-flow apps): posts to
+   `https://github.com/login/device/code`, prints the `user_code`, opens
+   `verification_uri` in the browser, then polls
+   `https://github.com/login/oauth/access_token` until authorized.
+
+Live-verified end to end (2026-11-04) against a real agent
+(`mytestagent`/`ckamasani-publishtest`), both with `gh` reused (tier 2) and
+with `gh` deliberately removed from `PATH` to force the native device flow
+(tier 3) -- browser opened to GitHub's real Device Activation page, user
+authorized as `charan-kamasani`, and the flow returned a real `gho_...`
+access token with no `gh` CLI involved. 63 new unit tests added (250/250
+passing). The rest of this extension was also audited for similar
+dependencies: the Azure DevOps PAT path (`_devops_pat_token`) was already
+dependency-free (calls the vssps REST API directly, no `az devops`
+extension needed), and `requests` is a hard transitive dependency of
+`azure-cli-core` itself, not something this extension adds.
+
+```bash
+# No token needed up front -- resolves one automatically (gh reuse, then
+# a browser-based device-flow prompt if gh isn't available):
+az sre repo connect --agent-name myagent --resource-group myrg \
+  --repo-url https://github.com/contoso/my-service
+
+# Or pass a token explicitly (e.g. in CI, where no browser is available):
+az sre repo connect --agent-name myagent --resource-group myrg \
+  --repo-url https://github.com/contoso/my-service --github-token $env:GITHUB_TOKEN
+```
+
 ### `az sre automation`: group for scheduled tasks, HTTP triggers, and incident filters
 
 Renamed from `workflow` to `automation` (2026-10-30) to match the portal's
