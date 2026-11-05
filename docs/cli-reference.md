@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **23 groups** and **70 commands**.
+Public surface: **24 groups** and **74 commands**.
 
 ## Important caveats
 
@@ -57,6 +57,7 @@ Windows PowerShell note: inline JSON passed to any --value/--extended-properties
 | `plugin` | Manage community plugins that add skills, tools, and integrations. |
 | `repo` | Connect a code repository so the agent can read source during investigations. |
 | `skill` | Manage custom skills -- specialized capabilities the agent can use. |
+| `subagent` | Manage named sub-agents the meta-agent can hand off work to. |
 | `tool` | Manage custom tools the agent can call. |
 | `usage` | Read an SRE Agent's usage and billing stats. |
 
@@ -1264,6 +1265,105 @@ Show a custom skill.
 - Show one custom skill
 
   `az sre skill show -g myrg --agent-name myagent --name triage-skill`
+
+## `az sre subagent`
+
+Manage named sub-agents the meta-agent can hand off work to.
+
+A sub-agent is a scoped specialist with its own instructions, tools, and skills -- the portal's Agent Canvas "Create subagent" dialog. Use 'sre subagent create -h' for the full --value shape, including how to attach a per-subagent PreToolUse hook (the dialog's "Manage Hooks" button) via --pre-tool-use-script-file.
+
+| Verb | Exact syntax |
+| --- | --- |
+| `create` | `az sre subagent create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}] [--pre-tool-use-script-file <value>]` |
+| `delete` | `az sre subagent delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
+| `list` | `az sre subagent list --name <value> --resource-group <value>` |
+| `show` | `az sre subagent show --agent-name <value> --resource-group <value> --name <value>` |
+
+### `az sre subagent create`
+
+Create or update a named sub-agent.
+
+**Syntax**
+
+`az sre subagent create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}] [--pre-tool-use-script-file <value>]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--value` | String | Yes |  |  | Sub-agent configuration as a JSON document. Required fields: instructions/handoffDescription (strings), tools/mcpTools/commonTools/allowedSkills (arrays of strings -- 'tools' is this sub-agent's base tool allowlist, typically just ["ReadFile"] for a read-only specialist), allowParallelToolCalls (bool). Optional: hooks -- {"PreToolUse": [{"type": "command", "matcher": "(?s:.*)", "timeout": 30, "failMode": "block", "script": "..."}]} (also settable via --pre-tool-use-script-file). Live-confirmed shape -- the server echoes back a much richer schema on read (handoffs, connectors, agentsAsTools, maxReflectionCount, temperature, llmModelName, permissions, etc.), all server-defaulted to null when omitted here. |
+| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
+| `--pre-tool-use-script-file` | String | No |  |  | Path to a script file to run before every tool call this sub-agent makes (the portal's "Manage Hooks" > "Pre Tool Use" button inside the subagent dialog). Merged into --value.hooks.PreToolUse with matcher "(?s:.*)" (every tool), timeout 30s, failMode "block" -- pass --value.hooks directly instead for other matchers/timeouts. |
+
+**Examples**
+
+- Create a read-only evidence-gathering sub-agent (live-verified payload)
+
+  `az sre subagent create --agent-name myagent --resource-group myrg --name app-investigator \ --value '{"instructions": "You are the application evidence specialist. Read supplied reference files with ReadFile and return source-backed observations.", "handoffDescription": "Use for read-only application request/error/dependency evidence.", "tools": ["ReadFile"], "mcpTools": [], "commonTools": [], "allowedSkills": ["zava-application-evidence"], "allowParallelToolCalls": true}'`
+- Same, plus a PreToolUse hook script read from a file (live-verified)
+
+  `az sre subagent create --agent-name myagent --resource-group myrg --name app-investigator \ --value "@value.json" --pre-tool-use-script-file readonly-evidence.py`
+
+### `az sre subagent delete`
+
+Delete a sub-agent.
+
+**Syntax**
+
+`az sre subagent delete --agent-name <value> --resource-group <value> --name <value> [--yes]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
+
+**Examples**
+
+- Delete a sub-agent
+
+  `az sre subagent delete -g myrg --agent-name myagent --name app-investigator`
+
+### `az sre subagent list`
+
+List sub-agents.
+
+**Syntax**
+
+`az sre subagent list --name <value> --resource-group <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List an agent's sub-agents
+
+  `az sre subagent list -g myrg --agent-name myagent`
+
+### `az sre subagent show`
+
+Show a sub-agent.
+
+**Syntax**
+
+`az sre subagent show --agent-name <value> --resource-group <value> --name <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+
+**Examples**
+
+- Show one sub-agent
+
+  `az sre subagent show -g myrg --agent-name myagent --name app-investigator`
 
 ## `az sre tool`
 

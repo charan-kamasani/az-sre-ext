@@ -2817,20 +2817,19 @@ EXTENSION_TYPES = [
 # base64 pass-through with zero shape validation -- it never tells us if
 # a payload is malformed until the data-plane cluster rejects it. We
 # tighten client-side only for shapes we've actually confirmed from real
-# source (see issue #13 -- 14 of 15 extension types confirmed via
-# sreagent-runtime authoritative source + live round-trips; 'subagents' is
-# now CONFIRMED not creatable this way: the portal's real "Create a custom
-# agent" dialog does not call this ARM-proxied ExtendedAgentView route at
-# all -- it PUTs a raw kubectl-apply-style YAML document (api_version:
-# azuresre.ai/v1, kind: AgentConfiguration, snake_case spec fields like
-# system_prompt/agent_type) directly to sreagent-runtime's
-# Agent.Web/Controllers/v1/ExtendedAgentController.cs's PUT api/v1/
-# extendedAgent/apply -- a data-plane-only endpoint this ARM-only CLI
-# cannot and should not call directly. A live test against a real test
-# agent via 'extension create --extension-type subagents' confirmed this:
-# the request does reach the data plane's ExtendedAgentView-shaped v2
-# route, but is rejected with a generic error, consistent with that being
-# the wrong/unsupported schema for subagent creation).
+# source (see issue #13 -- 15 of 15 extension types confirmed via
+# sreagent-runtime authoritative source + live round-trips, including
+# 'subagents': a CORRECTION of an earlier, WRONG conclusion that it was
+# "not creatable this way". That earlier test used the portal's own
+# kubectl-apply-style YAML document shape (api_version: azuresre.ai/v1,
+# kind: AgentConfiguration, snake_case fields) against this ARM-proxied
+# route -- the wrong payload shape for this route, not proof the route
+# itself rejects subagents. A live benchmark test (2026-11-05) against a
+# real test agent, using the plain JSON shape below (instructions/
+# handoffDescription/tools/mcpTools/commonTools/allowedSkills/
+# allowParallelToolCalls/hooks), round-tripped successfully through this
+# exact ARM-proxied route -- see _validate_subagents_shape below and
+# 'sre subagent create'.
 #
 # commonPrompts: CORRECTED after live verification against a real test
 # agent's data-plane (2026-10-25). The earlier reading of
@@ -3121,6 +3120,59 @@ def _validate_tools_shape(parsed):
             raise CLIError("--value.timeout_seconds must be a number.")
 
 
+# subagents: live-confirmed end-to-end against a real test agent (benchmark
+# session, 2026-11-05) -- a PUT to this ARM-proxied extension type with this
+# exact field set round-trips successfully and the server echoes back a much
+# richer canonical shape (handoffs, connectors, agentsAsTools,
+# maxReflectionCount, criticPromptPath, criticOnHandOff,
+# customReflectionNote, commonPrompts, disableDocumentRetrieval,
+# enableHandoffPromptOverride, userPromptOverride, handoffPromptOverride,
+# instructionsOverride, temperature, llmModelName, enableVanillaMode,
+# enableSkills, addSystemSkills, outputType, hooks, permissions -- all
+# server-defaulted to null when omitted). An EARLIER conclusion recorded in
+# this file's EXTENSION_TYPES comment ("'subagents' is now CONFIRMED not
+# creatable this way") was WRONG -- it was based on a flawed experiment
+# (either the wrong extension-type path segment, e.g. "agents" instead of
+# "subagents", or the portal's YAML-apply shape sent to the wrong route).
+# Embedding a per-agent hook (the portal's "Manage Hooks" button inside the
+# "Create a custom agent" dialog) is just the "hooks" field on this same
+# resource -- confirmed live with
+# hooks: {"PreToolUse": [{"type": "command", "matcher": "...", "timeout": 30,
+# "failMode": "block", "script": "..."}]}.
+def _validate_subagents_shape(parsed):
+    if not isinstance(parsed, dict):
+        raise CLIError(
+            "--value for --extension-type subagents must be a JSON object "
+            "(live-confirmed shape)."
+        )
+    _require_str(parsed, "instructions", "--value")
+    _require_str(parsed, "handoffDescription", "--value")
+    _require_str_list(parsed, "tools", "--value")
+    _require_str_list(parsed, "mcpTools", "--value")
+    _require_str_list(parsed, "commonTools", "--value")
+    _require_str_list(parsed, "allowedSkills", "--value")
+    _require_bool(parsed, "allowParallelToolCalls", "--value")
+    if "hooks" in parsed:
+        hooks = parsed["hooks"]
+        if not isinstance(hooks, dict):
+            raise CLIError("--value.hooks must be a JSON object.")
+        for event_type in ("Start", "PreToolUse", "PostToolUse", "Stop"):
+            if event_type not in hooks:
+                continue
+            entries = hooks[event_type]
+            if not isinstance(entries, list):
+                raise CLIError(f"--value.hooks.{event_type} must be a JSON array.")
+            for idx, entry in enumerate(entries):
+                if not isinstance(entry, dict):
+                    raise CLIError(f"--value.hooks.{event_type}[{idx}] must be a JSON object.")
+                _require_str(entry, "type", f"--value.hooks.{event_type}[{idx}]")
+                _require_str(entry, "matcher", f"--value.hooks.{event_type}[{idx}]")
+                _require_str(entry, "script", f"--value.hooks.{event_type}[{idx}]")
+                _require_str(entry, "failMode", f"--value.hooks.{event_type}[{idx}]")
+                if "timeout" in entry and not isinstance(entry["timeout"], (int, float)):
+                    raise CLIError(f"--value.hooks.{event_type}[{idx}].timeout must be a number.")
+
+
 # skills: confirmed via sreagent-runtime Agent.Cli/Models/ExtendedSkillV2.cs
 # (SkillSpecV2). The CLI's primary authoring format is SKILL.md with
 # frontmatter (name/description/tools), but the API-facing fields map to
@@ -3361,6 +3413,7 @@ EXTENSION_VALUE_VALIDATORS = {
     "incidentHandlers": _validate_incident_handlers_shape,
     "tools": _validate_tools_shape,
     "skills": _validate_skills_shape,
+    "subagents": _validate_subagents_shape,
     "hooks": _validate_hooks_shape,
     "scheduledTasks": _validate_scheduled_tasks_shape,
     "repositories": _validate_repositories_shape,
@@ -3430,16 +3483,16 @@ def _decode_extension_envelope(envelope):
 # has no "extension" concept at all, it was purely this CLI's internal ARM-
 # proxy abstraction leaking into the user-facing surface. The functions
 # below are the same logic, kept as plain internal helpers that every
-# noun-specific facade (tool/skill/hook/instructions/automation/plugin/repo/
-# agent settings) calls directly -- there is no user-reachable path to an
-# arbitrary --extension-type anymore. The only extension types left with no
-# dedicated noun are 'incidentHandlers' (legacy, intentionally not exposed)
-# and 'subagents' (confirmed not creatable via ARM at all, see
-# _AutomationGroup above); 'globalSettings' is exposed via 'sre agent
-# settings' below instead.
+# noun-specific facade (tool/skill/subagent/hook/instructions/automation/
+# plugin/repo/agent settings) calls directly -- there is no user-reachable
+# path to an arbitrary --extension-type anymore. The only extension type
+# left with no dedicated noun is 'incidentHandlers' (legacy, intentionally
+# not exposed); 'globalSettings' is exposed via 'sre agent settings' below
+# instead.
 EXTENSION_TYPE_CREATE_NOUN = {
     "tools": "az sre tool create",
     "skills": "az sre skill create",
+    "subagents": "az sre subagent create",
     "hooks": "az sre hook create",
     "commonPrompts": "az sre instructions create",
     "scheduledTasks": "az sre automation scheduled-task create",
@@ -4215,6 +4268,136 @@ class SkillDelete(_PinnedExtensionDelete):
     """
 
     _EXTENSION_TYPE = "skills"
+    _args_schema = None
+
+
+# ---- sre subagent (portal: Workflows > Agent Canvas > "Create subagent") ----
+@register_command_group("sre subagent")
+class _SubagentGroup(AAZCommandGroup):
+    """Manage named sub-agents the meta-agent can hand off work to.
+
+    A sub-agent is a scoped specialist with its own instructions, tools,
+    and skills -- the portal's Agent Canvas "Create subagent" dialog. Use
+    'sre subagent create -h' for the full --value shape, including how to
+    attach a per-subagent PreToolUse hook (the dialog's "Manage Hooks"
+    button) via --pre-tool-use-script-file.
+    """
+
+
+@register_command("sre subagent create")
+class SubagentCreate(_PinnedExtensionCreate):
+    """Create or update a named sub-agent.
+
+    :example: Create a read-only evidence-gathering sub-agent (live-verified payload)
+        az sre subagent create --agent-name myagent --resource-group myrg --name app-investigator \\
+            --value '{"instructions": "You are the application evidence specialist. Read supplied reference files with ReadFile and return source-backed observations.", "handoffDescription": "Use for read-only application request/error/dependency evidence.", "tools": ["ReadFile"], "mcpTools": [], "commonTools": [], "allowedSkills": ["zava-application-evidence"], "allowParallelToolCalls": true}'
+
+    :example: Same, plus a PreToolUse hook script read from a file (live-verified)
+        az sre subagent create --agent-name myagent --resource-group myrg --name app-investigator \\
+            --value "@value.json" --pre-tool-use-script-file readonly-evidence.py
+    """
+
+    _EXTENSION_TYPE = "subagents"
+    _args_schema = None
+    _VALUE_HELP = (
+        "Sub-agent configuration as a JSON document. Required fields: "
+        "instructions/handoffDescription (strings), tools/mcpTools/"
+        "commonTools/allowedSkills (arrays of strings -- 'tools' is this "
+        "sub-agent's base tool allowlist, typically just [\"ReadFile\"] "
+        "for a read-only specialist), allowParallelToolCalls (bool). "
+        "Optional: hooks -- {\"PreToolUse\": [{\"type\": \"command\", "
+        "\"matcher\": \"(?s:.*)\", \"timeout\": 30, \"failMode\": "
+        "\"block\", \"script\": \"...\"}]} (also settable via "
+        "--pre-tool-use-script-file). Live-confirmed shape -- the server "
+        "echoes back a much richer schema on read (handoffs, connectors, "
+        "agentsAsTools, maxReflectionCount, temperature, llmModelName, "
+        "permissions, etc.), all server-defaulted to null when omitted "
+        "here."
+    )
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.pre_tool_use_script_file = AAZStrArg(
+            options=["--pre-tool-use-script-file"],
+            arg_group="Hooks",
+            help="Path to a script file to run before every tool call this "
+            "sub-agent makes (the portal's \"Manage Hooks\" > \"Pre Tool "
+            "Use\" button inside the subagent dialog). Merged into "
+            "--value.hooks.PreToolUse with matcher \"(?s:.*)\" (every "
+            "tool), timeout 30s, failMode \"block\" -- pass --value.hooks "
+            "directly instead for other matchers/timeouts.",
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _prepare_value(self):
+        args = self.ctx.args
+        script_file = _arg_value(getattr(args, "pre_tool_use_script_file", None))
+        if not script_file:
+            return
+        if not os.path.isfile(script_file):
+            raise CLIError(f"--pre-tool-use-script-file '{script_file}' does not exist.")
+        raw_value = _arg_value(getattr(args, "value", None))
+        try:
+            parsed = json.loads(raw_value) if raw_value else {}
+        except (TypeError, ValueError) as ex:
+            raise CLIError(f"--value must be a JSON document: {ex}") from ex
+        if not isinstance(parsed, dict):
+            raise CLIError("--value must be a JSON object.")
+        with open(script_file, "r", encoding="utf-8") as handle:
+            script = handle.read()
+        hooks = parsed.setdefault("hooks", {})
+        hooks["PreToolUse"] = [
+            {
+                "type": "command",
+                "matcher": "(?s:.*)",
+                "timeout": 30,
+                "failMode": "block",
+                "script": script,
+            }
+        ]
+        args.value = json.dumps(parsed)
+
+
+@register_command("sre subagent show")
+class SubagentShow(_PinnedExtensionShow):
+    """Show a sub-agent.
+
+    :example: Show one sub-agent
+        az sre subagent show -g myrg --agent-name myagent --name app-investigator
+    """
+
+    _EXTENSION_TYPE = "subagents"
+    _args_schema = None
+
+
+@register_command("sre subagent list")
+class SubagentList(_PinnedExtensionList):
+    """List sub-agents.
+
+    :example: List an agent's sub-agents
+        az sre subagent list -g myrg --agent-name myagent
+    """
+
+    _EXTENSION_TYPE = "subagents"
+    _args_schema = None
+
+
+@register_command(
+    "sre subagent delete",
+    confirmation="Are you sure you want to perform this operation?",
+)
+class SubagentDelete(_PinnedExtensionDelete):
+    """Delete a sub-agent.
+
+    :example: Delete a sub-agent
+        az sre subagent delete -g myrg --agent-name myagent --name app-investigator
+    """
+
+    _EXTENSION_TYPE = "subagents"
     _args_schema = None
 
 

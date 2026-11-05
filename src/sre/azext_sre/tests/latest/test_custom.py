@@ -56,6 +56,10 @@ from azext_sre.custom import (
     SkillShow,
     SkillList,
     SkillDelete,
+    SubagentCreate,
+    SubagentShow,
+    SubagentList,
+    SubagentDelete,
     HookCreate,
     HookShow,
     HookList,
@@ -1184,6 +1188,110 @@ class SkillsShapeValidationTests(unittest.TestCase):
         self.assertIn("--value.tools must be a JSON array of strings", str(raised.exception))
 
 
+class SubagentsShapeValidationTests(unittest.TestCase):
+    """--extension-type subagents' inner shape is confirmed via a LIVE
+    benchmark test (2026-11-05) against a real SRE Agent, using the
+    microsoft/sre-agent zava-aks-postgres lab's exact agents/*.json
+    payloads -- PUT to the normal ARM-proxied .../subagents/{name} route
+    succeeds with this shape (a prior session's conclusion that subagents
+    were architecturally uncreatable via ARM was wrong -- see the comment
+    above EXTENSION_API_VERSION for the full correction)."""
+
+    def test_accepts_the_real_confirmed_example_payload(self):
+        raw = json.dumps({
+            "instructions": "You are the application evidence specialist.",
+            "handoffDescription": "Use for read-only application evidence.",
+            "tools": ["ReadFile"],
+            "mcpTools": [],
+            "commonTools": [],
+            "allowedSkills": ["zava-application-evidence"],
+            "allowParallelToolCalls": True,
+        })
+        encoded = _encode_extension_value(raw, "subagents")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_accepts_embedded_pretooluse_hook(self):
+        raw = json.dumps({
+            "instructions": "x", "handoffDescription": "y",
+            "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
+            "allowParallelToolCalls": False,
+            "hooks": {
+                "PreToolUse": [{
+                    "type": "command", "matcher": "(?s:.*)",
+                    "timeout": 30, "failMode": "block", "script": "print('hi')",
+                }],
+            },
+        })
+        encoded = _encode_extension_value(raw, "subagents")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+    def test_rejects_non_object(self):
+        with self.assertRaises(CLIError):
+            _encode_extension_value(json.dumps(["not", "an", "object"]), "subagents")
+
+    def test_instructions_is_type_checked_but_not_presence_required(self):
+        # Matches every other field's convention (_require_str/_require_bool/
+        # _require_str_list only type-check when the key is present) --
+        # absence is allowed client-side; the server is the source of truth
+        # for which fields are actually mandatory.
+        raw = json.dumps({
+            "handoffDescription": "y", "tools": [], "mcpTools": [],
+            "commonTools": [], "allowedSkills": [], "allowParallelToolCalls": True,
+        })
+        encoded = _encode_extension_value(raw, "subagents")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+        bad = json.dumps({"instructions": 123})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(bad, "subagents")
+        self.assertIn("--value.instructions", str(raised.exception))
+
+    def test_rejects_non_list_tools(self):
+        raw = json.dumps({
+            "instructions": "x", "handoffDescription": "y",
+            "tools": "ReadFile", "mcpTools": [], "commonTools": [],
+            "allowedSkills": [], "allowParallelToolCalls": True,
+        })
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "subagents")
+        self.assertIn("--value.tools must be a JSON array of strings", str(raised.exception))
+
+    def test_rejects_non_bool_allow_parallel_tool_calls(self):
+        raw = json.dumps({
+            "instructions": "x", "handoffDescription": "y",
+            "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
+            "allowParallelToolCalls": "true",
+        })
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "subagents")
+        self.assertIn("--value.allowParallelToolCalls", str(raised.exception))
+
+    def test_rejects_hooks_not_object(self):
+        raw = json.dumps({
+            "instructions": "x", "handoffDescription": "y",
+            "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
+            "allowParallelToolCalls": True, "hooks": ["not", "an", "object"],
+        })
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(raw, "subagents")
+        self.assertIn("--value.hooks must be a JSON object", str(raised.exception))
+
+    def test_hook_entry_script_is_type_checked_but_not_presence_required(self):
+        raw = json.dumps({
+            "instructions": "x", "handoffDescription": "y",
+            "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
+            "allowParallelToolCalls": True,
+            "hooks": {"PreToolUse": [{"type": "command", "matcher": "(?s:.*)", "failMode": "block"}]},
+        })
+        encoded = _encode_extension_value(raw, "subagents")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
+        bad = json.dumps({"hooks": {"PreToolUse": [{"script": 123}]}})
+        with self.assertRaises(CLIError) as raised:
+            _encode_extension_value(bad, "subagents")
+        self.assertIn("script", str(raised.exception))
+
+
 class HooksShapeValidationTests(unittest.TestCase):
     """--extension-type hooks' inner shape is confirmed via sreagent-runtime
     Agent.Cli/Models/HookV2.cs's HookSpecV2/HookDefinitionModel, which carry
@@ -1907,6 +2015,29 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
             fake_result={"properties": {"value": {}}},
         )
 
+    def test_subagent_show_pins_extension_type_subagents(self):
+        self._assert_forwards(
+            SubagentShow, "subagents",
+            ("show", ("app-investigator", {})),
+            {"agent_name": "myagent", "resource_group": "rg", "extension_name": "app-investigator"},
+            fake_result={"properties": {"value": {}}},
+        )
+
+    def test_subagent_list_pins_extension_type_subagents(self):
+        self._assert_forwards(
+            SubagentList, "subagents",
+            ("list", ({},)),
+            {"agent_name": "myagent", "resource_group": "rg"},
+            fake_result={"value": []},
+        )
+
+    def test_subagent_delete_pins_extension_type_subagents(self):
+        self._assert_forwards(
+            SubagentDelete, "subagents",
+            ("delete", ("app-investigator", {})),
+            {"agent_name": "myagent", "resource_group": "rg", "extension_name": "app-investigator"},
+        )
+
     def test_hook_list_pins_extension_type_hooks(self):
         self._assert_forwards(
             HookList, "hooks",
@@ -2215,6 +2346,7 @@ class CommandRegistrationTests(unittest.TestCase):
             "sre repo connect",
             "sre tool create", "sre tool show", "sre tool list", "sre tool delete",
             "sre skill create", "sre skill show", "sre skill list", "sre skill delete",
+            "sre subagent create", "sre subagent show", "sre subagent list", "sre subagent delete",
             "sre hook create", "sre hook show", "sre hook list", "sre hook delete",
             "sre instructions create", "sre instructions show",
             "sre instructions list", "sre instructions delete",
@@ -2719,6 +2851,61 @@ class SkillCreateFilePathTests(unittest.TestCase):
         )
         command._prepare_value()
         self.assertEqual(command.ctx.args.value, '{"description": "x"}')
+
+
+class SubagentCreatePreToolUseScriptFileTests(unittest.TestCase):
+    """'sre subagent create --pre-tool-use-script-file' merges a hook
+    script into --value.hooks.PreToolUse (the portal's "Manage Hooks"
+    button inside the subagent-creation dialog -- live-confirmed to be
+    just a field on the same subagent PUT body, no separate resource)."""
+
+    def _write(self, text):
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        )
+        self.addCleanup(lambda: os.remove(handle.name))
+        handle.write(text)
+        handle.close()
+        return handle.name
+
+    def test_merges_script_into_hooks_pretooluse(self):
+        path = self._write("print('evidence only')\n")
+        value = json.dumps({
+            "instructions": "x", "handoffDescription": "y",
+            "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
+            "allowParallelToolCalls": True,
+        })
+        command = _bare_command(SubagentCreate, value=value, pre_tool_use_script_file=path)
+        command._prepare_value()
+        parsed = json.loads(command.ctx.args.value)
+        self.assertEqual(
+            parsed["hooks"]["PreToolUse"],
+            [{
+                "type": "command", "matcher": "(?s:.*)", "timeout": 30,
+                "failMode": "block", "script": "print('evidence only')\n",
+            }],
+        )
+        self.assertEqual(parsed["instructions"], "x")
+
+    def test_missing_script_file_raises(self):
+        value = json.dumps({"instructions": "x"})
+        command = _bare_command(
+            SubagentCreate, value=value, pre_tool_use_script_file="does-not-exist-999.py",
+        )
+        with self.assertRaises(CLIError):
+            command._prepare_value()
+
+    def test_non_object_value_raises(self):
+        path = self._write("print('x')\n")
+        command = _bare_command(SubagentCreate, value="[1, 2, 3]", pre_tool_use_script_file=path)
+        with self.assertRaises(CLIError):
+            command._prepare_value()
+
+    def test_noop_when_no_script_file_given(self):
+        value = json.dumps({"instructions": "x"})
+        command = _bare_command(SubagentCreate, value=value, pre_tool_use_script_file=None)
+        command._prepare_value()
+        self.assertEqual(command.ctx.args.value, value)
 
 
 class _NoOpPostOperationsBase:
