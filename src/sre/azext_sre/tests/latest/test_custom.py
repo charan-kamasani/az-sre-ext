@@ -78,11 +78,7 @@ from azext_sre.custom import (
     PluginInstallShow,
     PluginInstallList,
     PluginInstallDelete,
-    IncidentQuery,
     _warn_if_quickstart_plan,
-    ThreadList,
-    ThreadMessages,
-    ThreadShow,
     _data_plane_request,
     _resolve_agent_endpoint,
     EXTENSION_TYPE_CREATE_NOUN,
@@ -1225,41 +1221,6 @@ class IncidentDataPlaneTests(unittest.TestCase):
              patch("azext_sre.custom._data_plane_request", return_value={"value": [1]}) as request:
             command._handler({})
         self.assertEqual(request.call_args.kwargs["agent_url"], "https://a-b.c.eastus2.azuresre.ai")
-
-    def _thread(self, cls, result=None, **args):
-        command = _bare_command(cls, agent_name="agent", resource_group="rg",
-                                **{"agent_url": None, **args})
-        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._data_plane_request", return_value=result) as request:
-            output = command._handler({})
-        return output, request
-
-    def test_thread_commands_use_data_plane_routes(self):
-        _, request = self._thread(ThreadList, {"value": []}, top="5", skip=None,
-                                  order_by="createdTimestamp desc", severity=None)
-        self.assertEqual(request.call_args.args[3], "GET")
-        path = request.call_args.args[4]
-        self.assertTrue(path.startswith("/api/v1/threads?$top=5&$orderby=createdTimestamp%20desc"))
-        _, request = self._thread(ThreadMessages, {"value": []}, thread_id="t 1")
-        self.assertEqual(request.call_args.args[4], "/api/v1/threads/t%201/messages")
-        with self.assertRaises(ResourceNotFoundError):
-            self._thread(ThreadShow, None, thread_id="t1")
-
-    def test_incident_query_builds_body(self):
-        _, request = self._thread(IncidentQuery, {"value": []}, filter_name=None,
-                                  filter='{"priorities": ["2"]}', keywords=None)
-        self.assertEqual(request.call_args.kwargs["body"], {"Filter": {"priorities": ["2"]}})
-        _, request = self._thread(IncidentQuery, {}, filter_name=None, filter=None, keywords="disk")
-        self.assertEqual(request.call_args.kwargs["body"], {"Keywords": "disk"})
-        with self.assertRaises(CLIError):
-            self._thread(IncidentQuery, {}, filter_name=None, filter=None, keywords=None)
-        with self.assertRaises(CLIError):
-            self._thread(IncidentQuery, {}, filter_name=None, filter="[1]", keywords=None)
-        shown = {"name": "f", "properties": {"isEnabled": True, "incidentPlatform": "AzMonitor",
-                                              "etag": None, "priorities": ["1"]}}
-        with patch("azext_sre.custom._extension_resource_show", return_value=shown):
-            _, request = self._thread(IncidentQuery, {}, filter_name="f", filter=None, keywords=None)
-        self.assertEqual(request.call_args.kwargs["body"], {"Filter": {"priorities": ["1"]}})
 
     def test_quickstart_plan_warning(self):
         with self.assertLogs("cli.azext_sre.custom", level="WARNING") as logs:

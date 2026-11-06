@@ -98,8 +98,6 @@ az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
 | `repo` | `connect` | Connect a GitHub or Azure DevOps repository with automatic authentication configuration. |
 | `skill` | `create, show, list, delete` | Create and manage custom SKILL.md-based skills. |
 | `subagent` | `create, show, list, delete` | Manage named subagents the main agent hands work to (portal: Agent Canvas). |
-| `thread` | `list, show, messages` | Read the agent's conversation threads, including ones it opens for incidents. |
-| `incident` | `query` | Preview incidents on the connected platform (use `--filter-name` to test a response plan). |
 | `tool` | `create, show, list, delete` | Manage custom tools the agent can invoke. |
 | `usage` | `list` | View agent usage and billing statistics. |
 | `automation` | **scheduled-task:** `create, show, list, delete`<br>**http-trigger:** `create, show, list, delete` | Manage scheduled runs and inbound webhook triggers. |

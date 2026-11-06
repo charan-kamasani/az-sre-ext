@@ -4751,256 +4751,26 @@ class ResponsePlanDisable(AAZCommand):
         return _set_incident_filter_enabled(self, False)
 
 
-# ---- sre thread / sre incident (read what the agent did with an incident) ----
-def _threads_path(thread_id=None, suffix=""):
-    base = "/api/v1/threads"
-    return f"{base}/{quote(thread_id, safe='')}{suffix}" if thread_id else base
 
 
-def _query_string(params):
-    pairs = [f"{quote(k, safe='$')}={quote(str(v), safe='')}" for k, v in params if v is not None]
-    return f"?{'&'.join(pairs)}" if pairs else ""
 
 
-def _read_json_arg(value, flag):
-    try:
-        parsed = json.loads(value)
-    except ValueError as ex:
-        raise CLIError(f"{flag} must be a JSON object: {ex}") from ex
-    if not isinstance(parsed, dict):
-        raise CLIError(f"{flag} must be a JSON object.")
-    return parsed
 
 
-@register_command_group("sre thread")
-class _ThreadGroup(AAZCommandGroup):
-    """Read the agent's conversation threads, including the threads it opens
-    to investigate incidents (portal: Incidents / Chats).
-    """
 
 
-@register_command("sre thread list")
-class ThreadList(AAZCommand):
-    """List threads, newest first by default.
-
-    Incident investigations appear here once a response plan matches an incident.
-
-    :example: Show the 10 newest threads
-        az sre thread list -g myrg --agent-name myagent --top 10
-    """
-
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        _add_read_target_args(schema)
-        schema.top = AAZStrArg(options=["--top"], help="Maximum number of threads to return.", default="20")
-        schema.skip = AAZStrArg(options=["--skip"], help="Number of threads to skip (paging).")
-        schema.order_by = AAZStrArg(
-            options=["--order-by"], help="OData ordering.", default="createdTimestamp desc",
-        )
-        schema.severity = AAZStrArg(options=["--severity"], help="Only threads with this severity, e.g. Critical.")
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name, resource_group, agent_url = _read_target(self.ctx.args)
-        query = _query_string([
-            ("$top", _arg_value(self.ctx.args.top)),
-            ("$skip", _arg_value(self.ctx.args.skip)),
-            ("$orderby", _arg_value(self.ctx.args.order_by)),
-            ("severity", _arg_value(self.ctx.args.severity)),
-        ])
-        return _data_plane_request(
-            self.cli_ctx, agent_name, resource_group, "GET", _threads_path() + query, agent_url=agent_url,
-        )
 
 
-@register_command("sre thread show")
-class ThreadShow(AAZCommand):
-    """Show one thread.
-
-    :example: Show a thread
-        az sre thread show -g myrg --agent-name myagent --thread-id 11111111-2222-3333-4444-555555555555
-    """
-
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        _add_read_target_args(schema)
-        schema.thread_id = AAZStrArg(options=["--thread-id", "-t"], help="Thread ID.", required=True)
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name, resource_group, agent_url = _read_target(self.ctx.args)
-        thread_id = _arg_value(self.ctx.args.thread_id)
-        result = _data_plane_request(
-            self.cli_ctx, agent_name, resource_group, "GET", _threads_path(thread_id),
-            missing_ok=True, agent_url=agent_url,
-        )
-        if result is None:
-            raise ResourceNotFoundError(f"Thread '{thread_id}' not found.")
-        return result
 
 
-@register_command("sre thread messages")
-class ThreadMessages(AAZCommand):
-    """Read a thread's messages: the agent's findings and recommendations.
-
-    :example: Read an incident investigation
-        az sre thread messages -g myrg --agent-name myagent --thread-id 11111111-2222-3333-4444-555555555555
-    """
-
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        _add_read_target_args(schema)
-        schema.thread_id = AAZStrArg(options=["--thread-id", "-t"], help="Thread ID.", required=True)
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name, resource_group, agent_url = _read_target(self.ctx.args)
-        thread_id = _arg_value(self.ctx.args.thread_id)
-        result = _data_plane_request(
-            self.cli_ctx, agent_name, resource_group, "GET", _threads_path(thread_id, "/messages"),
-            missing_ok=True, agent_url=agent_url,
-        )
-        if result is None:
-            raise ResourceNotFoundError(f"Thread '{thread_id}' not found.")
-        return result
 
 
-@register_command_group("sre incident")
-class _IncidentGroup(AAZCommandGroup):
-    """Look up incidents on the agent's connected incident platform."""
 
 
-@register_command("sre incident show")
-class IncidentShow(AAZCommand):
-    """Show one incident from the connected incident platform.
-
-    :example: Show an incident
-        az sre incident show -g myrg --agent-name myagent --incident-id 12345
-    """
-
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        _add_read_target_args(schema)
-        schema.incident_id = AAZStrArg(options=["--incident-id"], help="Incident ID.", required=True)
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name, resource_group, agent_url = _read_target(self.ctx.args)
-        incident_id = _arg_value(self.ctx.args.incident_id)
-        result = _data_plane_request(
-            self.cli_ctx, agent_name, resource_group, "GET",
-            "/api/v2/incidentManagement/incidents" + _query_string([("incidentId", incident_id)]),
-            missing_ok=True, agent_url=agent_url,
-        )
-        if result is None:
-            raise ResourceNotFoundError(f"Incident '{incident_id}' not found.")
-        return result
 
 
-_INCIDENT_QUERY_SKIP_FIELDS = (
-    "isEnabled", "name", "id", "etag", "incidentPlatform", "handlingAgents",
-    "createdAt", "updatedAt", "configurationWarning",
-)
 
 
-@register_command("sre incident query")
-class IncidentQuery(AAZCommand):
-    """Preview the incidents a filter would match, without creating anything.
-
-    Give --filter-name to reuse an existing incident filter's match rule, or
-    --filter with a JSON rule. --keywords searches by text.
-
-    :example: Preview what an existing filter matches
-        az sre incident query -g myrg --agent-name myagent --filter-name disk-space-filter
-
-    :example: Preview an ad-hoc rule
-        az sre incident query -g myrg --agent-name myagent --filter '{\\"priorities\\":[\\"2\\"]}'
-    """
-
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        _add_read_target_args(schema)
-        schema.filter_name = AAZStrArg(options=["--filter-name"], help="Use this incident filter's match rule.")
-        schema.filter = AAZStrArg(options=["--filter"], help="Match rule as a JSON object.")
-        schema.keywords = AAZStrArg(options=["--keywords"], help="Search incidents by text.")
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name, resource_group, agent_url = _read_target(self.ctx.args)
-        filter_name = _arg_value(self.ctx.args.filter_name)
-        filter_json = _arg_value(self.ctx.args.filter)
-        keywords = _arg_value(self.ctx.args.keywords)
-        if sum(bool(x) for x in (filter_name, filter_json, keywords)) != 1:
-            raise CLIError("Provide exactly one of --filter-name, --filter or --keywords.")
-        body = {}
-        if keywords:
-            body["Keywords"] = keywords
-        elif filter_json:
-            body["Filter"] = _read_json_arg(filter_json, "--filter")
-        else:
-            if agent_url:
-                existing = _data_plane_request(
-                    self.cli_ctx, agent_name, resource_group, "GET",
-                    _incident_filter_path(filter_name), agent_url=agent_url,
-                )
-            else:
-                existing = _incident_unwrap("filter", _extension_resource_show(
-                    self.cli_ctx, agent_name, resource_group, "incidentFilters", filter_name))
-            rule = {k: v for k, v in dict((existing or {}).get("properties") or {}).items()
-                    if v is not None and k not in _INCIDENT_QUERY_SKIP_FIELDS}
-            body["Filter"] = rule
-        path = "/api/v2/incidentManagement/incidents/query"
-        try:
-            return _data_plane_request(
-                self.cli_ctx, agent_name, resource_group, "POST", path, body=body, agent_url=agent_url,
-            )
-        except Exception as ex:  # pylint: disable=broad-except
-            # The preview API rejects stored-filter fields that differ per platform;
-            # drop the ones it names and retry once.
-            text = _http_error_text(ex)
-            marker = "Unknown incident filter properties:"
-            if filter_name and marker in text and "Filter" in body:
-                names = {n.strip().strip(")") for n in text.split(marker, 1)[1].split(",")}
-                body["Filter"] = {k: v for k, v in body["Filter"].items() if k not in names}
-                return _data_plane_request(
-                    self.cli_ctx, agent_name, resource_group, "POST", path, body=body, agent_url=agent_url,
-                )
-            raise
 
 
 # ---- sre skill (portal: Extensions > Skills / Skill builder) ----

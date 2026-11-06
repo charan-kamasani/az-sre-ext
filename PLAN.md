@@ -46,6 +46,11 @@ hard part, creating a useful agent is.
 
 ## Implementation progress
 
+- Scope decision (2026-11-06): `az sre` is control-plane only. The data-plane
+  `thread` and `incident` groups were removed; the last version is preserved at
+  git tag `data-plane-thread-incident`. `response-plan` stays ARM-first and
+  replays on the data plane only to surface the real error. Threads & Incidents
+  (Priority 1) would need a separate data-plane extension.
 - Incident response API correction (2026-11-06): the `response-plan` group
   (replaced the unreleased `incident-filter`/`incident-handler` commands) uses the agent's
   data-plane endpoints with audience `https://azuresre.dev`. Direct

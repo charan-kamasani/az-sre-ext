@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **26 groups** and **81 commands**.
+Public surface: **24 groups** and **76 commands**.
 
 ## Important caveats
 
@@ -49,7 +49,6 @@ Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "val
 | `endpoint` | Resolve the URL used to actually talk to an SRE Agent's data plane. |
 | `hook` | Manage lifecycle hooks that run a prompt or script at a specific agent event. |
 | `identity` | Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls. |
-| `incident` | Look up incidents on the agent's connected incident platform. |
 | `instructions` | Manage named, reusable prompt snippets ('commonPrompts'). |
 | `knowledge` | Add files or web pages the agent can read and reason over. |
 | `managed-resource` | Let the agent's own managed identity monitor resources outside its own resource group. |
@@ -59,7 +58,6 @@ Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "val
 | `response-plan` | Manage incident response plans (portal: Incidents > "Triggers & |
 | `skill` | Manage custom skills -- specialized capabilities the agent can use. |
 | `subagent` | Manage named sub-agents the meta-agent can hand off work to. |
-| `thread` | Read the agent's conversation threads, including the threads it opens |
 | `tool` | Manage custom tools the agent can call. |
 | `usage` | Read an SRE Agent's usage and billing stats. |
 
@@ -761,64 +759,6 @@ Show the managed identity (-ies) currently assigned to an SRE Agent.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-
-## `az sre incident`
-
-Look up incidents on the agent's connected incident platform.
-
-| Verb | Exact syntax |
-| --- | --- |
-| `query` | `az sre incident query [--name <value>] [--resource-group <value>] [--agent-url <value>] [--filter-name <value>] [--filter <value>] [--keywords <value>]` |
-| `show` | `az sre incident show [--name <value>] [--resource-group <value>] [--agent-url <value>] --incident-id <value>` |
-
-### `az sre incident query`
-
-Preview the incidents a filter would match, without creating anything.
-
-Give --filter-name to reuse an existing incident filter's match rule, or --filter with a JSON rule. --keywords searches by text.
-
-**Syntax**
-
-`az sre incident query [--name <value>] [--resource-group <value>] [--agent-url <value>] [--filter-name <value>] [--filter <value>] [--keywords <value>]`
-
-| Option / aliases | Type | Required | Default | Allowed values | Description |
-| --- | --- | --- | --- | --- | --- |
-| `-n`, `--name`, `--agent-name` | String | No |  |  | Name of the SRE Agent. |
-| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
-| `--filter-name` | String | No |  |  | Use this incident filter's match rule. |
-| `--filter` | String | No |  |  | Match rule as a JSON object. |
-| `--keywords` | String | No |  |  | Search incidents by text. |
-
-**Examples**
-
-- Preview what an existing filter matches
-
-  `az sre incident query -g myrg --agent-name myagent --filter-name disk-space-filter`
-- Preview an ad-hoc rule
-
-  `az sre incident query -g myrg --agent-name myagent --filter '{\"priorities\":[\"2\"]}'`
-
-### `az sre incident show`
-
-Show one incident from the connected incident platform.
-
-**Syntax**
-
-`az sre incident show [--name <value>] [--resource-group <value>] [--agent-url <value>] --incident-id <value>`
-
-| Option / aliases | Type | Required | Default | Allowed values | Description |
-| --- | --- | --- | --- | --- | --- |
-| `-n`, `--name`, `--agent-name` | String | No |  |  | Name of the SRE Agent. |
-| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
-| `--incident-id` | String | Yes |  |  | Incident ID. |
-
-**Examples**
-
-- Show an incident
-
-  `az sre incident show -g myrg --agent-name myagent --incident-id 12345`
 
 ## `az sre instructions`
 
@@ -1544,86 +1484,6 @@ Show a sub-agent.
 - Show one sub-agent
 
   `az sre subagent show -g myrg --agent-name myagent --name app-investigator`
-
-## `az sre thread`
-
-Read the agent's conversation threads, including the threads it opens
-
-to investigate incidents (portal: Incidents / Chats).
-
-| Verb | Exact syntax |
-| --- | --- |
-| `list` | `az sre thread list [--name <value>] [--resource-group <value>] [--agent-url <value>] [--top <value>] [--skip <value>] [--order-by <value>] [--severity <value>]` |
-| `messages` | `az sre thread messages [--name <value>] [--resource-group <value>] [--agent-url <value>] --thread-id <value>` |
-| `show` | `az sre thread show [--name <value>] [--resource-group <value>] [--agent-url <value>] --thread-id <value>` |
-
-### `az sre thread list`
-
-List threads, newest first by default.
-
-Incident investigations appear here once a response plan matches an incident.
-
-**Syntax**
-
-`az sre thread list [--name <value>] [--resource-group <value>] [--agent-url <value>] [--top <value>] [--skip <value>] [--order-by <value>] [--severity <value>]`
-
-| Option / aliases | Type | Required | Default | Allowed values | Description |
-| --- | --- | --- | --- | --- | --- |
-| `-n`, `--name`, `--agent-name` | String | No |  |  | Name of the SRE Agent. |
-| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
-| `--top` | String | No | 20 |  | Maximum number of threads to return. |
-| `--skip` | String | No |  |  | Number of threads to skip (paging). |
-| `--order-by` | String | No | createdTimestamp desc |  | OData ordering. |
-| `--severity` | String | No |  |  | Only threads with this severity, e.g. Critical. |
-
-**Examples**
-
-- Show the 10 newest threads
-
-  `az sre thread list -g myrg --agent-name myagent --top 10`
-
-### `az sre thread messages`
-
-Read a thread's messages: the agent's findings and recommendations.
-
-**Syntax**
-
-`az sre thread messages [--name <value>] [--resource-group <value>] [--agent-url <value>] --thread-id <value>`
-
-| Option / aliases | Type | Required | Default | Allowed values | Description |
-| --- | --- | --- | --- | --- | --- |
-| `-n`, `--name`, `--agent-name` | String | No |  |  | Name of the SRE Agent. |
-| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
-| `--thread-id`, `-t` | String | Yes |  |  | Thread ID. |
-
-**Examples**
-
-- Read an incident investigation
-
-  `az sre thread messages -g myrg --agent-name myagent --thread-id 11111111-2222-3333-4444-555555555555`
-
-### `az sre thread show`
-
-Show one thread.
-
-**Syntax**
-
-`az sre thread show [--name <value>] [--resource-group <value>] [--agent-url <value>] --thread-id <value>`
-
-| Option / aliases | Type | Required | Default | Allowed values | Description |
-| --- | --- | --- | --- | --- | --- |
-| `-n`, `--name`, `--agent-name` | String | No |  |  | Name of the SRE Agent. |
-| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
-| `--thread-id`, `-t` | String | Yes |  |  | Thread ID. |
-
-**Examples**
-
-- Show a thread
-
-  `az sre thread show -g myrg --agent-name myagent --thread-id 11111111-2222-3333-4444-555555555555`
 
 ## `az sre tool`
 

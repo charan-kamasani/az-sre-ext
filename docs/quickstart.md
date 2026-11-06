@@ -273,13 +273,13 @@ Nothing here is all-or-nothing: do the portal-only step, then continue in the CL
 | Create the subagent | CLI | `az sre subagent create`. |
 | Create the response plan | CLI | `az sre response-plan create` (writes the incident filter, plus the handler when `--instructions` is given). Live-verified; CLI-created plans appear in the portal grid. |
 | Turn a plan on/off | CLI | `az sre response-plan enable` / `disable`. |
-| Preview matching incidents | CLI | `az sre incident query --filter-name <name>` (or `--filter '<json>'`). Reads the connected platform's incidents; an agent with no alerts returns an empty list. |
+| Preview matching incidents | Portal | *Incidents* tab. The CLI manages control-plane resources only, so incident listing is not in `az sre`. |
 | Delete the quickstart plan | CLI | `az sre response-plan list`, then `az sre response-plan delete --name quickstart_response_plan`. `list` and `create` warn when a plan with that name exists (name taken from the runtime source; not yet seen live). |
-| Read investigation findings | CLI | `az sre thread list`, then `az sre thread messages --thread-id <id>`. |
+| Read investigation findings | Portal | *Incidents* tab or the agent's chat threads (data plane, outside this extension). |
 
 Control-plane gaps behind these rows: ARM has no quickstart-plan or
 consent operations, and it can hide the real reason a filter is rejected
-behind a generic error. Thread and incident reads use the agent data plane.
+behind a generic error. 
 
 Filter and handler create, show, list and delete go through ARM. If ARM
 returns the generic `extension configuration is invalid` error, the CLI
