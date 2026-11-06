@@ -590,7 +590,7 @@ reading a spec. There is no longer a generic `az sre extension` escape
 hatch: every extension type now has a dedicated front-door noun (`tool`,
 `skill`, `hook`, `instructions`, `knowledge`, `repo connect`,
 `plugin marketplace`/`plugin install`, `agent settings`, `automation
-scheduled-task`/`http-trigger`/`incident-filter`). The one remaining
+scheduled-task`/`http-trigger`, `incident-filter`, `incident-handler`). The one remaining
 generic command group, `az sre managed-resource`, is unrelated RBAC
 plumbing, not an extension-type front door. Status as of the last
 live-verification pass (12 of 15 extension types confirmed live):
@@ -601,7 +601,7 @@ live-verification pass (12 of 15 extension types confirmed live):
 | `globalSettings` (`agent settings`) | `{}` plus optional `toolPermissions`/`toolStatuses`/`skillStatuses`/`customInstructions`/`approvalExpirationSetting` | Shape-confirmed from the control-plane team's own integration tests — true ARM singleton, `DELETE` unsupported, reset via `agent settings update --value '{}'` |
 | `pluginMarketplaces` (`plugin marketplace`), `pluginInstallations` (`plugin install`) | See `PLAN.md` | Create/show live-verified; K8s-backed install provisioning not exercised in this sandbox |
 | `tools` (`tool`), `skills` (`skill`), `hooks` (`hook`), `repositories` (`repo connect`) | Confirmed | Live-verified end to end (PUT + GET round-trip against a real agent) |
-| `incidentFilters` (`incident-filter`), `incidentHandlers` (legacy, intentionally not exposed) | Shape-confirmed from authoritative source | Live-create is environment-blocked (sandbox tenant lacks real IcM team-identity resolution), not a shape defect |
+| `incidentFilters` (`incident-filter`), `incidentHandlers` (`incident-handler`) | Filter: `{name,type:"IncidentFilter",properties:{...}}`; handler: flat JSON with `id` | Dedicated commands use the ARM extension routes with a data-plane replay for the real error; enable/disable use the data plane. Direct API create/read-back and rebuilt CLI list verified; full CLI CRUD (create, show, list, duplicate guard, overwrite, delete) verified on a disposable agent. Real alert ingestion is not yet tested. |
 | `githubAuths`, `azureDevOpsAuths` (both wired up for you by `repo connect`) | Shape-confirmed from authoritative source | Live-create rejected by real credential/token validation on the service side, not a shape defect |
 | `subagents` | No model found | Believed server-managed / Agent-Canvas-only, not CLI-creatable |
 
@@ -904,8 +904,7 @@ confirmed by reading
 `AgentExtensionsApiServiceExtensionTypesTests.cs`'s
 type-name-to-C#-model table in `AAPT-SREAgent-ControlPlane`.
 
-Added noun-specific wrappers (mirroring the `tool`/`repo` pattern) for
-three of the five types:
+Noun-specific commands include:
 
 - `az sre automation scheduled-task create/show/list/delete` -- run the
   agent on a cron schedule against a prompt.
@@ -915,29 +914,42 @@ three of the five types:
   incoming incidents (by platform/title/team/etc.) and route matches to
   a handling agent (portal: Incidents > "Triggers & response plans", a
   separate top-level nav item from Automation).
+- `az sre incident-handler create/show/list/delete` -- response instructions
+  linked to a filter through `incidentFilterId`.
 
 Scheduled task and HTTP trigger were live-verified end-to-end against
 `mytestagent`: created via CLI, confirmed showing up correctly in the
 portal's Automation tab (status, type, and for HTTP triggers the real
 `triggerUrl`), then deleted via CLI and confirmed gone from the portal.
 
-Incident filter's local shape validation was live-verified (both a
-successful shape passing through to the server and a negative case
-rejected locally before any network call), but a full create round-trip
-against our sandbox agent was rejected server-side with a generic
-"The extension configuration is invalid" error. This is consistent with
-needing real IcM/PagerDuty team-identity resolution the sandbox tenant
-doesn't have -- not a shape problem: the same payload shape is used
-successfully by the service's own `PagerDutySetupFixture.cs`/
-`IcmSetupFixture.cs` E2E tests.
+Incident filter and handler create, show, list and delete use the ARM extension routes. On the generic ARM validation error, create replays the request on the agent data plane to surface the real reason. `enable`/`disable` and `--agent-url` reads use the data plane:
+
+- `/api/v2/incidentManagement/incidentFilters[/{name}]`
+- `/api/v2/extendedAgent/incidentHandlers[/{id}]`
+
+The CLI resolves `properties.agentEndpoint` through ARM, then requests a
+token for `https://azuresre.dev`. The caller needs the appropriate SRE Agent
+data-plane role as well as ARM read access. Filter lists return a `value`
+collection; handler lists return an array.
+
+Earlier ARM requests returned "The extension configuration is invalid".
+Live testing showed the ARM routes work. The failures came from agents with
+no incident platform configured, or a `handlingAgent` that did not exist, with
+ARM collapsing the downstream reason into the generic message. On an agent
+with Azure Monitor configured, ARM create/show/list/delete of filters and
+handlers all succeeded (a handler's `incidentFilterId` is the filter name).
+Remaining control-plane bug: some downstream validation errors are still
+masked by the generic message, which is why create replays on the data plane.
+
+Configure `incidentManagementConfiguration.type` to match the filter's
+`incidentPlatform` first. For Azure Monitor, PagerDuty, and ServiceNow,
+set `handlingAgent` to an existing subagent name. The plural
+`handlingAgents` field is IcM-specific. Both create commands refuse to
+replace existing resources unless `--overwrite` is supplied.
+Creating and reading configuration does not prove that a real alert has
+triggered an investigation; that requires a separate incident-flow test.
 
 **Intentionally not wrapped (yet):**
-- `incidentHandlers` -- confirmed **legacy/deprecated**: the control
-  plane has its own migration tooling
-  (`DeleteLegacyIncidentHandlerDocument`, `MigrateLegacyIncidentHandler`)
-  moving everyone onto `incidentFilters` instead. Deliberately not
-  exposed as a CLI create path so the CLI doesn't steer anyone onto a
-  deprecated pattern.
 - `subagents` -- **confirmed not buildable this way**: the portal's real
   "Create a custom agent" dialog bypasses the ARM extensions proxy
   entirely. Switching its UI to YAML view shows it PUTs a raw
@@ -971,7 +983,10 @@ az sre automation http-trigger create -g myrg --agent-name myagent \
   -n alert-webhook --value '{"agentPrompt":"Investigate the attached alert payload"}'
 
 az sre incident-filter create -g myrg --agent-name myagent \
-  -n disk-space-filter --value '{"incidentPlatform":"Icm","titleContains":"disk space","handlingAgents":["storage-oncall-agent"],"isEnabled":true}'
+  -n disk-space-filter --value '{"incidentPlatform":"AzMonitor","titleContains":"disk space","handlingAgent":"storage-oncall-agent","agentMode":"review","isEnabled":false}'
+
+az sre incident-handler create -g myrg --agent-name myagent \
+  -n disk-space-response --value '{"incidentFilterId":"<filter-id-from-show>","customInstructions":"Gather disk-usage evidence and report findings."}'
 ```
 
 ## Networking

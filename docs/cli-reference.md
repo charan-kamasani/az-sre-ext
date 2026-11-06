@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **24 groups** and **74 commands**.
+Public surface: **27 groups** and **85 commands**.
 
 ## Important caveats
 
@@ -49,7 +49,9 @@ Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "val
 | `endpoint` | Resolve the URL used to actually talk to an SRE Agent's data plane. |
 | `hook` | Manage lifecycle hooks that run a prompt or script at a specific agent event. |
 | `identity` | Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls. |
+| `incident` | Look up incidents on the agent's connected incident platform. |
 | `incident-filter` | Manage incident filters (portal: Incidents > "Triggers & response |
+| `incident-handler` | Manage incident response plans (portal: Agent Canvas > a subagent's |
 | `instructions` | Manage named, reusable prompt snippets ('commonPrompts'). |
 | `knowledge` | Add files or web pages the agent can read and reason over. |
 | `managed-resource` | Let the agent's own managed identity monitor resources outside its own resource group. |
@@ -58,6 +60,7 @@ Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "val
 | `repo` | Connect a code repository so the agent can read source during investigations. |
 | `skill` | Manage custom skills -- specialized capabilities the agent can use. |
 | `subagent` | Manage named sub-agents the meta-agent can hand off work to. |
+| `thread` | Read the agent's conversation threads, including the threads it opens |
 | `tool` | Manage custom tools the agent can call. |
 | `usage` | Read an SRE Agent's usage and billing stats. |
 
@@ -354,6 +357,12 @@ Update an SRE Agent.
 - Switch an agent's default model to MicrosoftFoundry
 
   `az sre agent update --name myagent --resource-group myrg \ --default-model "{provider:MicrosoftFoundry,name:gpt-5}"`
+- Connect PagerDuty as the incident platform (portal: Incidents
+
+  `> Connect an incident platform > PagerDuty). This is a plain ARM PATCH on the agent resource -- confirmed via the control plane's own AgentDocument.cs model and real E2E fixtures (PagerDutySetupFixture.cs) -- not the separate, portal-only Connector Gateway (which Jira/Slack/ SharePoint/etc. use). --connection-key is the PagerDuty REST API access key from the tutorial; --obo-user is the user whose identity the agent acts under when resolving/commenting on incidents. az sre agent update --name myagent --resource-group myrg \ --incident-management-configuration "{type:PagerDuty,connection-name:pagerduty,connection-key:<api-key>,obo-user:oncall@contoso.com}"`
+- Connect ServiceNow as the incident platform (Basic Auth; set
+
+  `--connection-url to the instance URL and --connection-key to the credentials, per the tutorial's "instance URL and credentials" step) az sre agent update --name myagent --resource-group myrg \ --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:https://contoso.service-now.com,connection-key:<credentials>}" Azure Monitor needs no configuration here -- it connects automatically when the agent is created (confirmed by the tutorial and by AzMonitor being the enum's implicit default). Icm is this CLI's own sandbox/ first-party path, set the same way with type=Icm.`
 
 ### `az sre agent wait`
 
@@ -754,6 +763,64 @@ Show the managed identity (-ies) currently assigned to an SRE Agent.
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
+## `az sre incident`
+
+Look up incidents on the agent's connected incident platform.
+
+| Verb | Exact syntax |
+| --- | --- |
+| `query` | `az sre incident query [--name <value>] [--resource-group <value>] [--agent-url <value>] [--filter-name <value>] [--filter <value>] [--keywords <value>]` |
+| `show` | `az sre incident show [--name <value>] [--resource-group <value>] [--agent-url <value>] --incident-id <value>` |
+
+### `az sre incident query`
+
+Preview the incidents a filter would match, without creating anything.
+
+Give --filter-name to reuse an existing incident filter's match rule, or --filter with a JSON rule. --keywords searches by text.
+
+**Syntax**
+
+`az sre incident query [--name <value>] [--resource-group <value>] [--agent-url <value>] [--filter-name <value>] [--filter <value>] [--keywords <value>]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `-n`, `--name`, `--agent-name` | String | No |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
+| `--filter-name` | String | No |  |  | Use this incident filter's match rule. |
+| `--filter` | String | No |  |  | Match rule as a JSON object. |
+| `--keywords` | String | No |  |  | Search incidents by text. |
+
+**Examples**
+
+- Preview what an existing filter matches
+
+  `az sre incident query -g myrg --agent-name myagent --filter-name disk-space-filter`
+- Preview an ad-hoc rule
+
+  `az sre incident query -g myrg --agent-name myagent --filter '{\"priorities\":[\"2\"]}'`
+
+### `az sre incident show`
+
+Show one incident from the connected incident platform.
+
+**Syntax**
+
+`az sre incident show [--name <value>] [--resource-group <value>] [--agent-url <value>] --incident-id <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `-n`, `--name`, `--agent-name` | String | No |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
+| `--incident-id` | String | Yes |  |  | Incident ID. |
+
+**Examples**
+
+- Show an incident
+
+  `az sre incident show -g myrg --agent-name myagent --incident-id 12345`
+
 ## `az sre incident-filter`
 
 Manage incident filters (portal: Incidents > "Triggers & response
@@ -764,14 +831,16 @@ plans"): match incoming incidents by platform/title/team/etc. and route matches 
 | --- | --- |
 | `create` | `az sre incident-filter create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
 | `delete` | `az sre incident-filter delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
-| `list` | `az sre incident-filter list --name <value> --resource-group <value>` |
-| `show` | `az sre incident-filter show --agent-name <value> --resource-group <value> --name <value>` |
+| `disable` | `az sre incident-filter disable --agent-name <value> --resource-group <value> --name <value>` |
+| `enable` | `az sre incident-filter enable --agent-name <value> --resource-group <value> --name <value>` |
+| `list` | `az sre incident-filter list [--name <value>] [--resource-group <value>] [--agent-url <value>]` |
+| `show` | `az sre incident-filter show [--agent-name <value>] [--resource-group <value>] [--agent-url <value>] --name <value>` |
 
 ### `az sre incident-filter create`
 
 Create or update an incident filter.
 
-Every payload tried against a real agent is rejected server-side with a generic Bad Request, even when it matches the documented shape. Treat 'incidentFilters' as unverified end-to-end for now.
+Created through ARM (the data plane reports the real reason if ARM rejects it). Configure the matching incident platform first with 'az sre agent update --incident-management-configuration'. Set handlingAgent to an existing subagent; the handlingAgents array is supported only for Icm filters. Pass --overwrite to replace an existing filter.
 
 **Syntax**
 
@@ -781,15 +850,19 @@ Every payload tried against a real agent is rejected server-side with a generic 
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Incident filter configuration as a JSON document. Fields: "incidentPlatform" ("Icm", "AzMonitor", "PagerDuty", "ServiceNow"), "impactedService", "priorities" (array), "incidentTypes" (array; singular "incidentType" still accepted for compatibility), "alertId", "titleContains" (a single substring) OR "titleContainsAll"/"titleContainsAny" (arrays, AND/OR logic -- mutually exclusive with titleContains), "titleNotContains" (array; excludes a match even if other criteria hit, useful for a catch-all filter that should skip incidents already handled by a more specific filter), "agentMode", "handlingAgents" (array; singular "handlingAgent" still accepted), "owningTeamIds" (array; singular "owningTeamId" still accepted), "maxAutomatedInvestigationAttempts" (int -- after this many failed automated RCA attempts on a recurring alert, the agent asks the user for input instead of retrying forever), "mergeEnabled"/"mergeWindowHours" (AzMonitor-only: re-firing alerts merge into the existing thread instead of starting a new investigation, within a 1-24 hour cooldown window), "isEnabled", "icmFilterSettings" (Icm-only object: "monitorIds" (array), "createdBys" (array), "customField": {"customFieldId": <int>, "stringValue": <string>}, "assignableOnly"/"withOnCallRotationsOnly" (bool), "triggerEvents" (array, e.g. "IncidentCreatedOrTransferred", "DiscussionEntry", "IncidentMitigated", "IncidentReactivated", "IncidentResolved", "HitCountIncreased", "IncidentSeverityChanged" -- defaults to ["IncidentCreatedOrTransferred"]), "discussionEntryAuth" ("OnCallOnly" default, "TeamMembers", "AllowlistOnly"), "discussionEntryAllowlist" (array, additive on top of discussionEntryAuth)), "azMonitorFilterSettings" (AzMonitor-only object: "targetResourceType", "targetResource"). Example: {"incidentPlatform": "Icm", "titleContains": "disk space", "handlingAgents": ["storage-oncall-agent"], "isEnabled": true}. |
-| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this incident filter. |
+| `--value` | String | Yes |  |  | Incident filter configuration as a JSON document. Fields: "incidentPlatform" ("Icm", "AzMonitor", "PagerDuty", "ServiceNow"), "impactedService", "priorities" (array), "incidentTypes" (array; singular "incidentType" still accepted for compatibility), "alertId", "titleContains" (a single substring) OR "titleContainsAll"/"titleContainsAny" (arrays, AND/OR logic -- mutually exclusive with titleContains), "titleNotContains" (array; excludes a match even if other criteria hit, useful for a catch-all filter that should skip incidents already handled by a more specific filter), "agentMode", "handlingAgent" (existing subagent name; required except when Icm uses the "handlingAgents" array), "owningTeamIds" (array; singular "owningTeamId" still accepted), "maxAutomatedInvestigationAttempts" (int -- after this many failed automated RCA attempts on a recurring alert, the agent asks the user for input instead of retrying forever), "mergeEnabled"/"mergeWindowHours" (AzMonitor-only: re-firing alerts merge into the existing thread instead of starting a new investigation, within a 1-24 hour cooldown window), "isEnabled", "icmFilterSettings" (Icm-only object: "monitorIds" (array), "createdBys" (array), "customField": {"customFieldId": <int>, "stringValue": <string>}, "assignableOnly"/"withOnCallRotationsOnly" (bool), "triggerEvents" (array, e.g. "IncidentCreatedOrTransferred", "DiscussionEntry", "IncidentMitigated", "IncidentReactivated", "IncidentResolved", "HitCountIncreased", "IncidentSeverityChanged" -- defaults to ["IncidentCreatedOrTransferred"]), "discussionEntryAuth" ("OnCallOnly" default, "TeamMembers", "AllowlistOnly"), "discussionEntryAllowlist" (array, additive on top of discussionEntryAuth)), "azMonitorFilterSettings" (AzMonitor-only object: "targetResourceType", "targetResource"). Example: {"incidentPlatform": "Icm", "titleContains": "disk space", "handlingAgent": "storage-oncall-agent", "isEnabled": true}. |
+| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing incident filter. |
+
+**Examples**
+
+- Create a filter that routes AzMonitor incidents to a subagent
+
+  `az sre incident-filter create -g myrg --agent-name myagent --name disk-space-filter \ --value '{"incidentPlatform": "AzMonitor", "titleContains": "disk space", "handlingAgent": "incident-responder", "agentMode": "review", "isEnabled": true}'`
 
 ### `az sre incident-filter delete`
 
 Delete an incident filter.
-
-Syntax reference only -- see 'sre incident-filter create -h' for a known issue blocking creation of a real filter to delete today.
 
 **Syntax**
 
@@ -799,8 +872,52 @@ Syntax reference only -- see 'sre incident-filter create -h' for a known issue b
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this incident filter. |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
+
+### `az sre incident-filter disable`
+
+Turn off an incident filter without deleting it.
+
+The scanner stops matching incidents against the filter; the configuration is preserved. Use it during maintenance windows.
+
+**Syntax**
+
+`az sre incident-filter disable --agent-name <value> --resource-group <value> --name <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this incident filter. |
+
+**Examples**
+
+- Disable a filter
+
+  `az sre incident-filter disable -g myrg --agent-name myagent --name disk-space-filter`
+
+### `az sre incident-filter enable`
+
+Turn on an incident filter so its response plan matches incidents.
+
+Only isEnabled changes; the rest of the filter is preserved.
+
+**Syntax**
+
+`az sre incident-filter enable --agent-name <value> --resource-group <value> --name <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this incident filter. |
+
+**Examples**
+
+- Enable a filter
+
+  `az sre incident-filter enable -g myrg --agent-name myagent --name disk-space-filter`
 
 ### `az sre incident-filter list`
 
@@ -808,12 +925,13 @@ List incident filters.
 
 **Syntax**
 
-`az sre incident-filter list --name <value> --resource-group <value>`
+`az sre incident-filter list [--name <value>] [--resource-group <value>] [--agent-url <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
-| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
-| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `-n`, `--name`, `--agent-name` | String | No |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
 
 **Examples**
 
@@ -823,19 +941,105 @@ List incident filters.
 
 ### `az sre incident-filter show`
 
-Show an incident filter.
-
-Syntax reference only -- see 'sre incident-filter create -h' for a known issue blocking creation of a real filter to show today.
+Show an incident filter. Use --agent-url to read a shared agent.
 
 **Syntax**
 
-`az sre incident-filter show --agent-name <value> --resource-group <value> --name <value>`
+`az sre incident-filter show [--agent-name <value>] [--resource-group <value>] [--agent-url <value>] --name <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | No |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this incident filter. |
+
+## `az sre incident-handler`
+
+Manage incident response plans (portal: Agent Canvas > a subagent's
+
+"+" > "Add incident response plan"): custom instructions a handling agent follows when an incident-filter routes a match to it.
+
+| Verb | Exact syntax |
+| --- | --- |
+| `create` | `az sre incident-handler create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]` |
+| `delete` | `az sre incident-handler delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
+| `list` | `az sre incident-handler list [--name <value>] [--resource-group <value>] [--agent-url <value>]` |
+| `show` | `az sre incident-handler show [--agent-name <value>] [--resource-group <value>] [--agent-url <value>] --name <value>` |
+
+### `az sre incident-handler create`
+
+Create or update an incident response plan (handler).
+
+Created through ARM (the data plane reports the real reason if ARM rejects it). Link incidentFilterId to an existing filter and pass --overwrite to replace an existing handler.
+
+**Syntax**
+
+`az sre incident-handler create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this incident response plan. |
+| `--value` | String | Yes |  |  | Incident response plan configuration as a JSON document. Fields: "name", "description", "incidentFilterId" (links this handler to the incident-filter whose matches it responds to -- see 'sre incident-filter create'), "customInstructions" (string -- what the handling agent should do for a matched incident), "incidentProcessingGuide" (array of strings, step-by-step guidance), "tools" (array of tool-name strings the handler may use). "id" and "incidents" (array) are server-populated on read, not meant to be set. Example: {"name": "disk-space-response", "incidentFilterId": "<filter-id-from-incident-filter-show>", "customInstructions": "Check disk usage via Kusto, then page on-call if over 90%."}. |
+| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing incident response plan. |
+
+**Examples**
+
+- Create a response plan linked to an incident filter
+
+  `az sre incident-handler create -g myrg --agent-name myagent --name disk-space-response \ --value '{"incidentFilterId": "<id-from-incident-filter-show>", "customInstructions": "Check disk usage and report findings."}'`
+
+### `az sre incident-handler delete`
+
+Delete an incident response plan.
+
+**Syntax**
+
+`az sre incident-handler delete --agent-name <value> --resource-group <value> --name <value> [--yes]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this incident response plan. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
+
+### `az sre incident-handler list`
+
+List incident response plans (handlers).
+
+**Syntax**
+
+`az sre incident-handler list [--name <value>] [--resource-group <value>] [--agent-url <value>]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `-n`, `--name`, `--agent-name` | String | No |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
+
+**Examples**
+
+- List an agent's incident response plans
+
+  `az sre incident-handler list -g myrg --agent-name myagent`
+
+### `az sre incident-handler show`
+
+Show an incident response plan. Use --agent-url to read a shared agent.
+
+**Syntax**
+
+`az sre incident-handler show [--agent-name <value>] [--resource-group <value>] [--agent-url <value>] --name <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | No |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this incident response plan. |
 
 ## `az sre instructions`
 
@@ -1418,6 +1622,86 @@ Show a sub-agent.
 - Show one sub-agent
 
   `az sre subagent show -g myrg --agent-name myagent --name app-investigator`
+
+## `az sre thread`
+
+Read the agent's conversation threads, including the threads it opens
+
+to investigate incidents (portal: Incidents / Chats).
+
+| Verb | Exact syntax |
+| --- | --- |
+| `list` | `az sre thread list [--name <value>] [--resource-group <value>] [--agent-url <value>] [--top <value>] [--skip <value>] [--order-by <value>] [--severity <value>]` |
+| `messages` | `az sre thread messages [--name <value>] [--resource-group <value>] [--agent-url <value>] --thread-id <value>` |
+| `show` | `az sre thread show [--name <value>] [--resource-group <value>] [--agent-url <value>] --thread-id <value>` |
+
+### `az sre thread list`
+
+List threads, newest first by default.
+
+Incident investigations appear here once a response plan matches an incident.
+
+**Syntax**
+
+`az sre thread list [--name <value>] [--resource-group <value>] [--agent-url <value>] [--top <value>] [--skip <value>] [--order-by <value>] [--severity <value>]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `-n`, `--name`, `--agent-name` | String | No |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
+| `--top` | String | No | 20 |  | Maximum number of threads to return. |
+| `--skip` | String | No |  |  | Number of threads to skip (paging). |
+| `--order-by` | String | No | createdTimestamp desc |  | OData ordering. |
+| `--severity` | String | No |  |  | Only threads with this severity, e.g. Critical. |
+
+**Examples**
+
+- Show the 10 newest threads
+
+  `az sre thread list -g myrg --agent-name myagent --top 10`
+
+### `az sre thread messages`
+
+Read a thread's messages: the agent's findings and recommendations.
+
+**Syntax**
+
+`az sre thread messages [--name <value>] [--resource-group <value>] [--agent-url <value>] --thread-id <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `-n`, `--name`, `--agent-name` | String | No |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
+| `--thread-id`, `-t` | String | Yes |  |  | Thread ID. |
+
+**Examples**
+
+- Read an incident investigation
+
+  `az sre thread messages -g myrg --agent-name myagent --thread-id 11111111-2222-3333-4444-555555555555`
+
+### `az sre thread show`
+
+Show one thread.
+
+**Syntax**
+
+`az sre thread show [--name <value>] [--resource-group <value>] [--agent-url <value>] --thread-id <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `-n`, `--name`, `--agent-name` | String | No |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
+| `--thread-id`, `-t` | String | Yes |  |  | Thread ID. |
+
+**Examples**
+
+- Show a thread
+
+  `az sre thread show -g myrg --agent-name myagent --thread-id 11111111-2222-3333-4444-555555555555`
 
 ## `az sre tool`
 

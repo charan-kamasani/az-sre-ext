@@ -229,22 +229,66 @@ az sre endpoint show --resource-group "$RG" --name "$AGENT"
 
 Portal: *Incidents > "Triggers & response plans"*.
 
-Route matching incidents to this agent:
+Configure Azure Monitor and create a subagent before routing incidents.
+This example creates a disabled filter in Review mode, so setup alone
+does not start investigations:
 
 ```bash
+az sre agent update --resource-group "$RG" --name "$AGENT" \
+  --incident-management-configuration '{type:AzMonitor}'
+
+az sre subagent create --resource-group "$RG" --agent-name "$AGENT" \
+  --name incident-responder \
+  --value '{"instructions":"Gather incident evidence and report findings without changing resources.","handoffDescription":"Incident evidence collection","tools":["ReadFile"],"mcpTools":[],"commonTools":[],"allowedSkills":[],"allowParallelToolCalls":true}'
+
 az sre incident-filter create \
   --resource-group "$RG" --agent-name "$AGENT" \
-  --name high-sev --value '{"incidentPlatform":"Icm","titleContains":"disk space","handlingAgents":["'"$AGENT"'"],"isEnabled":true}'
+  --name disk-space --value '{"incidentPlatform":"AzMonitor","titleContains":"disk space","handlingAgent":"incident-responder","agentMode":"review","isEnabled":false}'
+
+az sre incident-filter show \
+  --resource-group "$RG" --agent-name "$AGENT" --name disk-space
+
+az sre incident-handler create \
+  --resource-group "$RG" --agent-name "$AGENT" \
+  --name disk-space-response \
+  --value '{"incidentFilterId":"<id-from-filter-show>","customInstructions":"Gather disk-usage evidence and report findings."}'
+
+# Turn the plan on or off without deleting it (only isEnabled changes)
+az sre incident-filter enable  --resource-group "$RG" --agent-name "$AGENT" --name disk-space
+az sre incident-filter disable --resource-group "$RG" --agent-name "$AGENT" --name disk-space
 ```
 
-> **Known environment limitation:** live-create of `incident-filter` is
-> blocked in sandbox/dev tenants that lack real IcM team-identity
-> resolution — confirmed to fail with `(InvalidRequestParameter) The
-> extension configuration is invalid.` even with a payload shape that
-> matches the documented schema exactly. This is not a CLI defect; see
-> [`operations.md`](operations.md#runbook-extension-payload-shapes) for the
-> full status table. `scheduled-task`/`http-trigger` below don't have this
-> restriction and are live-verified to work end to end.
+### Portal vs. CLI for this step (benchmark: tutorial "Step 4: Set up incident response")
+
+Which parts of the tutorial the CLI covers, and where to hand off to the portal.
+Nothing here is all-or-nothing: do the portal-only step, then continue in the CLI.
+
+| Tutorial step | Where | How |
+|---|---|---|
+| Azure Monitor as incident source | CLI | Automatic at agent creation. Check with `az sre agent show ... --query properties.incidentManagementConfiguration`. |
+| Connect PagerDuty | Portal *Incidents > Connect an incident platform*, or CLI (untested) | The ARM agent resource has `incidentManagementConfiguration.{type,connectionKey,oboUser}`, so `az sre agent update --incident-management-configuration` may work. Not yet live-verified. |
+| Connect ServiceNow | Portal | Basic credentials may be scriptable through `connectionUrl`/`connectionKey` (untested). The OAuth flow opens a browser popup and needs the portal. |
+| Disconnect/switch platform | Portal *Incidents > ... menu* | No verified CLI path. A filter's `incidentPlatform` must match the agent's configured type. |
+| Create the subagent | CLI | `az sre subagent create`. |
+| Create the response plan | CLI | `az sre incident-filter create`, then `az sre incident-handler create`. |
+| Turn a plan on/off | CLI | `az sre incident-filter enable` / `disable`. |
+| Preview matching incidents | CLI | `az sre incident query --filter-name <name>` (or `--filter '<json>'`). Reads the connected platform's incidents; an agent with no alerts returns an empty list. |
+| Delete the quickstart plan | CLI | `az sre incident-filter list`, then `delete`. The CLI does not flag which plan is the quickstart one. |
+| Read investigation findings | CLI | `az sre thread list`, then `az sre thread messages --thread-id <id>`. |
+
+Control-plane gaps behind these rows: ARM has no quickstart-plan or
+consent operations, and it can hide the real reason a filter is rejected
+behind a generic error. Thread and incident reads use the agent data plane.
+
+Filter and handler create, show, list and delete go through ARM. If ARM
+returns the generic `extension configuration is invalid` error, the CLI
+replays the request on the agent data plane (audience `https://azuresre.dev`)
+to show the real reason. `enable`/`disable` and `--agent-url` reads use the
+data plane. Configure an incident platform on the agent first
+(`az sre agent update --incident-management-configuration`). Use `--overwrite` to intentionally update an existing filter or
+handler. Review the saved configuration before enabling a filter; this
+example does not test real alert delivery or automatic investigation.
+See the [incident response tutorial](https://learn.microsoft.com/azure/sre-agent/tutorial-incident-response).
 
 Run the agent on a schedule, and from an inbound webhook:
 

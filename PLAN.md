@@ -46,6 +46,25 @@ hard part, creating a useful agent is.
 
 ## Implementation progress
 
+- Incident response API correction (2026-11-06): dedicated
+  `incident-filter` and `incident-handler` CRUD commands now use the agent's
+  data-plane endpoints with audience `https://azuresre.dev`. Direct
+  create/read-back on the test agent succeeded where ARM extension calls
+  returned generic validation errors; the earlier IcM-identity explanation
+  was unproven. Filter writes use a name/type/properties envelope; handlers
+  use flat JSON with an ID matching the URL. Existing-name protection is
+  preserved through `--overwrite`. Runtime source confirms plural
+  `handlingAgents` is IcM-only; Azure Monitor needs singular `handlingAgent`.
+  Offline regressions and rebuilt-wheel read-only calls pass; disposable-agent
+  CLI write qualification passed on a disposable agent (subagent, filter,
+  handler create/show/list/duplicate-guard/overwrite/delete; agent then
+  deleted). `incident-filter enable`/`disable` (PATCH of `isEnabled` only)
+  also passed live on a second disposable agent: other fields preserved,
+  missing filter reported as not found. Duplicate-handler error now names the
+  ID. Portal-vs-CLI table for tutorial Step 4 added to `docs\quickstart.md`.
+  Preview of matching incidents is not implemented. Earlier scope/status rows above
+  predate this correction. Real incident ingestion/investigation is not yet
+  qualified by these configuration checks.
 - The command surface is generated from the `Microsoft.App/agents` Swagger
   using `aaz-dev`, under the public command name `az app agent ...` (the
   swagger's RP folder is literally `app`). `custom.py` subclasses every
