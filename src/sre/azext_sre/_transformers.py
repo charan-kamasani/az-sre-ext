@@ -102,6 +102,22 @@ def connector_show_table_format(result):
     return _connector_row(result)
 
 
+def response_plan_list_table_format(result):
+    """Curated columns for 'sre response-plan list' -o table (mirrors the portal grid)."""
+    rows = []
+    for item in result:
+        props = item.get("properties") or {} if isinstance(item, dict) else {}
+        rows.append(OrderedDict([
+            ("Name", item.get("name")),
+            ("Enabled", props.get("isEnabled")),
+            ("Platform", props.get("incidentPlatform")),
+            ("Subagent", props.get("handlingAgent")),
+            ("Priority", ", ".join(props.get("priorities") or []) or "All"),
+            ("Mode", props.get("agentMode")),
+        ]))
+    return rows
+
+
 # Maps AZ_NAME -> table transformer, applied in commands.py right after each
 # custom.py AAZCommand recipe is instantiated.
 TABLE_TRANSFORMERS = {
@@ -109,4 +125,5 @@ TABLE_TRANSFORMERS = {
     "sre managed-resource list": managed_resource_list_table_format,
     "sre connector list": connector_list_table_format,
     "sre connector show": connector_show_table_format,
+    "sre response-plan list": response_plan_list_table_format,
 }

@@ -272,7 +272,7 @@ Nothing here is all-or-nothing: do the portal-only step, then continue in the CL
 | Disconnect/switch platform | Portal *Incidents > ... menu* | No verified CLI path. A filter's `incidentPlatform` must match the agent's configured type. |
 | Create the subagent | CLI | `az sre subagent create`. |
 | Create the response plan | CLI | `az sre response-plan create` (writes the incident filter, plus the handler when `--instructions` is given). Live-verified; CLI-created plans appear in the portal grid. |
-| Turn a plan on/off | CLI | `az sre response-plan enable` / `disable`. |
+| Turn a plan on/off | CLI | `az sre response-plan enable` / `disable`; change other settings with `update`. |
 | Preview matching incidents | Portal | *Incidents* tab. The CLI manages control-plane resources only, so incident listing is not in `az sre`. |
 | Delete the quickstart plan | CLI | `az sre response-plan list`, then `az sre response-plan delete --name quickstart_response_plan`. `list` and `create` warn when a plan with that name exists (name taken from the runtime source; not yet seen live). |
 | Read investigation findings | Portal | *Incidents* tab or the agent's chat threads (data plane, outside this extension). |
@@ -281,10 +281,10 @@ Control-plane gaps behind these rows: ARM has no quickstart-plan or
 consent operations, and it can hide the real reason a filter is rejected
 behind a generic error. 
 
-Filter and handler create, show, list and delete go through ARM. If ARM
+Response plan create, update, show, list, delete, enable and disable go through ARM. If ARM
 returns the generic `extension configuration is invalid` error, the CLI
 replays the request on the agent data plane (audience `https://azuresre.dev`)
-to show the real reason. `enable`/`disable` and `--agent-url` reads use the
+to show the real reason. Only `--agent-url` reads (shared agents) use the
 data plane. Configure an incident platform on the agent first
 (`az sre agent update --incident-management-configuration`). Use `--overwrite` to intentionally update an existing filter or
 handler. Review the saved configuration before enabling a filter; this

@@ -1196,20 +1196,66 @@ class IncidentDataPlaneTests(unittest.TestCase):
             _incident_resource_create(None, "agent", "rg", "incidentFilters", "plan", {}, "/p", {}, True)
         dp.assert_not_called()
 
-    def test_enable_disable_patch_only_is_enabled(self):
+    def test_enable_disable_write_is_enabled_through_arm(self):
         from azext_sre.custom import ResponsePlanEnable, ResponsePlanDisable
         for cls, flag in ((ResponsePlanEnable, True), (ResponsePlanDisable, False)):
             with self.subTest(command=cls.__name__):
-                output, request = self._run(cls, result={"name": "plan"})
-                self.assertEqual(output, {"name": "plan"})
-                self.assertEqual(request.call_args_list[0].args[3:], (
-                    "GET", "/api/v2/incidentManagement/incidentFilters/plan"))
-                self.assertEqual(request.call_args.args[3:], (
-                    "PATCH", "/api/v2/incidentManagement/incidentFilters/plan"))
-                self.assertEqual(request.call_args.kwargs["body"], {
-                    "name": "plan", "type": "IncidentFilter", "properties": {"isEnabled": flag}})
-        with self.assertRaises(ResourceNotFoundError):
-            self._run(ResponsePlanEnable)
+                command = _bare_command(cls, agent_name="a", resource_group="rg", extension_name="plan")
+                existing = {"name": "plan", "properties": {"value": {
+                    "handlingAgent": "s", "isEnabled": not flag, "handlingAgents": None}}}
+                with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+                     patch("azext_sre.custom._extension_resource_show", return_value=existing), \
+                     patch("azext_sre.custom._incident_resource_create", return_value={"ok": 1}) as create, \
+                     patch("azext_sre.custom._data_plane_request") as dp:
+                    command._handler(None)
+                dp.assert_not_called()
+                value = create.call_args.args[5]
+                self.assertEqual(value, {"handlingAgent": "s", "isEnabled": flag})
+                self.assertTrue(create.call_args.args[8])
+
+    def test_update_merges_only_passed_flags_through_arm(self):
+        from azext_sre.custom import ResponsePlanUpdate
+        values = dict(
+            agent_name="a", resource_group="rg", extension_name="plan", platform=None,
+            subagent=None, mode="review", priorities=["Sev0"], title_contains=None,
+            title_not_contains=None, incident_types=None, impacted_service=None,
+            owning_teams=None, merge_enabled=None, merge_window_hours=6,
+            instructions=None, processing_guide=None)
+        command = _bare_command(ResponsePlanUpdate, **values)
+        existing = {"name": "plan", "properties": {"value": {
+            "handlingAgent": "s", "priorities": ["Sev1"], "titleContains": "x", "handlingAgents": None}}}
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._extension_resource_show", return_value=existing), \
+             patch("azext_sre.custom._incident_resource_create", return_value={"ok": 1}) as create:
+            command._handler(None)
+        self.assertEqual(create.call_args.args[5], {
+            "handlingAgent": "s", "priorities": ["Sev0"], "titleContains": "x",
+            "agentMode": "review", "mergeWindowHours": 6})
+
+    def test_update_requires_a_change_and_validates_mode(self):
+        from azext_sre.custom import ResponsePlanUpdate
+        base = dict(
+            agent_name="a", resource_group="rg", extension_name="plan", platform=None,
+            subagent=None, mode=None, priorities=None, title_contains=None,
+            title_not_contains=None, incident_types=None, impacted_service=None,
+            owning_teams=None, merge_enabled=None, merge_window_hours=None,
+            instructions=None, processing_guide=None)
+        for override in ({}, {"mode": "yolo"}, {"merge_window_hours": 0}):
+            with self.subTest(override=override):
+                command = _bare_command(ResponsePlanUpdate, **{**base, **override})
+                with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+                     self.assertRaises(CLIError):
+                    command._handler(None)
+
+    def test_list_table_format_mirrors_portal_columns(self):
+        from azext_sre._transformers import response_plan_list_table_format
+        rows = response_plan_list_table_format([{"name": "p", "properties": {
+            "isEnabled": True, "incidentPlatform": "Icm", "handlingAgent": "s",
+            "priorities": ["1", "2"], "agentMode": "review"}}, {"name": "q", "properties": {}}])
+        self.assertEqual(dict(rows[0]), {
+            "Name": "p", "Enabled": True, "Platform": "Icm", "Subagent": "s",
+            "Priority": "1, 2", "Mode": "review"})
+        self.assertEqual(rows[1]["Priority"], "All")
 
     def test_agent_url_reads_shared_agent_without_arm(self):
         from azext_sre.custom import ResponsePlanList
@@ -1235,6 +1281,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
         command = _bare_command(
             ResponsePlanCreate, agent_name="a", resource_group="rg", extension_name="plan",
             platform="AzMonitor", subagent="responder", priorities=["Sev1"], title_contains=None,
+            incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="review", disabled=None,
             instructions="Check logs", processing_guide=None, overwrite=None)
         created = []
@@ -1257,6 +1304,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
         command = _bare_command(
             ResponsePlanCreate, agent_name="a", resource_group="rg", extension_name="plan",
             platform="AzMonitor", subagent="s", priorities=None, title_contains=None,
+            incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="yolo", disabled=None,
             instructions=None, processing_guide=None, overwrite=None)
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \

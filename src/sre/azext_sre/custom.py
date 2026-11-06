@@ -55,6 +55,7 @@ from azure.cli.core.aaz import (
     AAZBoolArg,
     AAZCommand,
     AAZCommandGroup,
+    AAZIntArg,
     AAZListArg,
     AAZObjectArg,
     AAZResourceGroupNameArg,
@@ -3268,6 +3269,13 @@ def _validate_incident_filters_shape(parsed):
         raise CLIError("--value.isEnabled must be a boolean.")
     if "handlingAgent" in parsed and not isinstance(parsed["handlingAgent"], str):
         raise CLIError("--value.handlingAgent must be a string (the name of an existing subagent).")
+    if "impactedService" in parsed and not isinstance(parsed["impactedService"], str):
+        raise CLIError("--value.impactedService must be a string.")
+    if "mergeEnabled" in parsed and not isinstance(parsed["mergeEnabled"], bool):
+        raise CLIError("--value.mergeEnabled must be a boolean.")
+    if "mergeWindowHours" in parsed and (
+            isinstance(parsed["mergeWindowHours"], bool) or not isinstance(parsed["mergeWindowHours"], int)):
+        raise CLIError("--value.mergeWindowHours must be an integer.")
     for list_field in ("owningTeamIds", "handlingAgents"):
         if list_field in parsed:
             value = parsed[list_field]
@@ -4392,19 +4400,10 @@ def _incident_resource_create(cli_ctx, agent_name, resource_group, extension_typ
 
 
 def _set_incident_filter_enabled(command, enabled):
-    agent_name = _arg_value(command.ctx.args.agent_name)
-    resource_group = _arg_value(command.ctx.args.resource_group)
-    name = _arg_value(command.ctx.args.extension_name)
-    path = _incident_filter_path(name)
-    if _data_plane_request(
-            command.cli_ctx, agent_name, resource_group, "GET", path, missing_ok=True) is None:
-        raise ResourceNotFoundError(
-            f"Incident filter '{name}' not found on agent '{agent_name}'."
-        )
-    body = {"name": name, "type": "IncidentFilter", "properties": {"isEnabled": enabled}}
-    return _data_plane_request(
-        command.cli_ctx, agent_name, resource_group, "PATCH", path, body=body,
-    )
+    return _response_plan_apply_filter_changes(
+        command.cli_ctx, _arg_value(command.ctx.args.agent_name),
+        _arg_value(command.ctx.args.resource_group),
+        _arg_value(command.ctx.args.extension_name), {"isEnabled": enabled})
 
 
 def _incident_filter_toggle_schema(cls, schema):
@@ -4470,6 +4469,87 @@ def _response_plan_handlers_for(cli_ctx, agent_name, resource_group, plan_name):
     return [h for h in handlers if isinstance(h, dict) and h.get("incidentFilterId") == plan_name]
 
 
+def _add_response_plan_criteria_args(schema):
+    """Match criteria and handler options shared by response-plan create/update."""
+    schema.priorities = AAZListArg(
+        options=["--priority"],
+        help="Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all.",
+    )
+    schema.priorities.Element = AAZStrArg()
+    schema.title_contains = AAZStrArg(
+        options=["--title-contains"], help="Only match incidents whose title contains this text.",
+    )
+    schema.title_not_contains = AAZListArg(
+        options=["--title-not-contains"],
+        help="Space-separated texts; skip incidents whose title contains any of them.",
+    )
+    schema.title_not_contains.Element = AAZStrArg()
+    schema.incident_types = AAZListArg(
+        options=["--incident-type"],
+        help="Space-separated incident types to match (for example LiveSite). Portal: Incident type.",
+    )
+    schema.incident_types.Element = AAZStrArg()
+    schema.impacted_service = AAZStrArg(
+        options=["--impacted-service"], help="Only match incidents for this service. Portal: Owning service.",
+    )
+    schema.owning_teams = AAZListArg(
+        options=["--owning-team"],
+        help="Space-separated owning team IDs (IcM team IDs are numeric). Portal: Owning team.",
+    )
+    schema.owning_teams.Element = AAZStrArg()
+    schema.merge_enabled = AAZBoolArg(
+        options=["--merge-enabled"],
+        help="Merge related incidents into one investigation thread. Service default: true.",
+    )
+    schema.merge_window_hours = AAZIntArg(
+        options=["--merge-window-hours"],
+        help="Hours within which related incidents are merged. Service default: 3.",
+    )
+    schema.instructions = AAZStrArg(
+        options=["--instructions"], help="Custom instructions the subagent follows for matched incidents.",
+    )
+    schema.processing_guide = AAZListArg(
+        options=["--processing-guide"],
+        help="Quoted step-by-step guidance for the subagent, one value per step.",
+    )
+    schema.processing_guide.Element = AAZStrArg()
+
+
+def _response_plan_criteria(args):
+    """Filter properties for every criteria flag the user actually passed."""
+    flt = {}
+    for key, arg in (
+            ("priorities", args.priorities), ("titleNotContains", args.title_not_contains),
+            ("incidentTypes", args.incident_types), ("owningTeamIds", args.owning_teams)):
+        values = _arg_value(arg)
+        if values:
+            flt[key] = list(values)
+    for key, arg in (("titleContains", args.title_contains), ("impactedService", args.impacted_service)):
+        value = _arg_value(arg)
+        if value:
+            flt[key] = value
+    merge_enabled = _arg_value(args.merge_enabled)
+    if merge_enabled is not None:
+        flt["mergeEnabled"] = bool(merge_enabled)
+    window = _arg_value(args.merge_window_hours)
+    if window is not None:
+        if window < 1:
+            raise CLIError("--merge-window-hours must be at least 1.")
+        flt["mergeWindowHours"] = window
+    return flt
+
+
+def _response_plan_handler_fields(args):
+    handler = {}
+    instructions = _arg_value(args.instructions)
+    guide = _arg_value(args.processing_guide)
+    if instructions:
+        handler["customInstructions"] = instructions
+    if guide:
+        handler["incidentProcessingGuide"] = list(guide)
+    return handler
+
+
 @register_command("sre response-plan create")
 class ResponsePlanCreate(AAZCommand):
     """Create or update an incident response plan.
@@ -4498,9 +4578,13 @@ class ResponsePlanCreate(AAZCommand):
             --title-not-contains test synthetic \\
             --processing-guide "Check recent deployments" "Query error rates in App Insights"
 
-    :example: Update an existing plan (create replaces it only with --overwrite)
-        az sre response-plan create -g myrg --agent-name myagent -n api-errors \\
-            --platform AzMonitor --subagent incident-responder --mode autonomous --overwrite
+    :example: Match by incident type and service, and tune incident merging
+        az sre response-plan create -g myrg --agent-name myagent -n web-livesite \\
+            --platform AzMonitor --subagent incident-responder --incident-type LiveSite \\
+            --impacted-service Web --merge-window-hours 6
+
+    :example: Change an existing plan with 'az sre response-plan update' (create needs --overwrite)
+        az sre response-plan update -g myrg --agent-name myagent -n api-errors --mode autonomous
     """
 
     _args_schema = None
@@ -4519,19 +4603,7 @@ class ResponsePlanCreate(AAZCommand):
             options=["--subagent"], required=True,
             help="Name of the existing subagent that handles matched incidents.",
         )
-        schema.priorities = AAZListArg(
-            options=["--priority"],
-            help="Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all.",
-        )
-        schema.priorities.Element = AAZStrArg()
-        schema.title_contains = AAZStrArg(
-            options=["--title-contains"], help="Only match incidents whose title contains this text.",
-        )
-        schema.title_not_contains = AAZListArg(
-            options=["--title-not-contains"],
-            help="Space-separated texts; skip incidents whose title contains any of them.",
-        )
-        schema.title_not_contains.Element = AAZStrArg()
+        _add_response_plan_criteria_args(schema)
         schema.mode = AAZStrArg(
             options=["--mode"], default="autonomous",
             help="Agent autonomy: autonomous (portal default) or review (agent proposes, you approve).",
@@ -4539,14 +4611,6 @@ class ResponsePlanCreate(AAZCommand):
         schema.disabled = AAZBoolArg(
             options=["--disabled"], help="Create the plan turned off.",
         )
-        schema.instructions = AAZStrArg(
-            options=["--instructions"], help="Custom instructions the subagent follows for matched incidents.",
-        )
-        schema.processing_guide = AAZListArg(
-            options=["--processing-guide"],
-            help="Quoted step-by-step guidance for the subagent, one value per step.",
-        )
-        schema.processing_guide.Element = AAZStrArg()
         schema.overwrite = AAZBoolArg(
             options=["--overwrite"], help="Allow replacing an existing response plan.",
         )
@@ -4572,26 +4636,15 @@ class ResponsePlanCreate(AAZCommand):
             "agentMode": mode,
             "isEnabled": not bool(_arg_value(args.disabled)),
         }
-        for key, arg in (("priorities", args.priorities), ("titleNotContains", args.title_not_contains)):
-            values = _arg_value(arg)
-            if values:
-                flt[key] = list(values)
-        title = _arg_value(args.title_contains)
-        if title:
-            flt["titleContains"] = title
+        flt.update(_response_plan_criteria(args))
         _validate_incident_filters_shape(flt)
         filter_body = {"name": name, "type": "IncidentFilter", "properties": flt}
         result = {"filter": _incident_resource_create(
             self.cli_ctx, agent_name, resource_group, "incidentFilters", name,
             flt, _incident_filter_path(name), filter_body, overwrite)}
-        instructions = _arg_value(args.instructions)
-        guide = _arg_value(args.processing_guide)
-        if instructions or guide:
-            handler = {"id": name, "incidentFilterId": name}
-            if instructions:
-                handler["customInstructions"] = instructions
-            if guide:
-                handler["incidentProcessingGuide"] = list(guide)
+        handler_fields = _response_plan_handler_fields(args)
+        if handler_fields:
+            handler = {"id": name, "incidentFilterId": name, **handler_fields}
             _validate_incident_handlers_shape(handler)
             try:
                 result["handler"] = _incident_resource_create(
@@ -4608,6 +4661,94 @@ class ResponsePlanCreate(AAZCommand):
                 [f for f in existing.get("value", []) if f.get("name") != name], agent_name)
         except Exception:  # pylint: disable=broad-except
             pass  # the warning is advisory; never fail a successful create
+        return result
+
+
+def _response_plan_apply_filter_changes(cli_ctx, agent_name, resource_group, name, changes):
+    """Read the plan's filter through ARM, apply changes, write it back through ARM."""
+    existing = _incident_unwrap("filter", _extension_resource_show(
+        cli_ctx, agent_name, resource_group, "incidentFilters", name))
+    # ARM echoes unset fields as null, which the service rejects on write.
+    properties = {k: v for k, v in (existing.get("properties") or {}).items() if v is not None}
+    properties.update(changes)
+    _validate_incident_filters_shape(properties)
+    return _incident_resource_create(
+        cli_ctx, agent_name, resource_group, "incidentFilters", name, properties,
+        _incident_filter_path(name),
+        {"name": name, "type": "IncidentFilter", "properties": properties}, True)
+
+
+@register_command("sre response-plan update")
+class ResponsePlanUpdate(AAZCommand):
+    """Update an existing response plan. Only the flags you pass change.
+
+    Passing a list flag (for example --priority) replaces that whole list.
+    Use 'enable' or 'disable' to turn a plan on or off.
+
+    :example: Change the autonomy mode and the merge window
+        az sre response-plan update -g myrg --agent-name myagent -n sev1-api \\
+            --mode autonomous --merge-window-hours 6
+
+    :example: Point a plan at a different subagent and replace its severities
+        az sre response-plan update -g myrg --agent-name myagent -n sev1-api \\
+            --subagent other-responder --priority Sev0 Sev1
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        _response_plan_target_schema(schema)
+        schema.platform = AAZStrArg(
+            options=["--platform"],
+            help="Incident platform: " + ", ".join(RESPONSE_PLAN_PLATFORMS) + ".",
+        )
+        schema.subagent = AAZStrArg(
+            options=["--subagent"], help="Name of the existing subagent that handles matched incidents.",
+        )
+        schema.mode = AAZStrArg(
+            options=["--mode"], help="Agent autonomy: autonomous or review.",
+        )
+        _add_response_plan_criteria_args(schema)
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        args = self.ctx.args
+        agent_name = _arg_value(args.agent_name)
+        resource_group = _arg_value(args.resource_group)
+        name = _arg_value(args.extension_name)
+        changes = _response_plan_criteria(args)
+        for key, arg, allowed in (
+                ("incidentPlatform", args.platform, RESPONSE_PLAN_PLATFORMS),
+                ("agentMode", args.mode, RESPONSE_PLAN_MODES)):
+            value = _arg_value(arg)
+            if value is not None:
+                if value not in allowed:
+                    flag = "--platform" if key == "incidentPlatform" else "--mode"
+                    raise CLIError(f"{flag} must be one of: {', '.join(allowed)}.")
+                changes[key] = value
+        subagent = _arg_value(args.subagent)
+        if subagent:
+            changes["handlingAgent"] = subagent
+        handler_fields = _response_plan_handler_fields(args)
+        if not changes and not handler_fields:
+            raise CLIError("Nothing to update. Pass at least one option to change.")
+        result = {"filter": _response_plan_apply_filter_changes(
+            self.cli_ctx, agent_name, resource_group, name, changes)}
+        if handler_fields:
+            handlers = _response_plan_handlers_for(self.cli_ctx, agent_name, resource_group, name)
+            handler = dict(handlers[0]) if handlers else {"id": name, "incidentFilterId": name}
+            handler.update(handler_fields)
+            _validate_incident_handlers_shape(handler)
+            result["handler"] = _incident_resource_create(
+                self.cli_ctx, agent_name, resource_group, "incidentHandlers",
+                handler.get("id") or name, handler,
+                _incident_handler_path(handler.get("id") or name), handler, True)
         return result
 
 

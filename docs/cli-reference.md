@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **24 groups** and **76 commands**.
+Public surface: **24 groups** and **77 commands**.
 
 ## Important caveats
 
@@ -1150,12 +1150,13 @@ response plans"). A plan routes matching incidents to a subagent.
 
 | Verb | Exact syntax |
 | --- | --- |
-| `create` | `az sre response-plan create --agent-name <value> --resource-group <value> --name <value> --platform <value> --subagent <value> [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--mode <value>] [--disabled {false,true}] [--instructions <value>] [--processing-guide <json-or-@file>] [--overwrite {false,true}]` |
+| `create` | `az sre response-plan create --agent-name <value> --resource-group <value> --name <value> --platform <value> --subagent <value> [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--incident-type <json-or-@file>] [--impacted-service <value>] [--owning-team <json-or-@file>] [--merge-enabled {false,true}] [--merge-window-hours <integer>] [--instructions <value>] [--processing-guide <json-or-@file>] [--mode <value>] [--disabled {false,true}] [--overwrite {false,true}]` |
 | `delete` | `az sre response-plan delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
 | `disable` | `az sre response-plan disable --agent-name <value> --resource-group <value> --name <value>` |
 | `enable` | `az sre response-plan enable --agent-name <value> --resource-group <value> --name <value>` |
 | `list` | `az sre response-plan list [--name <value>] [--resource-group <value>] [--agent-url <value>]` |
 | `show` | `az sre response-plan show [--agent-name <value>] [--resource-group <value>] [--agent-url <value>] --name <value>` |
+| `update` | `az sre response-plan update --agent-name <value> --resource-group <value> --name <value> [--platform <value>] [--subagent <value>] [--mode <value>] [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--incident-type <json-or-@file>] [--impacted-service <value>] [--owning-team <json-or-@file>] [--merge-enabled {false,true}] [--merge-window-hours <integer>] [--instructions <value>] [--processing-guide <json-or-@file>]` |
 
 ### `az sre response-plan create`
 
@@ -1165,7 +1166,7 @@ Routes incidents that match the criteria to a subagent. Connect the incident pla
 
 **Syntax**
 
-`az sre response-plan create --agent-name <value> --resource-group <value> --name <value> --platform <value> --subagent <value> [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--mode <value>] [--disabled {false,true}] [--instructions <value>] [--processing-guide <json-or-@file>] [--overwrite {false,true}]`
+`az sre response-plan create --agent-name <value> --resource-group <value> --name <value> --platform <value> --subagent <value> [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--incident-type <json-or-@file>] [--impacted-service <value>] [--owning-team <json-or-@file>] [--merge-enabled {false,true}] [--merge-window-hours <integer>] [--instructions <value>] [--processing-guide <json-or-@file>] [--mode <value>] [--disabled {false,true}] [--overwrite {false,true}]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -1177,10 +1178,15 @@ Routes incidents that match the criteria to a subagent. Connect the incident pla
 | `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all. |
 | `--title-contains` | String | No |  |  | Only match incidents whose title contains this text. |
 | `--title-not-contains` | List | No |  |  | Space-separated texts; skip incidents whose title contains any of them. |
-| `--mode` | String | No | autonomous |  | Agent autonomy: autonomous (portal default) or review (agent proposes, you approve). |
-| `--disabled` | Boolean | No |  | `false`, `true` | Create the plan turned off. |
+| `--incident-type` | List | No |  |  | Space-separated incident types to match (for example LiveSite). Portal: Incident type. |
+| `--impacted-service` | String | No |  |  | Only match incidents for this service. Portal: Owning service. |
+| `--owning-team` | List | No |  |  | Space-separated owning team IDs (IcM team IDs are numeric). Portal: Owning team. |
+| `--merge-enabled` | Boolean | No |  | `false`, `true` | Merge related incidents into one investigation thread. Service default: true. |
+| `--merge-window-hours` | Integer | No |  |  | Hours within which related incidents are merged. Service default: 3. |
 | `--instructions` | String | No |  |  | Custom instructions the subagent follows for matched incidents. |
 | `--processing-guide` | List | No |  |  | Quoted step-by-step guidance for the subagent, one value per step. |
+| `--mode` | String | No | autonomous |  | Agent autonomy: autonomous (portal default) or review (agent proposes, you approve). |
+| `--disabled` | Boolean | No |  | `false`, `true` | Create the plan turned off. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing response plan. |
 
 **Examples**
@@ -1194,9 +1200,12 @@ Routes incidents that match the criteria to a subagent. Connect the incident pla
 - Skip noisy incidents and give the subagent step-by-step guidance
 
   `az sre response-plan create -g myrg --agent-name myagent -n api-errors \ --platform AzMonitor --subagent incident-responder --priority Sev1 Sev2 \ --title-not-contains test synthetic \ --processing-guide "Check recent deployments" "Query error rates in App Insights"`
-- Update an existing plan (create replaces it only with --overwrite)
+- Match by incident type and service, and tune incident merging
 
-  `az sre response-plan create -g myrg --agent-name myagent -n api-errors \ --platform AzMonitor --subagent incident-responder --mode autonomous --overwrite`
+  `az sre response-plan create -g myrg --agent-name myagent -n web-livesite \ --platform AzMonitor --subagent incident-responder --incident-type LiveSite \ --impacted-service Web --merge-window-hours 6`
+- Change an existing plan with 'az sre response-plan update' (create needs --overwrite)
+
+  `az sre response-plan update -g myrg --agent-name myagent -n api-errors --mode autonomous`
 
 ### `az sre response-plan delete`
 
@@ -1299,6 +1308,44 @@ Show a response plan and its instructions. Use --agent-url to read a shared agen
 - Show one plan
 
   `az sre response-plan show -g myrg --agent-name myagent -n sev1-api`
+
+### `az sre response-plan update`
+
+Update an existing response plan. Only the flags you pass change.
+
+Passing a list flag (for example --priority) replaces that whole list. Use 'enable' or 'disable' to turn a plan on or off.
+
+**Syntax**
+
+`az sre response-plan update --agent-name <value> --resource-group <value> --name <value> [--platform <value>] [--subagent <value>] [--mode <value>] [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--incident-type <json-or-@file>] [--impacted-service <value>] [--owning-team <json-or-@file>] [--merge-enabled {false,true}] [--merge-window-hours <integer>] [--instructions <value>] [--processing-guide <json-or-@file>]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of the response plan. |
+| `--platform` | String | No |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. |
+| `--subagent` | String | No |  |  | Name of the existing subagent that handles matched incidents. |
+| `--mode` | String | No |  |  | Agent autonomy: autonomous or review. |
+| `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all. |
+| `--title-contains` | String | No |  |  | Only match incidents whose title contains this text. |
+| `--title-not-contains` | List | No |  |  | Space-separated texts; skip incidents whose title contains any of them. |
+| `--incident-type` | List | No |  |  | Space-separated incident types to match (for example LiveSite). Portal: Incident type. |
+| `--impacted-service` | String | No |  |  | Only match incidents for this service. Portal: Owning service. |
+| `--owning-team` | List | No |  |  | Space-separated owning team IDs (IcM team IDs are numeric). Portal: Owning team. |
+| `--merge-enabled` | Boolean | No |  | `false`, `true` | Merge related incidents into one investigation thread. Service default: true. |
+| `--merge-window-hours` | Integer | No |  |  | Hours within which related incidents are merged. Service default: 3. |
+| `--instructions` | String | No |  |  | Custom instructions the subagent follows for matched incidents. |
+| `--processing-guide` | List | No |  |  | Quoted step-by-step guidance for the subagent, one value per step. |
+
+**Examples**
+
+- Change the autonomy mode and the merge window
+
+  `az sre response-plan update -g myrg --agent-name myagent -n sev1-api \ --mode autonomous --merge-window-hours 6`
+- Point a plan at a different subagent and replace its severities
+
+  `az sre response-plan update -g myrg --agent-name myagent -n sev1-api \ --subagent other-responder --priority Sev0 Sev1`
 
 ## `az sre skill`
 
