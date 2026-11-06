@@ -2135,9 +2135,7 @@ class KnowledgeCreate(AAZCommand):
         schema.url = AAZStrArg(
             options=["--url"],
             help="Web page URL to ingest. Required for --type webpage. "
-            "Live-confirmed wire shape: forwarded as extended-properties "
-            "url=<url> only (never --data-source, which the service rejects "
-            "with a 500 for this connector type).",
+            "Cannot be combined with --data-source.",
         )
         schema.data_source = AAZStrArg(
             options=["--data-source"],
@@ -2374,11 +2372,10 @@ class Stop(_GeneratedStop):
 
 @register_command("sre endpoint show")
 class GetConnection(AAZCommand):
-    """Resolve and save an SRE Agent's data-plane connection.
+    """Save an agent's data-plane endpoint for other tools.
 
-    Mirrors 'az aks get-credentials' writing kubeconfig for kubectl: the
-    control plane and data plane are separate CLIs/binaries, and this
-    command is their only bridge.
+    Like 'az aks get-credentials', it writes the connection details that
+    data-plane tools read.
 
     :example: Resolve and save the data-plane endpoint for an agent
         az sre endpoint show --agent-name myagent --resource-group myrg
@@ -2400,9 +2397,7 @@ class GetConnection(AAZCommand):
         schema.data_plane_audience = AAZStrArg(
             options=["--data-plane-audience"],
             help=(
-                "Audience used to request the data-plane access token. "
-                "The data plane uses a separate token from the control "
-                "plane -- see running notes section 1a."
+                "Audience for the data-plane access token."
             ),
             default="https://azuresre.dev",
         )

@@ -555,9 +555,9 @@ Use 'sre endpoint show' to look up and save that live endpoint.
 
 ### `az sre endpoint show`
 
-Resolve and save an SRE Agent's data-plane connection.
+Save an agent's data-plane endpoint for other tools.
 
-Mirrors 'az aks get-credentials' writing kubeconfig for kubectl: the control plane and data plane are separate CLIs/binaries, and this command is their only bridge.
+Like 'az aks get-credentials', it writes the connection details that data-plane tools read.
 
 **Syntax**
 
@@ -567,7 +567,7 @@ Mirrors 'az aks get-credentials' writing kubeconfig for kubectl: the control pla
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent to connect to. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-plane-audience` | String | No | https://azuresre.dev |  | Audience used to request the data-plane access token. The data plane uses a separate token from the control plane -- see running notes section 1a. |
+| `--data-plane-audience` | String | No | https://azuresre.dev |  | Audience for the data-plane access token. |
 
 **Examples**
 
@@ -885,7 +885,7 @@ Add a knowledge source (file or web page) to an SRE Agent.
 | `--name`, `-n` | String | Yes |  |  | Name of this knowledge source. |
 | `--type` | String | Yes |  | `file`, `text`, `webpage`, `repository` | Kind of knowledge source. One of: file, repository, text, webpage. |
 | `--file-path` | String | No |  |  | Local file to ingest. Required for --type file/text. |
-| `--url` | String | No |  |  | Web page URL to ingest. Required for --type webpage. Live-confirmed wire shape: forwarded as extended-properties url=<url> only (never --data-source, which the service rejects with a 500 for this connector type). |
+| `--url` | String | No |  |  | Web page URL to ingest. Required for --type webpage. Cannot be combined with --data-source. |
 | `--data-source` | String | No |  |  | Raw --data-source passthrough, for --type repository or any case --file-path/--url don't cover. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing knowledge source of the same name. |
 
