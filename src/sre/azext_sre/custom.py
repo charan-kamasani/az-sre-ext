@@ -1044,6 +1044,14 @@ class _DataConnectorTypeArgMixin:
                 "Connection string or endpoint. For Kusto, include the database: "
                 "https://cluster.kusto.windows.net/database."
             )
+        for _name, _text in (
+            ("endpoint", "Endpoint URL, used by endpoint-based connector types such as Mcp."),
+            ("identity", "Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity."),
+            ("extended_properties", "Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository."),
+        ):
+            _arg = getattr(schema, _name, None)
+            if _arg is not None and isinstance(getattr(_arg, "_help", None), dict):
+                _arg._help["short-summary"] = _text
         return schema
 
     def pre_operations(self):
@@ -1095,12 +1103,12 @@ class _ConnectorConvenienceArgsMixin:
         )
         schema.mcp_endpoint = AAZStrArg(
             options=["--mcp-endpoint"],
-            arg_group="Properties",
+            arg_group="MCP",
             help="For Mcp: the MCP server's HTTP endpoint URL.",
         )
         schema.github = AAZBoolArg(
             options=["--github"],
-            arg_group="Properties",
+            arg_group="MCP",
             help="For Mcp: connect the public GitHub Copilot MCP server (https://api.githubcopilot.com/mcp/).",
         )
         schema.tool_access = AAZBoolArg(
@@ -1121,32 +1129,32 @@ class _ConnectorConvenienceArgsMixin:
         # as the pre-existing "transport"/"endpoint" keys above).
         schema.bearer_token = AAZStrArg(
             options=["--bearer-token"],
-            arg_group="Properties",
+            arg_group="MCP",
             help="For Mcp: static bearer token, PAT or API key sent with every request.",
         )
         schema.managed_identity_auth = AAZBoolArg(
             options=["--managed-identity-auth"],
-            arg_group="Properties",
+            arg_group="MCP",
             help="For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one.",
         )
         schema.mi_token_scope = AAZStrArg(
             options=["--mi-token-scope"],
-            arg_group="Properties",
+            arg_group="MCP",
             help="For Mcp with --managed-identity-auth: token scope to request. Default: https://management.azure.com/.default.",
         )
         schema.oauth_dcr = AAZBoolArg(
             options=["--oauth-dcr"],
-            arg_group="Properties",
+            arg_group="MCP",
             help="For Mcp: use OAuth with dynamic client registration. Finish consent in the portal.",
         )
         schema.oauth_scopes = AAZStrArg(
             options=["--oauth-scopes"],
-            arg_group="Properties",
+            arg_group="MCP",
             help="For Mcp with --oauth-dcr: comma-separated OAuth scopes to request.",
         )
         schema.oauth_client_name = AAZStrArg(
             options=["--oauth-client-name"],
-            arg_group="Properties",
+            arg_group="MCP",
             help="For Mcp with --oauth-dcr: client name to register. Optional.",
         )
         return schema
