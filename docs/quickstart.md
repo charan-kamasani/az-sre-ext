@@ -266,8 +266,8 @@ Nothing here is all-or-nothing: do the portal-only step, then continue in the CL
 | Tutorial step | Where | How |
 |---|---|---|
 | Azure Monitor as incident source | CLI | Automatic at agent creation. Check with `az sre agent show ... --query properties.incidentManagementConfiguration`. |
-| Connect PagerDuty | Portal *Incidents > Connect an incident platform*, or CLI (untested) | The ARM agent resource has `incidentManagementConfiguration.{type,connectionKey,oboUser}`, so `az sre agent update --incident-management-configuration` may work. Not yet live-verified. |
-| Connect ServiceNow | Portal | Basic credentials may be scriptable through `connectionUrl`/`connectionKey` (untested). The OAuth flow opens a browser popup and needs the portal. |
+| Connect PagerDuty | CLI | `--incident-management-configuration "{type:PagerDuty,connection-key:<api-key>,obo-user:<email>}"` on `agent create`/`update`. Live-checked with a fake key: the service validates the shape (bad email and missing key give clear errors) and accepted the request, but does not check the key with PagerDuty at create time. A working connection has not been tested with real credentials. |
+| Connect ServiceNow | CLI (basic auth) or portal (OAuth) | `--incident-management-configuration "{type:ServiceNow,connection-url:'https://<instance>.service-now.com',connection-key:<credentials>}"`. Quote the URL. A missing credential gives `MissingServiceNowCredentials`. Live-checked with fake values only. The OAuth flow opens a browser popup and needs the portal. |
 | Disconnect/switch platform | Portal *Incidents > ... menu* | No verified CLI path. A filter's `incidentPlatform` must match the agent's configured type. |
 | Create the subagent | CLI | `az sre subagent create`. |
 | Create the response plan | CLI | `az sre incident-filter create`, then `az sre incident-handler create`. |
