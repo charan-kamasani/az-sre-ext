@@ -1365,7 +1365,13 @@ class ConnectorCreate(
 
 @register_command("sre connector update")
 class ConnectorUpdate(_DataConnectorTypeArgMixin, _GeneratedConnectorUpdate):
-    """Update an Agent Connector."""
+    """Update an Agent Connector.
+
+    :example: Point a Kusto connector at a different database
+        az sre connector update -g myrg --agent-name myagent -n conn-kusto \\
+            --data-connector-type Kusto \\
+            --data-source https://mycluster.kusto.windows.net/mydb
+    """
 
     _args_schema = None
 
@@ -1460,6 +1466,9 @@ class ConnectorShow(_GeneratedConnectorShow):
     """Show a connector, including OAuth consent status.
 
     consentStatus is shown for EntraOAuth-backed Mcp connectors.
+
+    :example: Show one connector
+        az sre connector show -g myrg --agent-name myagent -n conn-kusto
     """
 
     _args_schema = None
@@ -1475,6 +1484,9 @@ class ConnectorList(_GeneratedConnectorList):
 
     consentStatus (Consented/PendingConsent) is shown for EntraOAuth-backed
     Mcp connectors.
+
+    :example: List an agent's connectors
+        az sre connector list -g myrg --agent-name myagent
     """
 
     _args_schema = None
@@ -1501,7 +1513,11 @@ class ConnectorList(_GeneratedConnectorList):
 
 @register_command("sre connector delete")
 class ConnectorDelete(_GeneratedConnectorDelete):
-    """Delete an Agent Connector."""
+    """Delete an Agent Connector.
+
+    :example: Delete a connector without a prompt
+        az sre connector delete -g myrg --agent-name myagent -n conn-kusto --yes
+    """
 
     _args_schema = None
 
@@ -1586,7 +1602,11 @@ class IdentityRemove(_GeneratedIdentityRemove):
 
 @register_command("sre identity show")
 class IdentityShow(_GeneratedIdentityShow):
-    """Show the managed identities assigned to an agent."""
+    """Show the managed identities assigned to an agent.
+
+    :example: Show an agent's identities
+        az sre identity show -g myrg --agent-name myagent
+    """
 
     _args_schema = None
 
@@ -2227,7 +2247,11 @@ class KnowledgeShow(AAZCommand):
 
 @register_command("sre knowledge list")
 class KnowledgeList(AAZCommand):
-    """List an SRE Agent's knowledge sources (files and web pages)."""
+    """List an SRE Agent's knowledge sources (files and web pages).
+
+    :example: List knowledge sources
+        az sre knowledge list -g myrg --agent-name myagent
+    """
 
     _args_schema = None
 
