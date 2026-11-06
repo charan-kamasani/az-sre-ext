@@ -3975,19 +3975,7 @@ class ToolCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "tools"
     _args_schema = None
     _VALUE_HELP = (
-        "Tool configuration as a JSON document. Discriminator field is "
-        "\"type\" (not \"toolType\"), one of: KustoTool/LinkTool/PythonTool/"
-        "HttpClientTool. Common fields: type/name/description/connector/"
-        "toolMode/parameters. Per-type fields -- LinkTool: \"template\" "
-        "(not \"url\") e.g. {\"type\": \"LinkTool\", \"name\": \"docs\", "
-        "\"description\": \"...\", \"template\": \"https://...\"}; "
-        "KustoTool: database/query/clusterHint; HttpClientTool: url/method/"
-        "body/headers/auth (this is the one type that really does use "
-        "\"url\"); PythonTool: functionCode/timeoutSeconds/dependencies/"
-        "authEnabled/authScopes. Live-confirmed shape -- "
-        "\"toolType\"/\"url\" at the top level (an earlier, now-fixed "
-        "example) silently fails server-side with an opaque "
-        "InternalServerError, only \"type\"/\"template\" works for LinkTool."
+        "Tool configuration as JSON. \"type\" is one of KustoTool, LinkTool, PythonTool or HttpClientTool."
     )
 
 
@@ -4060,22 +4048,7 @@ class AutomationScheduledTaskCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "scheduledTasks"
     _args_schema = None
     _VALUE_HELP = (
-        "Scheduled task configuration as a JSON document. Fields: "
-        "\"cronExpression\" (standard 5-field cron, e.g. \"0 */6 * * *\" "
-        "for every 6 hours), \"agentPrompt\" (what to ask the agent each "
-        "run), \"description\", \"agent\" (name of a connected sub-agent "
-        "to target instead of the primary agent), \"threadId\" (continue "
-        "an existing conversation thread instead of starting a new one "
-        "each run -- confirmed via sreagent-runtime: leaving this unset "
-        "lets each run get its own thread, pinning it to a fixed value "
-        "reuses that one thread across every run (the portal's "
-        "\"Message grouping for updates\" dropdown is UI sugar over "
-        "this same field)), \"startTime\"/\"endTime\" (ISO 8601, bound the "
-        "schedule's active window), \"maxExecutions\" (stop after N "
-        "runs), \"notificationChannel\", \"modelTier\", \"agentMode\". "
-        "Example: {\"cronExpression\": \"0 9 * * 1-5\", \"agentPrompt\": "
-        "\"Summarize overnight alerts\", \"description\": \"Daily alert "
-        "digest\"}."
+        "Task configuration as JSON. Fields: cronExpression, agentPrompt, description, agent, threadId, startTime, endTime, maxExecutions."
     )
 
 
@@ -4136,16 +4109,7 @@ class AutomationHttpTriggerCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "httpTriggers"
     _args_schema = None
     _VALUE_HELP = (
-        "HTTP trigger configuration as a JSON document. Fields: "
-        "\"agentPrompt\" (what to ask the agent when the webhook fires), "
-        "\"description\", \"agent\" (name of a connected sub-agent to "
-        "target instead of the primary agent), \"threadId\" (continue an "
-        "existing conversation thread instead of starting a new one each "
-        "call -- same unset-vs-pinned behavior as scheduled-task's "
-        "threadId above), \"modelTier\", \"agentMode\". Example: "
-        "{\"agentPrompt\": "
-        "\"Investigate the attached alert payload\", \"description\": "
-        "\"Webhook from external monitor\"}."
+        "Trigger configuration as JSON. Fields: agentPrompt, description, agent, threadId."
     )
 
 
@@ -4958,19 +4922,7 @@ class SubagentCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "subagents"
     _args_schema = None
     _VALUE_HELP = (
-        "Sub-agent configuration as a JSON document. Required fields: "
-        "instructions/handoffDescription (strings), tools/mcpTools/"
-        "commonTools/allowedSkills (arrays of strings -- 'tools' is this "
-        "sub-agent's base tool allowlist, typically just [\"ReadFile\"] "
-        "for a read-only specialist), allowParallelToolCalls (bool). "
-        "Optional: hooks -- {\"PreToolUse\": [{\"type\": \"command\", "
-        "\"matcher\": \"(?s:.*)\", \"timeout\": 30, \"failMode\": "
-        "\"block\", \"script\": \"...\"}]} (also settable via "
-        "--pre-tool-use-script-file). Live-confirmed shape -- the server "
-        "echoes back a much richer schema on read (handoffs, connectors, "
-        "agentsAsTools, maxReflectionCount, temperature, llmModelName, "
-        "permissions, etc.), all server-defaulted to null when omitted "
-        "here."
+        "Sub-agent configuration as JSON. Required: instructions, handoffDescription, tools, mcpTools, commonTools, allowedSkills, allowParallelToolCalls."
     )
 
     @classmethod
@@ -5101,23 +5053,7 @@ class HookCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "hooks"
     _args_schema = None
     _VALUE_HELP = (
-        "Hook configuration as a JSON document, e.g. "
-        "{\"eventType\": \"Stop\", \"activationMode\": \"always\", "
-        "\"description\": \"...\", \"hook\": {\"type\": \"prompt\", "
-        "\"prompt\": \"...\"}} -- top-level fields: eventType (\"Start\", "
-        "\"PreToolUse\", \"PostToolUse\", or \"Stop\"; the portal UI only "
-        "offers the latter two today)/activationMode "
-        "(\"always\" or \"onDemand\", lowercase)/description, plus a nested "
-        "\"hook\" object: type (\"prompt\" or \"command\")/prompt/command/"
-        "script/matcher/model/timeout/failMode (\"Allow\" or \"Block\" -- "
-        "what happens if the hook itself errors/times out, not its "
-        "decision)/maxRejections/sources. "
-        "Live-confirmed shape -- do not put hookType/prompt at the top "
-        "level, they must be nested under \"hook\". "
-        "IMPORTANT: --value.hook.matcher (a tool-name regex, e.g. "
-        "\"Bash.*\") is required when eventType is \"PreToolUse\" or "
-        "\"PostToolUse\" -- the real API rejects an otherwise-identical "
-        "payload without it; not required for \"Start\"/\"Stop\"."
+        "Hook configuration as JSON: eventType, activationMode, description and a nested \"hook\" object. hook.matcher is required for PreToolUse and PostToolUse."
     )
 
 
@@ -5206,11 +5142,7 @@ class InstructionsCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "commonPrompts"
     _args_schema = None
     _VALUE_HELP = (
-        "Prompt snippet as a JSON document of the form "
-        "{\"prompt\": \"...\"} -- the \"prompt\" field holds the free text "
-        "(confirmed live round-trip). NOT the portal's 'Custom "
-        "instructions' box -- use 'az sre agent settings update "
-        "--value \\'{\"customInstructions\": \"...\"}\\'' for that."
+        "Prompt snippet as JSON: {\"prompt\": \"...\"}. For custom instructions, use 'az sre agent settings update'."
     )
 
 
@@ -5301,13 +5233,7 @@ class PluginMarketplaceCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "pluginMarketplaces"
     _args_schema = None
     _VALUE_HELP = (
-        "Marketplace configuration as a JSON document. Fields: sourceType "
-        "(\"github\"), sourceUrl (\"owner/repo\" short form, NOT a full "
-        "https:// URL -- a full URL is rejected server-side as an invalid "
-        "extension configuration), owner ({\"name\": \"...\"}), "
-        "description. Example: {\"sourceType\": \"github\", \"sourceUrl\": "
-        "\"owner/repo\", \"owner\": {\"name\": \"owner\"}, \"description\": "
-        "\"...\"}."
+        "Marketplace configuration as JSON. Fields: sourceType (\"github\"), sourceUrl (\"owner/repo\", not a full URL), owner, description."
     )
 
 
@@ -5380,12 +5306,7 @@ class PluginInstallCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "pluginInstallations"
     _args_schema = None
     _VALUE_HELP = (
-        "Plugin install configuration as a JSON document, e.g. "
-        "{\"marketplaceName\": \"<name from 'sre plugin marketplace list'>\", "
-        "\"pluginName\": \"<plugin>\", \"source\": {\"type\": \"relative\", "
-        "\"repo\": \"<marketplace sourceUrl>\", \"url\": \"<plugin's path in the repo>\"}}. "
-        "The 'source' block is required on create -- the service does not "
-        "auto-resolve it from marketplaceName/pluginName alone."
+        "Plugin install configuration as JSON. Requires marketplaceName, pluginName and a \"source\" block."
     )
 
 
