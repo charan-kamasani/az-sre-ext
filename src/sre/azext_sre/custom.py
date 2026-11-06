@@ -5609,14 +5609,11 @@ def _detect_repo_provider(repo_url):
 class RepoConnect(AAZCommand):
     """Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 
-    :example: Connect a GitHub repo (provider auto-detected from the URL;
-        resolves a token automatically -- explicit flag, or a browser-based
-        device-flow prompt, in that order)
+    :example: Connect a GitHub repo
         az sre repo connect --agent-name myagent --resource-group myrg \\
             --repo-url https://github.com/contoso/my-service
 
-    :example: Connect a GitHub repo with an explicit token (e.g. in CI, where
-        no interactive browser is available)
+    :example: Connect a GitHub repo with a token
         az sre repo connect --agent-name myagent --resource-group myrg \\
             --repo-url https://github.com/contoso/my-service \\
             --github-token $env:GITHUB_TOKEN
@@ -5625,8 +5622,7 @@ class RepoConnect(AAZCommand):
         az sre repo connect --agent-name myagent --resource-group myrg \\
             --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo
 
-    :example: Azure DevOps org blocks PAT creation ("org has a policy
-        blocking PAT creation") -- use the agent's own managed identity instead
+    :example: Connect an Azure DevOps repo with a managed identity
         az sre repo connect --agent-name myagent --resource-group myrg \\
             --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo \\
             --devops-auth-type managed-identity --devops-identity <agent-identity-resource-id>
@@ -5647,8 +5643,7 @@ class RepoConnect(AAZCommand):
         schema.resource_group = AAZResourceGroupNameArg(required=True)
         schema.repo_url = AAZStrArg(
             options=["--repo-url"],
-            help="HTTPS clone URL of the repo, e.g. https://github.com/org/repo "
-            "or https://dev.azure.com/org/project/_git/repo.",
+            help="HTTPS clone URL of the repo.",
             required=True,
         )
         schema.provider = AAZStrArg(
@@ -5666,48 +5661,29 @@ class RepoConnect(AAZCommand):
         )
         schema.github_token = AAZStrArg(
             options=["--github-token"],
-            help="GitHub token to use directly (GitHub repos only). No 'gh' "
-            "CLI or Azure CLI needed when this, or the GITHUB_TOKEN/GH_TOKEN "
-            "env vars, are set. If omitted, this command falls back to a "
-            "native GitHub OAuth Device Flow in your browser -- no 'gh' "
-            "required.",
+            help="GitHub token. Default: GITHUB_TOKEN/GH_TOKEN, else browser sign-in.",
         )
         schema.devops_organization = AAZStrArg(
             options=["--devops-organization"],
-            help="Azure DevOps organization name, e.g. 'contoso' for "
-            "dev.azure.com/contoso (Azure DevOps repos only; auto-detected "
-            "from --repo-url when it is a dev.azure.com URL).",
+            help="Azure DevOps organization. Default: taken from --repo-url.",
         )
         schema.devops_auth_type = AAZStrArg(
             options=["--devops-auth-type"],
-            help="Azure DevOps auth mechanism. 'pat' (default) mints a PAT via "
-            "the vssps REST API -- some orgs block this with a "
-            "'DisablePatCreationPolicyViolation' org policy, in which case use "
-            "'managed-identity' with --devops-identity instead (the identity "
-            "must already be added as a user/group member of the Azure DevOps "
-            "org -- this command does not grant that membership).",
+            help="Azure DevOps auth method. Use managed-identity if your org blocks PAT creation.",
             enum={"pat": "pat", "managed-identity": "managed-identity"},
             default="pat",
         )
         schema.devops_identity = AAZStrArg(
             options=["--devops-identity"],
-            help="Resource ID of the user- or system-assigned managed identity "
-            "to authenticate with Azure DevOps as (required when "
-            "--devops-auth-type managed-identity). Typically the SRE Agent's "
-            "own identity -- see 'az sre agent show --query identity'.",
+            help="Managed identity resource ID. Required with --devops-auth-type managed-identity.",
         )
         schema.devops_federated_client_id = AAZStrArg(
             options=["--devops-federated-client-id"],
-            help="Federated client ID, only needed alongside "
-            "--devops-federated-tenant-id for a user-assigned identity in a "
-            "different tenant than the Azure DevOps org (managed-identity auth "
-            "only; both or neither must be set).",
+            help="Federated client ID, for an identity in a different tenant. Use with --devops-federated-tenant-id.",
         )
         schema.devops_federated_tenant_id = AAZStrArg(
             options=["--devops-federated-tenant-id"],
-            help="Federated tenant ID, only needed alongside "
-            "--devops-federated-client-id (managed-identity auth only; both or "
-            "neither must be set).",
+            help="Federated tenant ID. Use with --devops-federated-client-id.",
         )
         cls._args_schema = schema
         return schema

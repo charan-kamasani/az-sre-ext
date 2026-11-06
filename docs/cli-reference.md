@@ -1107,31 +1107,31 @@ Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--repo-url` | String | Yes |  |  | HTTPS clone URL of the repo, e.g. https://github.com/org/repo or https://dev.azure.com/org/project/_git/repo. |
+| `--repo-url` | String | Yes |  |  | HTTPS clone URL of the repo. |
 | `--provider` | String | No |  | `GitHub`, `AzureDevOps` | Repo provider. Auto-detected from --repo-url's host when omitted. |
 | `--display-name`, `--name`, `-n` | String | No |  |  | Display name for the repo. Defaults to the last path segment of --repo-url. |
 | `--branch` | String | No |  |  | Branch to check out. Defaults to the repo's default branch. |
-| `--github-token` | String | No |  |  | GitHub token to use directly (GitHub repos only). No 'gh' CLI or Azure CLI needed when this, or the GITHUB_TOKEN/GH_TOKEN env vars, are set. If omitted, this command falls back to a native GitHub OAuth Device Flow in your browser -- no 'gh' required. |
-| `--devops-organization` | String | No |  |  | Azure DevOps organization name, e.g. 'contoso' for dev.azure.com/contoso (Azure DevOps repos only; auto-detected from --repo-url when it is a dev.azure.com URL). |
-| `--devops-auth-type` | String | No | pat | `pat`, `managed-identity` | Azure DevOps auth mechanism. 'pat' (default) mints a PAT via the vssps REST API -- some orgs block this with a 'DisablePatCreationPolicyViolation' org policy, in which case use 'managed-identity' with --devops-identity instead (the identity must already be added as a user/group member of the Azure DevOps org -- this command does not grant that membership). |
-| `--devops-identity` | String | No |  |  | Resource ID of the user- or system-assigned managed identity to authenticate with Azure DevOps as (required when --devops-auth-type managed-identity). Typically the SRE Agent's own identity -- see 'az sre agent show --query identity'. |
-| `--devops-federated-client-id` | String | No |  |  | Federated client ID, only needed alongside --devops-federated-tenant-id for a user-assigned identity in a different tenant than the Azure DevOps org (managed-identity auth only; both or neither must be set). |
-| `--devops-federated-tenant-id` | String | No |  |  | Federated tenant ID, only needed alongside --devops-federated-client-id (managed-identity auth only; both or neither must be set). |
+| `--github-token` | String | No |  |  | GitHub token. Default: GITHUB_TOKEN/GH_TOKEN, else browser sign-in. |
+| `--devops-organization` | String | No |  |  | Azure DevOps organization. Default: taken from --repo-url. |
+| `--devops-auth-type` | String | No | pat | `pat`, `managed-identity` | Azure DevOps auth method. Use managed-identity if your org blocks PAT creation. |
+| `--devops-identity` | String | No |  |  | Managed identity resource ID. Required with --devops-auth-type managed-identity. |
+| `--devops-federated-client-id` | String | No |  |  | Federated client ID, for an identity in a different tenant. Use with --devops-federated-tenant-id. |
+| `--devops-federated-tenant-id` | String | No |  |  | Federated tenant ID. Use with --devops-federated-client-id. |
 
 **Examples**
 
-- Connect a GitHub repo (provider auto-detected from the URL;
+- Connect a GitHub repo
 
-  `resolves a token automatically -- explicit flag, or a browser-based device-flow prompt, in that order) az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service`
-- Connect a GitHub repo with an explicit token (e.g. in CI, where
+  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service`
+- Connect a GitHub repo with a token
 
-  `no interactive browser is available) az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service \ --github-token $env:GITHUB_TOKEN`
+  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service \ --github-token $env:GITHUB_TOKEN`
 - Connect an Azure DevOps repo
 
   `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo`
-- Azure DevOps org blocks PAT creation ("org has a policy
+- Connect an Azure DevOps repo with a managed identity
 
-  `blocking PAT creation") -- use the agent's own managed identity instead az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo \ --devops-auth-type managed-identity --devops-identity <agent-identity-resource-id>`
+  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo \ --devops-auth-type managed-identity --devops-identity <agent-identity-resource-id>`
 
 ## `az sre response-plan`
 
