@@ -389,8 +389,6 @@ Covers scheduled tasks and HTTP triggers. Response plans live under 'az sre resp
 
 Connect an SRE Agent to an external data source it can query or act on.
 
-Run 'az sre connector create --help' for the supported connector types. The portal's "Additional connectors" catalog (Gmail, SharePoint, OneDrive and others) has no public API yet.
-
 | Verb | Exact syntax |
 | --- | --- |
 | `create` | `az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}] [--tool-access {false,true}] [--bearer-token <value>] [--managed-identity-auth {false,true}] [--mi-token-scope <value>] [--oauth-dcr {false,true}] [--oauth-scopes <value>] [--oauth-client-name <value>]` |

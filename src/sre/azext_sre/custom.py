@@ -985,12 +985,7 @@ def _normalize_data_connector_type(value):
 
 @register_command_group("sre connector")
 class _ConnectorGroup(AAZCommandGroup):
-    """Connect an SRE Agent to an external data source it can query or act on.
-
-    Run 'az sre connector create --help' for the supported connector types.
-    The portal's "Additional connectors" catalog (Gmail, SharePoint,
-    OneDrive and others) has no public API yet.
-    """
+    """Connect an SRE Agent to an external data source it can query or act on."""
 
 
 class _DataConnectorTypeArgMixin:
