@@ -101,18 +101,13 @@ logger = get_logger(__name__)
 # calls.
 API_VERSION = "2026-01-01"
 
-# Networking (VNet injection + sandbox egress) is only supported by the
-# REAL deployed api-version 2026-11-01-preview (confirmed live via
-# `az provider show --namespace Microsoft.App`). It is NOT present in
-# 2026-01-01 (the version aaz/latest is generated against) and the
-# 2026-07-01 public-spec version that DOES have it is NOT actually
-# deployed to production (ARM rejects it -- see running notes section 25).
-# There is no public swagger for 2026-11-01-preview yet, so these fields
-# cannot be codegen'd; the shape below was read directly from the
-# internal control-plane source (AAPT-SREAgent-ControlPlane repo,
-# src/WebApi/Views/Version20261101Preview/AgentView.cs) with Dalibor's
-# repo access, not from any public spec. Treat this as hand-maintained
-# and re-verify against that source if the service's shape ever changes.
+# Networking fields (VNet injection, sandbox egress) are not in the generated
+# 2026-01-01 code, so they are hand-written against 2026-11-01-preview. The
+# service returns them on read in both versions; writing them on 2026-01-01
+# has not been verified. 2026-07-01 is not deployed to production. There is no
+# public swagger for 2026-11-01-preview, so the shape was read from the
+# control-plane source (src/WebApi/Views/Version20261101Preview/AgentView.cs).
+# Align on one version before GA.
 NETWORK_API_VERSION = "2026-11-01-preview"
 
 
@@ -1751,6 +1746,9 @@ class AgentSettingsUpdate(AAZCommand):
     :example: Set the portal's "Custom instructions" text box
         az sre agent settings update -g myrg --agent-name myagent \\
             --value '{"customInstructions": "Always cite the runbook section you used."}'
+
+    :example: Allow, ask for approval, or deny specific tools
+        --value '{"toolPermissions": {"allow": ["kusto-query"], "ask": [], "deny": ["run-shell"]}}'
     """
 
     _args_schema = None
@@ -1767,19 +1765,9 @@ class AgentSettingsUpdate(AAZCommand):
         schema.value = AAZStrArg(
             options=["--value"],
             help=(
-                "Global settings as a JSON document (confirmed via the "
-                "control plane's own real round-trip integration test, "
-                "GlobalSettingsExtensionTests.cs). All top-level fields are "
-                "optional: toolPermissions, toolStatuses/skillStatuses "
-                "(arrays of {\"name\": ..., \"enabled\": true/false}), "
-                "customInstructions (string), approvalExpirationSetting "
-                "({\"enabled\": true/false, \"approvalExpirationInMinutes\": "
-                "<number>}). CAUTION: if you include toolPermissions at "
-                "all, it must have all three of 'allow'/'ask'/'deny' "
-                "(each an array of tool-name strings, [] if unused) -- "
-                "live-confirmed the real API rejects a partial "
-                "toolPermissions object (e.g. just 'deny') with a "
-                "misleading \"unrecognized property\" error."
+                "Settings as JSON. Optional fields: customInstructions, toolPermissions, "
+                "toolStatuses, skillStatuses, approvalExpirationSetting. If you set "
+                "toolPermissions, include all of allow, ask and deny (use [] if unused)."
             ),
             required=True,
         )
@@ -1933,10 +1921,7 @@ class _ManagedResourceScopeCommand(AAZCommand):
         )
         schema.target_subscription = AAZStrArg(
             options=["--target-subscription"],
-            help="Target subscription name or ID. Used alone for subscription-level "
-            "scope, or with --target-resource-group for resource-group-level scope. "
-            "(Named --target-subscription, not --subscription, because the latter is "
-            "a reserved global az CLI argument.)",
+            help="Target subscription name or ID. Alone: subscription scope. With --target-resource-group: resource-group scope.",
         )
         schema.target_resource_group = AAZStrArg(
             options=["--target-resource-group"],
@@ -2793,8 +2778,7 @@ class UpdateNetwork(AAZCommand):
         schema.sandbox_configuration = AAZObjectArg(
             options=["--sandbox-configuration"],
             help=(
-                "Sandbox egress/package configuration for code the agent runs. Shorthand "
-                "JSON, e.g. --sandbox-configuration \"{egress:{mode:Limited,allowed-hosts:[example.com]}}\"."
+                "Sandbox egress and packages. Shorthand, e.g. \"{egress:{mode:Limited,allowed-hosts:[example.com]}}\"."
             ),
         )
         sandbox_configuration = schema.sandbox_configuration
@@ -5026,28 +5010,17 @@ class _HookGroup(AAZCommandGroup):
 class HookCreate(_PinnedExtensionCreate):
     """Create or update a hook.
 
-    :example: Create a prompt-based hook that runs after every Bash tool call (live-verified payload)
+    :example: Run a prompt after every Bash tool call
         az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check \\
-            --value '{"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands", "hook": {"type": "prompt", "prompt": "Review the last tool call. If it looks destructive, warn the user.", "matcher": "Bash.*", "failMode": "Allow"}}'
+            --value @hook.json
 
-    :example: Create a command-based hook that runs after every Bash tool call (live-verified payload)
-        az sre hook create --agent-name myagent --resource-group myrg --name post-tool-echo \\
-            --value '{"eventType": "PostToolUse", "activationMode": "always", "description": "Blocks dangerous commands", "hook": {"type": "command", "command": "echo ok", "matcher": "Bash.*", "timeout": 30, "failMode": "Allow"}}'
+        hook.json:
+        {"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands",
+         "hook": {"type": "prompt", "prompt": "Warn if the last tool call looks destructive.",
+                  "matcher": "Bash.*", "failMode": "Allow"}}
 
-    :example: Windows PowerShell -- inline JSON with embedded quotes does not
-        survive az.cmd's batch-file argument re-tokenizing here. Recommended
-        fix: write the JSON to a file and pass --value @path instead
-        (live-verified, no quoting at all, works in plain powershell.exe/pwsh)
-        @'
-        {"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands", "hook": {"type": "prompt", "prompt": "Review the last tool call. If it looks destructive, warn the user.", "matcher": "Bash.*", "failMode": "Allow"}}
-        '@ | Set-Content -Path "$env:TEMP\\hook.json"
-        az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check --value "@$env:TEMP\\hook.json" --overwrite true
-
-    :example: Windows PowerShell -- alternative if you'd rather not write a
-        temp file: wrap the whole command in 'cmd /c' and backslash-escape the
-        inner double quotes (live-verified, also works, but --value @path
-        above is simpler and preferred)
-        cmd /c 'az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check --value "{\\"eventType\\": \\"PostToolUse\\", \\"activationMode\\": \\"always\\", \\"description\\": \\"Flag risky commands\\", \\"hook\\": {\\"type\\": \\"prompt\\", \\"prompt\\": \\"Review the last tool call. If it looks destructive, warn the user.\\", \\"matcher\\": \\"Bash.*\\", \\"failMode\\": \\"Allow\\"}}" --overwrite true'
+    :example: Run a command instead of a prompt
+        --value @hook.json, with "hook": {"type": "command", "command": "echo ok", "matcher": "Bash.*", "timeout": 30}
     """
 
     _EXTENSION_TYPE = "hooks"

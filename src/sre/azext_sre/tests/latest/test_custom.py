@@ -2702,6 +2702,29 @@ class ArgSchemaHelpRegressionTests(unittest.TestCase):
         self.assertIn("Anthropic", cmd_arg.type.settings.get("help"))
 
 
+class ArgHelpLengthBudgetTests(unittest.TestCase):
+    """Keep per-argument help short, like built-in az commands."""
+
+    MAX_CHARS = 400
+
+    def test_argument_help_within_budget(self):
+        from azext_sre import custom
+        too_long = []
+        for name, cls in vars(custom).items():
+            if not (isinstance(cls, type) and hasattr(cls, "_build_arguments_schema")
+                    and getattr(cls, "AZ_NAME", None)):
+                continue
+            try:
+                schema = cls._build_arguments_schema()
+            except Exception:  # pylint: disable=broad-except
+                continue
+            for arg_name, arg in schema._fields.items():
+                text = (getattr(arg, "_help", None) or {}).get("short-summary") or ""
+                if len(text) > self.MAX_CHARS:
+                    too_long.append((cls.AZ_NAME, arg_name, len(text)))
+        self.assertEqual(too_long, [])
+
+
 class _NoOpPreOperationsBase:
     """Stand-in base class for isolating _ConnectorConvenienceArgsMixin.
     _DataConnectorTypeArgMixin.pre_operations() calls .to_serialized_data()

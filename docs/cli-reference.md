@@ -606,18 +606,12 @@ Create or update a hook.
 
 **Examples**
 
-- Create a prompt-based hook that runs after every Bash tool call (live-verified payload)
+- Run a prompt after every Bash tool call
 
-  `az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check \ --value '{"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands", "hook": {"type": "prompt", "prompt": "Review the last tool call. If it looks destructive, warn the user.", "matcher": "Bash.*", "failMode": "Allow"}}'`
-- Create a command-based hook that runs after every Bash tool call (live-verified payload)
+  `az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check \ --value @hook.json hook.json: {"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands", "hook": {"type": "prompt", "prompt": "Warn if the last tool call looks destructive.", "matcher": "Bash.*", "failMode": "Allow"}}`
+- Run a command instead of a prompt
 
-  `az sre hook create --agent-name myagent --resource-group myrg --name post-tool-echo \ --value '{"eventType": "PostToolUse", "activationMode": "always", "description": "Blocks dangerous commands", "hook": {"type": "command", "command": "echo ok", "matcher": "Bash.*", "timeout": 30, "failMode": "Allow"}}'`
-- Windows PowerShell -- inline JSON with embedded quotes does not
-
-  `survive az.cmd's batch-file argument re-tokenizing here. Recommended fix: write the JSON to a file and pass --value @path instead (live-verified, no quoting at all, works in plain powershell.exe/pwsh) @' {"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands", "hook": {"type": "prompt", "prompt": "Review the last tool call. If it looks destructive, warn the user.", "matcher": "Bash.*", "failMode": "Allow"}} '@ \| Set-Content -Path "$env:TEMP\hook.json" az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check --value "@$env:TEMP\hook.json" --overwrite true`
-- Windows PowerShell -- alternative if you'd rather not write a
-
-  `temp file: wrap the whole command in 'cmd /c' and backslash-escape the inner double quotes (live-verified, also works, but --value @path above is simpler and preferred) cmd /c 'az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check --value "{\"eventType\": \"PostToolUse\", \"activationMode\": \"always\", \"description\": \"Flag risky commands\", \"hook\": {\"type\": \"prompt\", \"prompt\": \"Review the last tool call. If it looks destructive, warn the user.\", \"matcher\": \"Bash.*\", \"failMode\": \"Allow\"}}" --overwrite true'`
+  `--value @hook.json, with "hook": {"type": "command", "command": "echo ok", "matcher": "Bash.*", "timeout": 30}`
 
 ### `az sre hook delete`
 
@@ -983,7 +977,7 @@ Grant the agent's managed identity Reader + Monitoring Contributor on a scope.
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent (NOT the target scope -- use --target-resource-group for that). |
 | `--scope` | String | No |  |  | Full resource ID of the scope to grant access on/from. Alternative to --target-subscription/--target-resource-group/--management-group. |
-| `--target-subscription` | String | No |  |  | Target subscription name or ID. Used alone for subscription-level scope, or with --target-resource-group for resource-group-level scope. (Named --target-subscription, not --subscription, because the latter is a reserved global az CLI argument.) |
+| `--target-subscription` | String | No |  |  | Target subscription name or ID. Alone: subscription scope. With --target-resource-group: resource-group scope. |
 | `--target-resource-group` | String | No |  |  | Target resource group name (requires --target-subscription). Distinct from --resource-group, which locates the agent itself. |
 | `--management-group` | String | No |  |  | Target management group name/ID. |
 
@@ -1033,7 +1027,7 @@ Revoke the agent's managed identity's Reader + Monitoring Contributor on a scope
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent (NOT the target scope -- use --target-resource-group for that). |
 | `--scope` | String | No |  |  | Full resource ID of the scope to revoke access on/from. Alternative to --target-subscription/--target-resource-group/--management-group. |
-| `--target-subscription` | String | No |  |  | Target subscription name or ID. Used alone for subscription-level scope, or with --target-resource-group for resource-group-level scope. (Named --target-subscription, not --subscription, because the latter is a reserved global az CLI argument.) |
+| `--target-subscription` | String | No |  |  | Target subscription name or ID. Alone: subscription scope. With --target-resource-group: resource-group scope. |
 | `--target-resource-group` | String | No |  |  | Target resource group name (requires --target-subscription). Distinct from --resource-group, which locates the agent itself. |
 | `--management-group` | String | No |  |  | Target management group name/ID. |
 
@@ -1066,7 +1060,7 @@ Configure VNet injection and sandbox egress for an SRE Agent (preview).
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent to configure networking on. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--vnet-configuration` | Object | No |  |  | VNet injection for the agent itself. Shorthand JSON, e.g. --vnet-configuration "{subnet-resource-id:/subscriptions/.../subnets/mysubnet}". |
-| `--sandbox-configuration` | Object | No |  |  | Sandbox egress/package configuration for code the agent runs. Shorthand JSON, e.g. --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}". |
+| `--sandbox-configuration` | Object | No |  |  | Sandbox egress and packages. Shorthand, e.g. "{egress:{mode:Limited,allowed-hosts:[example.com]}}". |
 
 **Examples**
 
@@ -1699,13 +1693,16 @@ Always targets the agent's single settings object (there is no --name). Each cal
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--value` | String | Yes |  |  | Global settings as a JSON document (confirmed via the control plane's own real round-trip integration test, GlobalSettingsExtensionTests.cs). All top-level fields are optional: toolPermissions, toolStatuses/skillStatuses (arrays of {"name": ..., "enabled": true/false}), customInstructions (string), approvalExpirationSetting ({"enabled": true/false, "approvalExpirationInMinutes": <number>}). CAUTION: if you include toolPermissions at all, it must have all three of 'allow'/'ask'/'deny' (each an array of tool-name strings, [] if unused) -- live-confirmed the real API rejects a partial toolPermissions object (e.g. just 'deny') with a misleading "unrecognized property" error. |
+| `--value` | String | Yes |  |  | Settings as JSON. Optional fields: customInstructions, toolPermissions, toolStatuses, skillStatuses, approvalExpirationSetting. If you set toolPermissions, include all of allow, ask and deny (use [] if unused). |
 
 **Examples**
 
 - Set the portal's "Custom instructions" text box
 
   `az sre agent settings update -g myrg --agent-name myagent \ --value '{"customInstructions": "Always cite the runbook section you used."}'`
+- Allow, ask for approval, or deny specific tools
+
+  `--value '{"toolPermissions": {"allow": ["kusto-query"], "ask": [], "deny": ["run-shell"]}}'`
 
 ## `az sre automation http-trigger`
 
