@@ -4442,23 +4442,13 @@ def _response_plan_handler_fields(args):
 class ResponsePlanCreate(AAZCommand):
     """Create or update an incident response plan.
 
-    Routes incidents that match the criteria to a subagent. Connect the
-    incident platform first ('az sre agent update
-    --incident-management-configuration') and create the subagent first
-    ('az sre subagent create'). Behind the scenes this writes an incident
-    filter, plus an incident handler when --instructions or
-    --processing-guide is given.
+    Routes matching incidents to a subagent. Connect the incident platform and
+    create the subagent first.
 
     :example: Route high-severity Azure Monitor incidents to a subagent in review mode
         az sre response-plan create -g myrg --agent-name myagent -n sev1-api \\
             --platform AzMonitor --subagent incident-responder --priority Sev0 Sev1 \\
             --title-contains api --mode review
-
-    :example: Full setup order -- connect the platform, create the subagent, then the plan
-        az sre agent update -g myrg -n myagent --incident-management-configuration "{type:AzMonitor}"
-        az sre subagent create -g myrg --agent-name myagent -n incident-responder --value @subagent.json
-        az sre response-plan create -g myrg --agent-name myagent -n disk-space \\
-            --platform AzMonitor --subagent incident-responder --title-contains "disk space"
 
     :example: Skip noisy incidents and give the subagent step-by-step guidance
         az sre response-plan create -g myrg --agent-name myagent -n api-errors \\
@@ -4466,12 +4456,7 @@ class ResponsePlanCreate(AAZCommand):
             --title-not-contains test synthetic \\
             --processing-guide "Check recent deployments" "Query error rates in App Insights"
 
-    :example: Match by incident type and service, and tune incident merging
-        az sre response-plan create -g myrg --agent-name myagent -n web-livesite \\
-            --platform AzMonitor --subagent incident-responder --incident-type LiveSite \\
-            --impacted-service Web --merge-window-hours 6
-
-    :example: Change an existing plan with 'az sre response-plan update' (create needs --overwrite)
+    :example: Change an existing plan
         az sre response-plan update -g myrg --agent-name myagent -n api-errors --mode autonomous
     """
 
