@@ -48,10 +48,10 @@ In PowerShell, pass JSON with --value @file.json instead of inline.
 | `connector` | Connect an SRE Agent to an external data source it can query or act on. |
 | `endpoint` | Resolve the URL used to actually talk to an SRE Agent's data plane. |
 | `hook` | Manage lifecycle hooks that run a prompt or script at a specific agent event. |
-| `identity` | Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls. |
+| `identity` | Manage the agent's own managed identity. |
 | `instructions` | Manage named, reusable prompt snippets ('commonPrompts'). |
 | `knowledge` | Add files or web pages the agent can read and reason over. |
-| `managed-resource` | Let the agent's own managed identity monitor resources outside its own resource group. |
+| `managed-resource` | Let the agent monitor resources outside its resource group. |
 | `network` | Control an SRE Agent's sandbox networking (preview). |
 | `plugin` | Manage community plugins that add skills, tools, and integrations. |
 | `repo` | Connect a code repository so the agent can read source during investigations. |
@@ -382,8 +382,8 @@ Covers scheduled tasks and HTTP triggers. Response plans live under 'az sre resp
 
 | Subgroup | Summary |
 | --- | --- |
-| `http-trigger` | Manage HTTP triggers: run the agent against a prompt from an inbound |
-| `scheduled-task` | Manage scheduled tasks: run the agent on a timer (cron) against a |
+| `http-trigger` | Manage HTTP triggers that run the agent on a webhook call. |
+| `scheduled-task` | Manage scheduled tasks that run the agent on a cron timer. |
 
 ## `az sre connector`
 
@@ -675,9 +675,9 @@ Show a hook.
 
 ## `az sre identity`
 
-Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls.
+Manage the agent's own managed identity.
 
-Not to be confused with 'sre access' (who can manage/use the agent) or 'sre repo connect' (repo auth).
+Used for the agent's Azure RBAC-gated calls. Not to be confused with 'sre access' (who can manage/use the agent) or 'sre repo connect' (repo auth).
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -954,7 +954,7 @@ Show a knowledge source.
 
 ## `az sre managed-resource`
 
-Let the agent's own managed identity monitor resources outside its own resource group.
+Let the agent monitor resources outside its resource group.
 
 Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles together on a subscription, resource group, or management group.
 
@@ -1706,9 +1706,9 @@ Always targets the agent's single settings object (there is no --name). Each cal
 
 ## `az sre automation http-trigger`
 
-Manage HTTP triggers: run the agent against a prompt from an inbound
+Manage HTTP triggers that run the agent on a webhook call.
 
-webhook call instead of a schedule.
+Runs the agent against a prompt when an inbound webhook call arrives, instead of on a schedule.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -1801,9 +1801,9 @@ Show an HTTP trigger.
 
 ## `az sre automation scheduled-task`
 
-Manage scheduled tasks: run the agent on a timer (cron) against a
+Manage scheduled tasks that run the agent on a cron timer.
 
-prompt, optionally bounded to a time window or a maximum run count.
+Runs the agent against a prompt, optionally bounded to a time window or a maximum run count.
 
 | Verb | Exact syntax |
 | --- | --- |

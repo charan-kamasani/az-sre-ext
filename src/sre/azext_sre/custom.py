@@ -1557,9 +1557,9 @@ class ConnectorListSecret(_ConnectorNameAliasMixin, _GeneratedConnectorListSecre
 # --------------------------------------------------------------------------------------------
 @register_command_group("sre identity")
 class _IdentityGroup(AAZCommandGroup):
-    """Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls.
+    """Manage the agent's own managed identity.
 
-    Not to be confused with 'sre access' (who can manage/use the agent) or
+    Used for the agent's Azure RBAC-gated calls. Not to be confused with 'sre access' (who can manage/use the agent) or
     'sre repo connect' (repo auth).
     """
 
@@ -1955,7 +1955,7 @@ class _ManagedResourceScopeCommand(AAZCommand):
 
 @register_command_group("sre managed-resource")
 class _ManagedResourceGroup(AAZCommandGroup):
-    """Let the agent's own managed identity monitor resources outside its own resource group.
+    """Let the agent monitor resources outside its resource group.
 
     Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles
     together on a subscription, resource group, or management group.
@@ -4021,8 +4021,11 @@ class _AutomationGroup(AAZCommandGroup):
 
 @register_command_group("sre automation scheduled-task")
 class _AutomationScheduledTaskGroup(AAZCommandGroup):
-    """Manage scheduled tasks: run the agent on a timer (cron) against a
-    prompt, optionally bounded to a time window or a maximum run count."""
+    """Manage scheduled tasks that run the agent on a cron timer.
+
+    Runs the agent against a prompt, optionally bounded to a time window or
+    a maximum run count.
+    """
 
 
 @register_command("sre automation scheduled-task create")
@@ -4082,8 +4085,11 @@ class AutomationScheduledTaskDelete(_PinnedExtensionDelete):
 
 @register_command_group("sre automation http-trigger")
 class _AutomationHttpTriggerGroup(AAZCommandGroup):
-    """Manage HTTP triggers: run the agent against a prompt from an inbound
-    webhook call instead of a schedule."""
+    """Manage HTTP triggers that run the agent on a webhook call.
+
+    Runs the agent against a prompt when an inbound webhook call arrives,
+    instead of on a schedule.
+    """
 
 
 @register_command("sre automation http-trigger create")
