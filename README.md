@@ -30,8 +30,8 @@ intentionally out of scope and why.
 Every noun below is a flat top-level group directly under `az sre` — the only
 nesting is where a resource genuinely only exists inside another one
 (`az sre plugin marketplace`/`az sre plugin install`, `az sre automation
-scheduled-task`/`http-trigger`, and `az sre agent settings`). `incident-filter`
-is its own flat top-level group (`az sre incident-filter ...`), not nested
+scheduled-task`/`http-trigger`, and `az sre agent settings`). `response-plan`
+is its own flat top-level group (`az sre response-plan ...`), not nested
 under `automation`, despite living in the portal's "Automation" tab alongside
 scheduled tasks/HTTP triggers — see
 [docs/operations.md](docs/operations.md#az-sre-automation-group-for-scheduled-tasks-http-triggers-and-incident-filters)
@@ -89,7 +89,7 @@ az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
 | `endpoint` | `show` | Resolve the agent's live data-plane endpoint URL. |
 | `hook` | `create, show, list, delete` | Manage lifecycle hooks (Start, PreToolUse, PostToolUse, Stop) that run prompts or scripts. |
 | `identity` | `assign, show, remove` | Manage the agent's managed identity. |
-| `incident-filter` | `create, show, list, delete` | Match incoming incidents by platform/title/team/etc. and route matches to a handling agent (portal: Incidents > "Triggers & response Plans"). |
+| `response-plan` | `create, show, list, delete, enable, disable` | Route matching incidents to a subagent, with optional instructions (portal: Incidents > "Triggers & response plans"). |
 | `instructions` | `create, show, list, delete` | Manage the agent's always-on custom instructions. |
 | `knowledge` | `create, show, list, delete` | Add files or web pages the agent can read and reason over. |
 | `managed-resource` | `grant, list, revoke` | Allow the agent's identity to monitor resources outside its resource group. |

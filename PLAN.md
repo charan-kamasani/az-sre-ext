@@ -46,8 +46,8 @@ hard part, creating a useful agent is.
 
 ## Implementation progress
 
-- Incident response API correction (2026-11-06): dedicated
-  `incident-filter` and `incident-handler` CRUD commands now use the agent's
+- Incident response API correction (2026-11-06): the `response-plan` group
+  (replaced the unreleased `incident-filter`/`incident-handler` commands) uses the agent's
   data-plane endpoints with audience `https://azuresre.dev`. Direct
   create/read-back on the test agent succeeded where ARM extension calls
   returned generic validation errors; the earlier IcM-identity explanation

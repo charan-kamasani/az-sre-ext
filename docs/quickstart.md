@@ -257,8 +257,7 @@ az sre response-plan disable --resource-group "$RG" --agent-name "$AGENT" --name
 
 A response plan is an incident filter (the match rules and the subagent that
 handles matches) plus an optional incident handler (instructions) that links to
-the filter. `response-plan` manages both. `incident-filter` and
-`incident-handler` remain for advanced use.
+the filter. `response-plan` manages both.
 
 ### Portal vs. CLI for this step (benchmark: tutorial "Step 4: Set up incident response")
 

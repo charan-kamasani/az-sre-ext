@@ -3742,14 +3742,13 @@ def _decode_extension_envelope(envelope):
 # proxy abstraction leaking into the user-facing surface. The functions
 # below are the same logic, kept as plain internal helpers that every
 # noun-specific facade (tool/skill/subagent/hook/instructions/automation/
-# plugin/repo/agent settings/incident-filter/incident-handler) calls
+# plugin/repo/agent settings/response-plan) calls
 # directly -- there is no user-reachable path to an arbitrary
 # --extension-type anymore. 'globalSettings' is exposed via
 # 'sre agent settings' below instead. 'incidentHandlers' previously had no
 # dedicated noun -- corrected: it is the response-plan half of the current
 # Microsoft Learn "Set Up Incident Response" tutorial, not legacy, so it
-# now gets 'sre incident-handler' like 'incidentFilters' got 'sre
-# incident-filter'.
+# is covered by 'sre response-plan', together with 'incidentFilters'.
 EXTENSION_TYPE_CREATE_NOUN = {
     "tools": "az sre tool create",
     "skills": "az sre skill create",
@@ -3758,8 +3757,8 @@ EXTENSION_TYPE_CREATE_NOUN = {
     "commonPrompts": "az sre instructions create",
     "scheduledTasks": "az sre automation scheduled-task create",
     "httpTriggers": "az sre automation http-trigger create",
-    "incidentFilters": "az sre incident-filter create",
-    "incidentHandlers": "az sre incident-handler create",
+    "incidentFilters": "az sre response-plan create",
+    "incidentHandlers": "az sre response-plan create",
     "pluginMarketplaces": "az sre plugin marketplace create",
     "pluginInstallations": "az sre plugin install create",
     "repositories": "az sre repo connect",
@@ -4142,8 +4141,8 @@ class ToolDelete(_PinnedExtensionDelete):
 class _AutomationGroup(AAZCommandGroup):
     """Manage agent automations.
 
-    Covers scheduled tasks and HTTP triggers. Incident filters live under
-    'az sre incident-filter' instead.
+    Covers scheduled tasks and HTTP triggers. Response plans live under
+    'az sre response-plan' instead.
     """
 
 
@@ -4293,16 +4292,10 @@ class AutomationHttpTriggerDelete(_PinnedExtensionDelete):
     _args_schema = None
 
 
-# ---- sre incident-filter (portal: Incidents > Triggers & response plans --
+# ---- incident filter helpers (portal: Incidents > Triggers & response plans --
 # NOT Automation; confirmed by walking the live portal nav: Automation only
 # ever shows Scheduled tasks/HTTP triggers, Incidents has its own separate
 # "Triggers & response plans" tab) ----
-@register_command_group("sre incident-filter")
-class _IncidentFilterGroup(AAZCommandGroup):
-    """Manage incident filters (portal: Incidents > "Triggers & response
-    plans"): match incoming incidents by platform/title/team/etc. and
-    route matches to a handling agent.
-    """
 
 
 def _incident_filter_path(extension_name=None):
@@ -4392,234 +4385,10 @@ def _incident_resource_create(cli_ctx, agent_name, resource_group, extension_typ
     return _incident_unwrap(kind, result)
 
 
-@register_command("sre incident-filter create")
-class IncidentFilterCreate(AAZCommand):
-    """Create or update an incident filter.
-
-    Created through ARM (the data plane reports the real reason if ARM rejects it). Configure the matching incident
-    platform first with 'az sre agent update
-    --incident-management-configuration'. Set handlingAgent to an existing
-    subagent; the handlingAgents array is supported only for Icm filters.
-    Pass --overwrite to replace an existing filter.
-
-    :example: Create a filter that routes AzMonitor incidents to a subagent
-        az sre incident-filter create -g myrg --agent-name myagent --name disk-space-filter \\
-            --value '{"incidentPlatform": "AzMonitor", "titleContains": "disk space", "handlingAgent": "incident-responder", "agentMode": "review", "isEnabled": true}'
-    """
-
-    _EXTENSION_TYPE = "incidentFilters"
-    _args_schema = None
-    _VALUE_HELP = (
-        "Incident filter configuration as a JSON document. Fields: "
-        "\"incidentPlatform\" (\"Icm\", \"AzMonitor\", \"PagerDuty\", "
-        "\"ServiceNow\"), \"impactedService\", \"priorities\" (array), "
-        "\"incidentTypes\" (array; singular \"incidentType\" still accepted "
-        "for compatibility), \"alertId\", \"titleContains\" (a single "
-        "substring) OR \"titleContainsAll\"/\"titleContainsAny\" (arrays, "
-        "AND/OR logic -- mutually exclusive with titleContains), "
-        "\"titleNotContains\" (array; excludes a match even if other "
-        "criteria hit, useful for a catch-all filter that should skip "
-        "incidents already handled by a more specific filter), "
-        "\"agentMode\", \"handlingAgent\" (existing subagent name; required "
-        "except when Icm uses the \"handlingAgents\" array), \"owningTeamIds\" (array; "
-        "singular \"owningTeamId\" still accepted), "
-        "\"maxAutomatedInvestigationAttempts\" (int -- after this many "
-        "failed automated RCA attempts on a recurring alert, the agent "
-        "asks the user for input instead of retrying forever), "
-        "\"mergeEnabled\"/\"mergeWindowHours\" (AzMonitor-only: re-firing "
-        "alerts merge into the existing thread instead of starting a new "
-        "investigation, within a 1-24 hour cooldown window), \"isEnabled\", "
-        "\"icmFilterSettings\" (Icm-only object: \"monitorIds\" (array), "
-        "\"createdBys\" (array), \"customField\": {\"customFieldId\": "
-        "<int>, \"stringValue\": <string>}, \"assignableOnly\"/"
-        "\"withOnCallRotationsOnly\" (bool), \"triggerEvents\" (array, "
-        "e.g. \"IncidentCreatedOrTransferred\", \"DiscussionEntry\", "
-        "\"IncidentMitigated\", \"IncidentReactivated\", "
-        "\"IncidentResolved\", \"HitCountIncreased\", "
-        "\"IncidentSeverityChanged\" -- defaults to "
-        "[\"IncidentCreatedOrTransferred\"]), \"discussionEntryAuth\" "
-        "(\"OnCallOnly\" default, \"TeamMembers\", \"AllowlistOnly\"), "
-        "\"discussionEntryAllowlist\" (array, additive on top of "
-        "discussionEntryAuth)), \"azMonitorFilterSettings\" (AzMonitor-only "
-        "object: \"targetResourceType\", \"targetResource\"). Example: "
-        "{\"incidentPlatform\": \"Icm\", \"titleContains\": \"disk space\", "
-        "\"handlingAgent\": \"storage-oncall-agent\", \"isEnabled\": "
-        "true}."
-    )
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        schema.agent_name = AAZStrArg(
-            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
-        )
-        schema.resource_group = AAZResourceGroupNameArg(required=True)
-        schema.extension_name = AAZStrArg(
-            options=["--name", "-n", "--extension-name"],
-            help="Name of this incident filter.",
-            required=True,
-        )
-        schema.value = AAZStrArg(options=["--value"], help=cls._VALUE_HELP, required=True)
-        schema.overwrite = AAZBoolArg(
-            options=["--overwrite"], help="Allow replacing an existing incident filter.",
-        )
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name = _arg_value(self.ctx.args.agent_name)
-        resource_group = _arg_value(self.ctx.args.resource_group)
-        extension_name = _arg_value(self.ctx.args.extension_name)
-        raw_value = _arg_value(self.ctx.args.value)
-        try:
-            parsed = json.loads(raw_value)
-        except (TypeError, ValueError) as ex:
-            raise CLIError(f"--value must be a JSON document: {ex}") from ex
-        _validate_incident_filters_shape(parsed)
-        has_agent = bool(parsed.get("handlingAgent", "").strip())
-        has_icm_agents = parsed.get("incidentPlatform") == "Icm" and any(
-            agent.strip() for agent in parsed.get("handlingAgents", [])
-        )
-        if not has_agent and not has_icm_agents:
-            raise CLIError(
-                "--value must set \"handlingAgent\" to an existing subagent name. "
-                "Only Icm filters can use the \"handlingAgents\" array instead."
-            )
-        body = {"name": extension_name, "type": "IncidentFilter", "properties": parsed}
-        result = _incident_resource_create(
-            self.cli_ctx, agent_name, resource_group, "incidentFilters", extension_name,
-            parsed, _incident_filter_path(extension_name), body,
-            bool(_arg_value(self.ctx.args.overwrite)),
-        )
-        try:
-            existing = _incident_unwrap_list("filter", _extension_resource_list(
-                self.cli_ctx, agent_name, resource_group, "incidentFilters"))
-            _warn_if_quickstart_plan(
-                [f for f in existing.get("value", []) if f.get("name") != extension_name],
-                agent_name,
-            )
-        except Exception:  # pylint: disable=broad-except
-            pass  # the warning is advisory; never fail a successful create
-        return result
-class IncidentFilterShow(AAZCommand):
-    """Show an incident filter. Use --agent-url to read a shared agent."""
-
-    _EXTENSION_TYPE = "incidentFilters"
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        _add_read_target_args(schema, short_name=False)
-        schema.extension_name = AAZStrArg(
-            options=["--name", "-n", "--extension-name"],
-            help="Name of this incident filter.",
-            required=True,
-        )
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name, resource_group, agent_url = _read_target(self.ctx.args)
-        extension_name = _arg_value(self.ctx.args.extension_name)
-        if agent_url:
-            result = _data_plane_request(
-                self.cli_ctx, agent_name, resource_group, "GET",
-                _incident_filter_path(extension_name), missing_ok=True, agent_url=agent_url,
-            )
-            if result is None:
-                raise ResourceNotFoundError(
-                    f"Incident filter '{extension_name}' not found on agent '{agent_url}'."
-                )
-            return result
-        return _incident_unwrap("filter", _extension_resource_show(
-            self.cli_ctx, agent_name, resource_group, "incidentFilters", extension_name))
 
 
-@register_command("sre incident-filter list")
-class IncidentFilterList(AAZCommand):
-    """List incident filters.
-
-    :example: List an agent's incident filters
-        az sre incident-filter list -g myrg --agent-name myagent
-    """
-
-    _EXTENSION_TYPE = "incidentFilters"
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        _add_read_target_args(schema)
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name, resource_group, agent_url = _read_target(self.ctx.args)
-        if agent_url:
-            result = _data_plane_request(
-                self.cli_ctx, agent_name, resource_group, "GET", _incident_filter_path(),
-                agent_url=agent_url,
-            )
-        else:
-            result = _incident_unwrap_list("filter", _extension_resource_list(
-                self.cli_ctx, agent_name, resource_group, "incidentFilters"))
-        if isinstance(result, dict) and isinstance(result.get("value"), list):
-            _warn_if_quickstart_plan(result["value"], agent_name or agent_url)
-        if isinstance(result, dict) and isinstance(result.get("value"), list) and not result["value"]:
-            logger.warning(
-                "No incident filters found on agent '%s'. Add one with "
-                "'az sre incident-filter create'.", agent_name or agent_url,
-            )
-        return result
 
 
-@register_command(
-    "sre incident-filter delete",
-    confirmation="Are you sure you want to perform this operation?",
-)
-class IncidentFilterDelete(AAZCommand):
-    """Delete an incident filter."""
-
-    _EXTENSION_TYPE = "incidentFilters"
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        schema.agent_name = AAZStrArg(
-            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
-        )
-        schema.resource_group = AAZResourceGroupNameArg(required=True)
-        schema.extension_name = AAZStrArg(
-            options=["--name", "-n", "--extension-name"],
-            help="Name of this incident filter.",
-            required=True,
-        )
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name = _arg_value(self.ctx.args.agent_name)
-        resource_group = _arg_value(self.ctx.args.resource_group)
-        extension_name = _arg_value(self.ctx.args.extension_name)
-        # The user already confirmed via this command's own confirmation
-        # prompt (see its @register_command(confirmation=...)).
-        return _extension_resource_delete(
-            self.cli_ctx, agent_name, resource_group, "incidentFilters", extension_name,
-        )
 
 
 def _set_incident_filter_enabled(command, enabled):
@@ -4652,247 +4421,19 @@ def _incident_filter_toggle_schema(cls, schema):
     return schema
 
 
-@register_command("sre incident-filter enable")
-class IncidentFilterEnable(AAZCommand):
-    """Turn on an incident filter so its response plan matches incidents.
-
-    Only isEnabled changes; the rest of the filter is preserved.
-
-    :example: Enable a filter
-        az sre incident-filter enable -g myrg --agent-name myagent --name disk-space-filter
-    """
-
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        return _incident_filter_toggle_schema(cls, super()._build_arguments_schema(*args, **kwargs))
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        return _set_incident_filter_enabled(self, True)
 
 
-@register_command("sre incident-filter disable")
-class IncidentFilterDisable(AAZCommand):
-    """Turn off an incident filter without deleting it.
-
-    The scanner stops matching incidents against the filter; the
-    configuration is preserved. Use it during maintenance windows.
-
-    :example: Disable a filter
-        az sre incident-filter disable -g myrg --agent-name myagent --name disk-space-filter
-    """
-
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        return _incident_filter_toggle_schema(cls, super()._build_arguments_schema(*args, **kwargs))
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        return _set_incident_filter_enabled(self, False)
 
 
-# ---- sre incident-handler (response instructions linked to an incident filter) ----
-@register_command_group("sre incident-handler")
-class _IncidentHandlerGroup(AAZCommandGroup):
-    """Manage incident response plans (portal: Agent Canvas > a subagent's
-    "+" > "Add incident response plan"): custom instructions a handling
-    agent follows when an incident-filter routes a match to it.
-    """
+# ---- incident handler helpers ----
 
 
-@register_command("sre incident-handler create")
-class IncidentHandlerCreate(AAZCommand):
-    """Create or update an incident response plan (handler).
-
-    Created through ARM (the data plane reports the real reason if ARM rejects it). Link incidentFilterId to an existing
-    filter and pass --overwrite to replace an existing handler.
-
-    :example: Create a response plan linked to an incident filter
-        az sre incident-handler create -g myrg --agent-name myagent --name disk-space-response \\
-            --value '{"incidentFilterId": "<id-from-incident-filter-show>", "customInstructions": "Check disk usage and report findings."}'
-    """
-
-    _EXTENSION_TYPE = "incidentHandlers"
-    _args_schema = None
-    _VALUE_HELP = (
-        "Incident response plan configuration as a JSON document. Fields: "
-        "\"name\", \"description\", \"incidentFilterId\" (links this "
-        "handler to the incident-filter whose matches it responds to -- "
-        "see 'sre incident-filter create'), \"customInstructions\" "
-        "(string -- what the handling agent should do for a matched "
-        "incident), \"incidentProcessingGuide\" (array of strings, "
-        "step-by-step guidance), \"tools\" (array of tool-name strings the "
-        "handler may use). \"id\" and \"incidents\" (array) are server-"
-        "populated on read, not meant to be set. Example: "
-        "{\"name\": \"disk-space-response\", \"incidentFilterId\": "
-        "\"<filter-id-from-incident-filter-show>\", \"customInstructions\": "
-        "\"Check disk usage via Kusto, then page on-call if over 90%.\"}."
-    )
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        schema.agent_name = AAZStrArg(
-            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
-        )
-        schema.resource_group = AAZResourceGroupNameArg(required=True)
-        schema.extension_name = AAZStrArg(
-            options=["--name", "-n", "--extension-name"],
-            help="Name of this incident response plan.",
-            required=True,
-        )
-        schema.value = AAZStrArg(options=["--value"], help=cls._VALUE_HELP, required=True)
-        schema.overwrite = AAZBoolArg(
-            options=["--overwrite"], help="Allow replacing an existing incident response plan.",
-        )
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name = _arg_value(self.ctx.args.agent_name)
-        resource_group = _arg_value(self.ctx.args.resource_group)
-        extension_name = _arg_value(self.ctx.args.extension_name)
-        raw_value = _arg_value(self.ctx.args.value)
-        try:
-            parsed = json.loads(raw_value)
-        except (TypeError, ValueError) as ex:
-            raise CLIError(f"--value must be a JSON document: {ex}") from ex
-        _validate_incident_handlers_shape(parsed)
-        body = dict(parsed)
-        body["id"] = extension_name
-        return _incident_resource_create(
-            self.cli_ctx, agent_name, resource_group, "incidentHandlers", extension_name,
-            body, _incident_handler_path(extension_name), body,
-            bool(_arg_value(self.ctx.args.overwrite)),
-        )
 
 
-@register_command("sre incident-handler show")
-class IncidentHandlerShow(AAZCommand):
-    """Show an incident response plan. Use --agent-url to read a shared agent."""
-
-    _EXTENSION_TYPE = "incidentHandlers"
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        _add_read_target_args(schema, short_name=False)
-        schema.extension_name = AAZStrArg(
-            options=["--name", "-n", "--extension-name"],
-            help="Name of this incident response plan.",
-            required=True,
-        )
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name, resource_group, agent_url = _read_target(self.ctx.args)
-        extension_name = _arg_value(self.ctx.args.extension_name)
-        if agent_url:
-            result = _data_plane_request(
-                self.cli_ctx, agent_name, resource_group, "GET",
-                _incident_handler_path(extension_name), missing_ok=True, agent_url=agent_url,
-            )
-            if result is None:
-                raise ResourceNotFoundError(
-                    f"Incident response plan '{extension_name}' not found on agent '{agent_url}'."
-                )
-            return result
-        return _incident_unwrap("handler", _extension_resource_show(
-            self.cli_ctx, agent_name, resource_group, "incidentHandlers", extension_name))
 
 
-@register_command("sre incident-handler list")
-class IncidentHandlerList(AAZCommand):
-    """List incident response plans (handlers).
-
-    :example: List an agent's incident response plans
-        az sre incident-handler list -g myrg --agent-name myagent
-    """
-
-    _EXTENSION_TYPE = "incidentHandlers"
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        _add_read_target_args(schema)
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name, resource_group, agent_url = _read_target(self.ctx.args)
-        if agent_url:
-            result = _data_plane_request(
-                self.cli_ctx, agent_name, resource_group, "GET", _incident_handler_path(),
-                agent_url=agent_url,
-            )
-        else:
-            result = _incident_unwrap_list("handler", _extension_resource_list(
-                self.cli_ctx, agent_name, resource_group, "incidentHandlers"))
-        if isinstance(result, list) and not result:
-            logger.warning(
-                "No incident response plans found on agent '%s'. Add one "
-                "with 'az sre incident-handler create'.", agent_name or agent_url,
-            )
-        return result
 
 
-@register_command(
-    "sre incident-handler delete",
-    confirmation="Are you sure you want to perform this operation?",
-)
-class IncidentHandlerDelete(AAZCommand):
-    """Delete an incident response plan."""
-
-    _EXTENSION_TYPE = "incidentHandlers"
-    _args_schema = None
-
-    @classmethod
-    def _build_arguments_schema(cls, *args, **kwargs):
-        if cls._args_schema is not None:
-            return cls._args_schema
-        schema = super()._build_arguments_schema(*args, **kwargs)
-        schema.agent_name = AAZStrArg(
-            options=["--agent-name"], help="Name of the SRE Agent.", required=True,
-        )
-        schema.resource_group = AAZResourceGroupNameArg(required=True)
-        schema.extension_name = AAZStrArg(
-            options=["--name", "-n", "--extension-name"],
-            help="Name of this incident response plan.",
-            required=True,
-        )
-        cls._args_schema = schema
-        return schema
-
-    def _handler(self, command_args):
-        super()._handler(command_args)
-        agent_name = _arg_value(self.ctx.args.agent_name)
-        resource_group = _arg_value(self.ctx.args.resource_group)
-        extension_name = _arg_value(self.ctx.args.extension_name)
-        # The user already confirmed via this command's own confirmation
-        # prompt (see its @register_command(confirmation=...)).
-        return _extension_resource_delete(
-            self.cli_ctx, agent_name, resource_group, "incidentHandlers", extension_name,
-        )
 
 
 # ---- sre response-plan (portal: Incidents > Triggers & response plans) ----

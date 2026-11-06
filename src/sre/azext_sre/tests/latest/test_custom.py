@@ -78,20 +78,11 @@ from azext_sre.custom import (
     PluginInstallShow,
     PluginInstallList,
     PluginInstallDelete,
-    IncidentHandlerCreate,
-    IncidentHandlerShow,
     IncidentQuery,
     _warn_if_quickstart_plan,
     ThreadList,
     ThreadMessages,
-    ThreadShow,    IncidentHandlerList,
-    IncidentHandlerDelete,
-    IncidentFilterCreate,
-    IncidentFilterShow,
-    IncidentFilterList,
-    IncidentFilterDelete,
-    IncidentFilterEnable,
-    IncidentFilterDisable,
+    ThreadShow,
     _data_plane_request,
     _resolve_agent_endpoint,
     EXTENSION_TYPE_CREATE_NOUN,
@@ -1160,149 +1151,58 @@ class IncidentDataPlaneTests(unittest.TestCase):
         )
         return command
 
-    def test_create_goes_through_arm_and_returns_data_plane_shape(self):
-        for cls, ext_type, value, sent, envelope, expected in (
-            (IncidentFilterCreate, "incidentFilters",
-             {"incidentPlatform": "AzMonitor", "handlingAgent": "responder"},
-             {"incidentPlatform": "AzMonitor", "handlingAgent": "responder"},
-             {"name": "plan", "properties": {"value": {"handlingAgent": "responder"}}},
-             {"name": "plan", "type": "IncidentFilter", "properties": {"handlingAgent": "responder"}}),
-            (IncidentHandlerCreate, "incidentHandlers",
-             {"incidentFilterId": "filter", "customInstructions": "Investigate"},
-             {"incidentFilterId": "filter", "customInstructions": "Investigate", "id": "plan"},
-             {"name": "plan", "properties": {"value": {"id": "plan"}}},
-             {"id": "plan"}),
-        ):
-            with self.subTest(command=cls.__name__), \
-                 patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-                 patch("azext_sre.custom._extension_resource_create", return_value=envelope) as create, \
-                 patch("azext_sre.custom._data_plane_request") as dp:
-                output = self._arm(cls, value=json.dumps(value), overwrite=False)._handler({})
-                self.assertEqual(output, expected)
-                self.assertEqual(create.call_args.args[3:5], (ext_type, "plan"))
-                self.assertEqual(json.loads(create.call_args.args[5]), sent)
-                self.assertFalse(create.call_args.args[6])
-                dp.assert_not_called()
-
-    def test_duplicate_error_names_the_resource(self):
-        for cls in (IncidentFilterCreate, IncidentHandlerCreate):
-            with self.subTest(command=cls.__name__), \
-                 patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-                 patch("azext_sre.custom._extension_resource_create",
-                       side_effect=ResourceExistsError("exists")), \
-                 self.assertRaisesRegex(ResourceExistsError, "'plan'.*--overwrite"):
-                self._arm(cls, overwrite=False, value=json.dumps(
-                    {"incidentPlatform": "AzMonitor", "handlingAgent": "r", "incidentFilterId": "f"},
-                ))._handler({})
-
     def _http_error(self, status, text):
         response = Response()
         response.status_code = status
         response._content = text.encode()
         return HTTPError("failed", response=response)
 
+    def _create(self, **kwargs):
+        from azext_sre.custom import _incident_resource_create
+        with patch("azext_sre.custom._data_plane_request", **kwargs.pop("dp", {})) as dp:
+            return _incident_resource_create(
+                None, "agent", "rg", "incidentFilters", "plan", {"a": 1},
+                "/api/v2/incidentManagement/incidentFilters/plan", {"b": 2}, kwargs.pop("overwrite", False),
+            ), dp
+
+    def test_create_goes_through_arm_and_returns_data_plane_shape(self):
+        envelope = {"name": "plan", "properties": {"value": {"handlingAgent": "responder"}}}
+        with patch("azext_sre.custom._extension_resource_create", return_value=envelope):
+            output, dp = self._create()
+        self.assertEqual(output["name"], "plan")
+        dp.assert_not_called()
+
+    def test_duplicate_error_names_the_resource(self):
+        with patch("azext_sre.custom._extension_resource_create",
+                   side_effect=ResourceExistsError("exists")), \
+             self.assertRaisesRegex(ResourceExistsError, "'plan'.*--overwrite"):
+            self._create()
+
     def test_generic_arm_error_replays_on_data_plane_for_real_reason(self):
         generic = self._http_error(400, '{"error":{"message":"The extension configuration is invalid."}}')
-        value = json.dumps({"incidentPlatform": "AzMonitor", "handlingAgent": "responder"})
         for dp_effect, expect in (
             (self._http_error(400, "Incident platform 'AzMonitor' does not match"), CLIError),
             (self._http_error(403, "Forbidden"), HTTPError),
         ):
             with self.subTest(status=dp_effect.response.status_code), \
-                 patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-                 patch("azext_sre.custom._extension_resource_create", side_effect=generic), \
-                 patch("azext_sre.custom._data_plane_request", side_effect=dp_effect) as dp:
+                 patch("azext_sre.custom._extension_resource_create", side_effect=generic):
                 with self.assertRaises(expect) as raised:
-                    self._arm(IncidentFilterCreate, value=value, overwrite=True)._handler({})
+                    self._create(dp={"side_effect": dp_effect})
                 if expect is CLIError:
                     self.assertIn("does not match", str(raised.exception))
-                self.assertEqual(dp.call_args.args[3:5], (
-                    "PUT", "/api/v2/incidentManagement/incidentFilters/plan"))
 
     def test_other_arm_errors_are_not_replayed(self):
-        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._extension_resource_create",
+        with patch("azext_sre.custom._extension_resource_create",
                    side_effect=self._http_error(500, "boom")), \
              patch("azext_sre.custom._data_plane_request") as dp, \
              self.assertRaises(HTTPError):
-            self._arm(IncidentFilterCreate, overwrite=True, value=json.dumps(
-                {"incidentPlatform": "AzMonitor", "handlingAgent": "r"}))._handler({})
+            from azext_sre.custom import _incident_resource_create
+            _incident_resource_create(None, "agent", "rg", "incidentFilters", "plan", {}, "/p", {}, True)
         dp.assert_not_called()
 
-    def test_non_icm_filter_requires_singular_handling_agent(self):
-        for value in (
-            {"incidentPlatform": "AzMonitor", "handlingAgents": ["responder"]},
-            {"incidentPlatform": "AzMonitor", "handlingAgent": " "},
-            {"incidentPlatform": "AzMonitor", "handlingAgent": 12},
-        ):
-            with self.subTest(value=value), self.assertRaises(CLIError):
-                self._run(IncidentFilterCreate, value=json.dumps(value), overwrite=True)
-
-    def test_icm_filter_accepts_plural_handling_agents(self):
-        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._extension_resource_create", return_value={}) as create:
-            self._arm(
-                IncidentFilterCreate, overwrite=True,
-                value=json.dumps({"incidentPlatform": "Icm", "handlingAgents": ["responder"]}),
-            )._handler({})
-        self.assertEqual(json.loads(create.call_args.args[5])["handlingAgents"], ["responder"])
-
-    def test_invalid_json_never_reaches_service(self):
-        for cls in (IncidentFilterCreate, IncidentHandlerCreate):
-            with self.subTest(command=cls.__name__), \
-                 patch("azext_sre.custom._extension_resource_create") as create, \
-                 patch("azext_sre.custom._data_plane_request") as request:
-                command = _bare_command(
-                    cls, agent_name="agent", resource_group="rg", extension_name="plan",
-                    value="{invalid", overwrite=True,
-                )
-                with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-                     self.assertRaises(CLIError):
-                    command._handler({})
-                create.assert_not_called()
-                request.assert_not_called()
-
-    def test_read_and_delete_use_arm_and_unwrap(self):
-        for show, listing, delete, ext_type, kind, one, many in (
-            (IncidentFilterShow, IncidentFilterList, IncidentFilterDelete, "incidentFilters", "filter",
-             {"name": "plan", "type": "IncidentFilter", "properties": {"isEnabled": True}},
-             {"value": [{"name": "plan", "type": "IncidentFilter", "properties": {"isEnabled": True}}]}),
-            (IncidentHandlerShow, IncidentHandlerList, IncidentHandlerDelete, "incidentHandlers", "handler",
-             {"id": "plan"}, [{"id": "plan"}]),
-        ):
-            envelope = {"name": "plan", "properties": {"value": (
-                {"isEnabled": True} if kind == "filter" else {"id": "plan"})}}
-            with self.subTest(command=show.__name__), \
-                 patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-                 patch("azext_sre.custom._data_plane_request") as dp, \
-                 patch("azext_sre.custom._extension_resource_show", return_value=envelope) as shown, \
-                 patch("azext_sre.custom._extension_resource_list",
-                       return_value={"value": [envelope]}) as listed, \
-                 patch("azext_sre.custom._extension_resource_delete", return_value={}) as deleted:
-                self.assertEqual(self._arm(show)._handler({}), one)
-                self.assertEqual(shown.call_args.args[3:], (ext_type, "plan"))
-                self.assertEqual(self._arm(listing)._handler({}), many)
-                self.assertEqual(listed.call_args.args[3], ext_type)
-                self._arm(delete)._handler({})
-                self.assertEqual(deleted.call_args.args[3:], (ext_type, "plan"))
-                dp.assert_not_called()
-
-    def test_agent_url_reads_use_data_plane_routes(self):
-        for show, base in (
-            (IncidentFilterShow, "/api/v2/incidentManagement/incidentFilters"),
-            (IncidentHandlerShow, "/api/v2/extendedAgent/incidentHandlers"),
-        ):
-            with self.subTest(command=show.__name__):
-                command = _bare_command(
-                    show, agent_name=None, resource_group=None, extension_name="plan",
-                    agent_url="https://a-b.c.eastus2.azuresre.ai",
-                )
-                with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-                     patch("azext_sre.custom._data_plane_request", return_value={"id": "plan"}) as dp:
-                    command._handler({})
-                self.assertEqual(dp.call_args.args[3:], ("GET", base + "/plan"))
     def test_enable_disable_patch_only_is_enabled(self):
-        for cls, flag in ((IncidentFilterEnable, True), (IncidentFilterDisable, False)):
+        from azext_sre.custom import ResponsePlanEnable, ResponsePlanDisable
+        for cls, flag in ((ResponsePlanEnable, True), (ResponsePlanDisable, False)):
             with self.subTest(command=cls.__name__):
                 output, request = self._run(cls, result={"name": "plan"})
                 self.assertEqual(output, {"name": "plan"})
@@ -1313,11 +1213,12 @@ class IncidentDataPlaneTests(unittest.TestCase):
                 self.assertEqual(request.call_args.kwargs["body"], {
                     "name": "plan", "type": "IncidentFilter", "properties": {"isEnabled": flag}})
         with self.assertRaises(ResourceNotFoundError):
-            self._run(IncidentFilterEnable)
+            self._run(ResponsePlanEnable)
 
     def test_agent_url_reads_shared_agent_without_arm(self):
+        from azext_sre.custom import ResponsePlanList
         command = _bare_command(
-            IncidentFilterList, agent_name=None, resource_group=None,
+            ResponsePlanList, agent_name=None, resource_group=None,
             agent_url="https://a-b.c.eastus2.azuresre.ai/ignored",
         )
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
@@ -1408,7 +1309,8 @@ class IncidentDataPlaneTests(unittest.TestCase):
             {"agent_url": "https://a.eastus2.azuresre.ai", "agent_name": "x", "resource_group": "rg"},
             {"agent_url": None, "agent_name": "x", "resource_group": None},
         ):
-            command = _bare_command(IncidentFilterList, **kwargs)
+            from azext_sre.custom import ResponsePlanList
+            command = _bare_command(ResponsePlanList, **kwargs)
             with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
                  self.assertRaises(CLIError):
                 command._handler({})
@@ -1449,27 +1351,6 @@ class IncidentDataPlaneTests(unittest.TestCase):
                 else:
                     with self.assertRaises(HTTPError):
                         _data_plane_request(None, "agent", "rg", "GET", "/api/plan", missing_ok=missing_ok)
-
-
-class IncidentHandlerNounTests(unittest.TestCase):
-    """'incidentHandlers' used to have no dedicated noun (generic
-    --extension-type passthrough only, mislabeled "legacy" in an earlier
-    comment). It is actually the response-plan half of the current
-    Microsoft Learn "Set Up Incident Response" tutorial, so it now gets
-    its own noun-specific command group, same as incidentFilters got
-    'sre incident-filter'."""
-
-    def test_extension_type_create_noun_points_at_dedicated_command(self):
-        self.assertEqual(
-            EXTENSION_TYPE_CREATE_NOUN["incidentHandlers"],
-            "az sre incident-handler create",
-        )
-
-    def test_create_show_list_delete_target_the_right_extension_type(self):
-        self.assertEqual(IncidentHandlerCreate._EXTENSION_TYPE, "incidentHandlers")
-        self.assertEqual(IncidentHandlerShow._EXTENSION_TYPE, "incidentHandlers")
-        self.assertEqual(IncidentHandlerList._EXTENSION_TYPE, "incidentHandlers")
-        self.assertEqual(IncidentHandlerDelete._EXTENSION_TYPE, "incidentHandlers")
 
 
 class ToolsShapeValidationTests(unittest.TestCase):

@@ -195,14 +195,14 @@ GROUP_EXAMPLES = {
         {"name": "List an agent's HTTP triggers.",
          "text": "az sre automation http-trigger list -g myrg --agent-name myagent"},
     ],
-    "sre incident-filter": [
-        {"name": "Route incidents mentioning 'disk space' to a handling agent.",
-         "text": "az sre incident-filter create -g myrg --agent-name myagent "
-                 "-n disk-space-filter --value \"{incidentPlatform:'Icm',"
-                 "titleContains:'disk space',handlingAgents:['storage-oncall-agent'],"
-                 "isEnabled:true}\""},
-        {"name": "List an agent's incident filters.",
-         "text": "az sre incident-filter list -g myrg --agent-name myagent"},
+    "sre response-plan": [
+        {"name": "Route Azure Monitor alerts mentioning 'disk space' to a subagent.",
+         "text": "az sre response-plan create -g myrg --agent-name myagent "
+                 "-n disk-space --platform AzMonitor --subagent incident-responder "
+                 "--title-contains \"disk space\" --mode review "
+                 "--instructions \"Gather disk-usage evidence.\""},
+        {"name": "List an agent's response plans.",
+         "text": "az sre response-plan list -g myrg --agent-name myagent"},
     ],
 }
 

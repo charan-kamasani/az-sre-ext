@@ -590,7 +590,7 @@ reading a spec. There is no longer a generic `az sre extension` escape
 hatch: every extension type now has a dedicated front-door noun (`tool`,
 `skill`, `hook`, `instructions`, `knowledge`, `repo connect`,
 `plugin marketplace`/`plugin install`, `agent settings`, `automation
-scheduled-task`/`http-trigger`, `incident-filter`, `incident-handler`). The one remaining
+scheduled-task`/`http-trigger`, `response-plan`). The one remaining
 generic command group, `az sre managed-resource`, is unrelated RBAC
 plumbing, not an extension-type front door. Status as of the last
 live-verification pass (12 of 15 extension types confirmed live):
@@ -601,7 +601,7 @@ live-verification pass (12 of 15 extension types confirmed live):
 | `globalSettings` (`agent settings`) | `{}` plus optional `toolPermissions`/`toolStatuses`/`skillStatuses`/`customInstructions`/`approvalExpirationSetting` | Shape-confirmed from the control-plane team's own integration tests — true ARM singleton, `DELETE` unsupported, reset via `agent settings update --value '{}'` |
 | `pluginMarketplaces` (`plugin marketplace`), `pluginInstallations` (`plugin install`) | See `PLAN.md` | Create/show live-verified; K8s-backed install provisioning not exercised in this sandbox |
 | `tools` (`tool`), `skills` (`skill`), `hooks` (`hook`), `repositories` (`repo connect`) | Confirmed | Live-verified end to end (PUT + GET round-trip against a real agent) |
-| `incidentFilters` (`incident-filter`), `incidentHandlers` (`incident-handler`) | Filter: `{name,type:"IncidentFilter",properties:{...}}`; handler: flat JSON with `id` | Dedicated commands use the ARM extension routes with a data-plane replay for the real error; enable/disable use the data plane. Direct API create/read-back and rebuilt CLI list verified; full CLI CRUD (create, show, list, duplicate guard, overwrite, delete) verified on a disposable agent. Real alert ingestion is not yet tested. |
+| `incidentFilters` (`response-plan`), `incidentHandlers` (`response-plan`) | Filter: `{name,type:"IncidentFilter",properties:{...}}`; handler: flat JSON with `id` | Dedicated commands use the ARM extension routes with a data-plane replay for the real error; enable/disable use the data plane. Direct API create/read-back and rebuilt CLI list verified; full CLI CRUD (create, show, list, duplicate guard, overwrite, delete) verified on a disposable agent. Real alert ingestion is not yet tested. |
 | `githubAuths`, `azureDevOpsAuths` (both wired up for you by `repo connect`) | Shape-confirmed from authoritative source | Live-create rejected by real credential/token validation on the service side, not a shape defect |
 | `subagents` | No model found | Believed server-managed / Agent-Canvas-only, not CLI-creatable |
 
@@ -910,12 +910,12 @@ Noun-specific commands include:
   agent on a cron schedule against a prompt.
 - `az sre automation http-trigger create/show/list/delete` -- run the
   agent from an inbound webhook call.
-- `az sre incident-filter create/show/list/delete` -- match
+- `az sre response-plan create/show/list/delete/enable/disable` -- match
   incoming incidents (by platform/title/team/etc.) and route matches to
   a handling agent (portal: Incidents > "Triggers & response plans", a
   separate top-level nav item from Automation).
-- `az sre incident-handler create/show/list/delete` -- response instructions
-  linked to a filter through `incidentFilterId`.
+  The plan is an incident filter plus an optional handler (instructions)
+  linked through `incidentFilterId`; `--instructions` writes the handler.
 
 Scheduled task and HTTP trigger were live-verified end-to-end against
 `mytestagent`: created via CLI, confirmed showing up correctly in the
@@ -982,11 +982,9 @@ az sre automation scheduled-task create -g myrg --agent-name myagent \
 az sre automation http-trigger create -g myrg --agent-name myagent \
   -n alert-webhook --value '{"agentPrompt":"Investigate the attached alert payload"}'
 
-az sre incident-filter create -g myrg --agent-name myagent \
-  -n disk-space-filter --value '{"incidentPlatform":"AzMonitor","titleContains":"disk space","handlingAgent":"storage-oncall-agent","agentMode":"review","isEnabled":false}'
-
-az sre incident-handler create -g myrg --agent-name myagent \
-  -n disk-space-response --value '{"incidentFilterId":"<filter-id-from-show>","customInstructions":"Gather disk-usage evidence and report findings."}'
+az sre response-plan create -g myrg --agent-name myagent -n disk-space \
+  --platform AzMonitor --subagent storage-oncall-agent --title-contains "disk space" \
+  --mode review --disabled --instructions "Gather disk-usage evidence and report findings."
 ```
 
 ## Networking
