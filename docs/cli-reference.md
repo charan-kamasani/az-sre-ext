@@ -389,7 +389,7 @@ Covers scheduled tasks and HTTP triggers. Response plans live under 'az sre resp
 
 Connect an SRE Agent to an external data source it can query or act on.
 
-Use 'sre connector create' to add one, 'sre connector list'/'show' to see what's connected (see --help on those for the full supported type list). The portal's larger "Additional connectors" catalog (Gmail, SharePoint, OneDrive, etc.) has no public API yet -- portal-only.
+Run 'az sre connector create --help' for the supported connector types. The portal's "Additional connectors" catalog (Gmail, SharePoint, OneDrive and others) has no public API yet.
 
 | Verb | Exact syntax |
 | --- | --- |
