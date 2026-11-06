@@ -498,14 +498,7 @@ class _GrantAccessToMeMixin:
         schema = super()._build_arguments_schema(*args, **kwargs)
         schema.grant_access_to_me = AAZStrArg(
             options=["--grant-access-to-me"],
-            help="Grant the signed-in user a built-in SRE Agent role "
-            "immediately after creating the agent: 'admin', 'user', "
-            "'author', or 'reader'. Resolves your object ID via "
-            "'az ad signed-in-user show' automatically -- equivalent to "
-            "running 'sre access grant --assignee <your-object-id>' "
-            "as a separate, manual follow-up command. Cannot be combined "
-            "with --no-wait (the grant runs in post_operations, which the "
-            "no-wait code path never reaches).",
+            help="Grant yourself a built-in role after creation. Cannot be used with --no-wait.",
             enum={key: key for key in GrantAccess._ROLES},
         )
         return schema
@@ -684,22 +677,14 @@ class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdenti
         # _DefaultSystemIdentityMixin) directly on these args, not just in
         # a runtime warning -- a new user reading --help before running the
         # command had no way to know this would happen otherwise.
-        schema.mi_system_assigned.help = (
-            "Set the system managed identity. If this and --mi-user-assigned "
-            "are both omitted, a new user-assigned identity is auto-created "
-            "and both are enabled, matching the portal's own default."
+        schema.mi_system_assigned._help["short-summary"] = (
+            "Enable the system-assigned identity. Default: a user-assigned identity is created and both are enabled."
         )
-        schema.mi_user_assigned.help = (
-            "Set the user managed identities. Support shorthand-syntax, "
-            "json-file and yaml-file. Try \"??\" to show more. If this and "
-            "--mi-system-assigned are both omitted, a new user-assigned "
-            "identity is auto-created and both are enabled, matching the "
-            "portal's own default."
+        schema.mi_user_assigned._help["short-summary"] = (
+            "User-assigned identities to attach."
         )
         schema.log_configuration._help["short-summary"] = (
-            "Log configurations. If omitted, the agent is created without "
-            "an Application Insights link (not required by the service, "
-            "but you lose trace view -- a warning is printed)."
+            "Application Insights link for traces. Without it, a warning is shown and trace view is unavailable."
         )
         cls._args_schema = schema
         return cls._args_schema

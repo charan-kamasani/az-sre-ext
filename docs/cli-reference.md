@@ -176,18 +176,18 @@ Create an SRE Agent.
 | `--no-wait` | Flag | No |  |  | Do not wait for the long-running operation to finish. |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--system-assigned`, `--mi-system-assigned` | String | No |  |  | Set the system managed identity. |
-| `--user-assigned`, `--mi-user-assigned` | List | No |  |  | Set the user managed identities. |
+| `--system-assigned`, `--mi-system-assigned` | String | No |  |  | Enable the system-assigned identity. Default: a user-assigned identity is created and both are enabled. |
+| `--user-assigned`, `--mi-user-assigned` | List | No |  |  | User-assigned identities to attach. |
 | `--action-configuration` | Object | No |  |  | Configuration for action |
 | `--agent-identity` | Object | No |  |  | Agent identity configuration for accessing resources |
 | `--default-model` | Object | No |  |  | Default AI model configuration for the agent |
 | `--incident-management-configuration` | Object | No |  |  | Incident management configurations |
 | `--knowledge-graph-configuration` | Object | No |  |  | Knowledge graph configuration for agent |
-| `--log-configuration` | Object | No |  |  | Log configurations. If omitted, the agent is created without an Application Insights link (not required by the service, but you lose trace view -- a warning is printed). |
+| `--log-configuration` | Object | No |  |  | Application Insights link for traces. Without it, a warning is shown and trace view is unavailable. |
 | `--upgrade-channel` | String | No |  | `Preview`, `Stable` | The upgrade channel of the agent |
 | `--location`, `-l` | String | Yes |  |  | The geo-location where the resource lives |
 | `--tags` | Dictionary | No |  |  | Resource tags. |
-| `--grant-access-to-me` | String | No |  | `admin`, `user`, `author`, `reader` | Grant the signed-in user a built-in SRE Agent role immediately after creating the agent: 'admin', 'user', 'author', or 'reader'. Resolves your object ID via 'az ad signed-in-user show' automatically -- equivalent to running 'sre access grant --assignee <your-object-id>' as a separate, manual follow-up command. Cannot be combined with --no-wait (the grant runs in post_operations, which the no-wait code path never reaches). |
+| `--grant-access-to-me` | String | No |  | `admin`, `user`, `author`, `reader` | Grant yourself a built-in role after creation. Cannot be used with --no-wait. |
 
 **Examples**
 
