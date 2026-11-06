@@ -1188,6 +1188,15 @@ Routes incidents that match the criteria to a subagent. Connect the incident pla
 - Route high-severity Azure Monitor incidents to a subagent in review mode
 
   `az sre response-plan create -g myrg --agent-name myagent -n sev1-api \ --platform AzMonitor --subagent incident-responder --priority Sev0 Sev1 \ --title-contains api --mode review`
+- Full setup order -- connect the platform, create the subagent, then the plan
+
+  `az sre agent update -g myrg -n myagent --incident-management-configuration "{type:AzMonitor}" az sre subagent create -g myrg --agent-name myagent -n incident-responder --value @subagent.json az sre response-plan create -g myrg --agent-name myagent -n disk-space \ --platform AzMonitor --subagent incident-responder --title-contains "disk space"`
+- Skip noisy incidents and give the subagent step-by-step guidance
+
+  `az sre response-plan create -g myrg --agent-name myagent -n api-errors \ --platform AzMonitor --subagent incident-responder --priority Sev1 Sev2 \ --title-not-contains test synthetic \ --processing-guide "Check recent deployments" "Query error rates in App Insights"`
+- Update an existing plan (create replaces it only with --overwrite)
+
+  `az sre response-plan create -g myrg --agent-name myagent -n api-errors \ --platform AzMonitor --subagent incident-responder --mode autonomous --overwrite`
 
 ### `az sre response-plan delete`
 
@@ -1203,6 +1212,12 @@ Delete a response plan and its linked instructions.
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of the response plan. |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
+
+**Examples**
+
+- Delete a plan
+
+  `az sre response-plan delete -g myrg --agent-name myagent -n sev1-api`
 
 ### `az sre response-plan disable`
 

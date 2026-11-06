@@ -196,6 +196,11 @@ GROUP_EXAMPLES = {
          "text": "az sre automation http-trigger list -g myrg --agent-name myagent"},
     ],
     "sre response-plan": [
+        {"name": "Prerequisites: connect an incident platform, then create the subagent.",
+         "text": "az sre agent update -g myrg -n myagent "
+                 "--incident-management-configuration \"{type:AzMonitor}\"\n"
+                 "az sre subagent create -g myrg --agent-name myagent "
+                 "-n incident-responder --value @subagent.json"},
         {"name": "Route Azure Monitor alerts mentioning 'disk space' to a subagent.",
          "text": "az sre response-plan create -g myrg --agent-name myagent "
                  "-n disk-space --platform AzMonitor --subagent incident-responder "

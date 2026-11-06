@@ -4485,6 +4485,22 @@ class ResponsePlanCreate(AAZCommand):
         az sre response-plan create -g myrg --agent-name myagent -n sev1-api \\
             --platform AzMonitor --subagent incident-responder --priority Sev0 Sev1 \\
             --title-contains api --mode review
+
+    :example: Full setup order -- connect the platform, create the subagent, then the plan
+        az sre agent update -g myrg -n myagent --incident-management-configuration "{type:AzMonitor}"
+        az sre subagent create -g myrg --agent-name myagent -n incident-responder --value @subagent.json
+        az sre response-plan create -g myrg --agent-name myagent -n disk-space \\
+            --platform AzMonitor --subagent incident-responder --title-contains "disk space"
+
+    :example: Skip noisy incidents and give the subagent step-by-step guidance
+        az sre response-plan create -g myrg --agent-name myagent -n api-errors \\
+            --platform AzMonitor --subagent incident-responder --priority Sev1 Sev2 \\
+            --title-not-contains test synthetic \\
+            --processing-guide "Check recent deployments" "Query error rates in App Insights"
+
+    :example: Update an existing plan (create replaces it only with --overwrite)
+        az sre response-plan create -g myrg --agent-name myagent -n api-errors \\
+            --platform AzMonitor --subagent incident-responder --mode autonomous --overwrite
     """
 
     _args_schema = None
@@ -4683,7 +4699,11 @@ class ResponsePlanList(AAZCommand):
     confirmation="Delete this response plan and its instructions?",
 )
 class ResponsePlanDelete(AAZCommand):
-    """Delete a response plan and its linked instructions."""
+    """Delete a response plan and its linked instructions.
+
+    :example: Delete a plan
+        az sre response-plan delete -g myrg --agent-name myagent -n sev1-api
+    """
 
     _args_schema = None
 
