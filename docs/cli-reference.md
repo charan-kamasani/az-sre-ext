@@ -414,8 +414,8 @@ Create an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Type of the data connector. Case-insensitive; portal names such as 'Azure Data Explorer' or 'MCP server' are also accepted. Allowed values: KustoClient (default; Azure Data Explorer), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. Knowledge types use --extended-properties instead of --data-source. GenevaMetrics is available only in Microsoft tenants. |
-| `--data-source` | String | No |  |  | Data source connection string or endpoint. For 'Kusto' (Azure Data Explorer Cluster), this must include a database name, e.g. 'https://cluster.kusto.windows.net/databasename' -- a bare cluster URL with no database is rejected server-side with 'Kusto DataSource must include a database name'. |
+| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. |
+| `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint of the connector |
 | `--extended-properties` | Dictionary | No |  |  | Additional properties for the data connector which can be used to store custom key-value pairs |
 | `--identity` | String | No |  |  | Identity used to access the data source |
@@ -432,30 +432,21 @@ Create an Agent Connector.
 
 **Examples**
 
-- Connect an agent to Azure Data Explorer -- matches the portal's
+- Connect Azure Data Explorer
 
-  `"Add connector" > "Azure Data Explorer" flow exactly: just a name and type, no --data-source or --mcp-endpoint needed (uses the agent's system-assigned identity by default, same as the portal) az sre connector create --agent-name myagent --resource-group myrg \ --name azure-data-explorer --data-connector-type "Azure Data Explorer"`
-- Same, but with a user-assigned identity (portal's "Add identity")
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name adx --data-connector-type "Azure Data Explorer"`
+- Connect the GitHub MCP server
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name azure-data-explorer --data-connector-type "Azure Data Explorer" \ --identity /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<identity>`
-- Connect an agent's GitHub MCP connector using your own gh auth
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name github --data-connector-type Mcp --github true`
+- Connect a custom MCP server with a bearer token
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp --data-connector-type Mcp --github true`
-- Connect a custom MCP server by its own endpoint (live-verified payload)
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name mcp --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --bearer-token "$MY_SERVER_TOKEN"`
+- Connect a custom MCP server with the agent's managed identity
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp-custom --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp"`
-- Connect a custom MCP server using a static bearer token/PAT
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name mcp --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --managed-identity-auth true`
+- Connect one Kusto cluster and database
 
-  `(portal's "Bearer token" authentication method) az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp-bearer --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --bearer-token "$MY_SERVER_TOKEN"`
-- Connect a custom MCP server using the agent's managed identity
-
-  `(portal's "Managed identity" authentication method; combine with --identity to use a user-assigned identity instead of the system-assigned default) az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp-mi --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --managed-identity-auth true --mi-token-scope "api://myserver/.default"`
-- Connect a custom MCP server using OAuth with Dynamic Client
-
-  `Registration (portal's "OAuth (dynamic client registration)" authentication method -- finish consent afterwards in the portal) az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp-oauth --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" --oauth-dcr true`
-- Connect a single Kusto/Azure Data Explorer cluster+database directly
-
-  `(legacy 'Kusto' type, as opposed to the default 'KustoClient'/"Azure Data Explorer" type above -- --data-source must include the database name, live-verified payload) az sre connector create --agent-name myagent --resource-group myrg \ --name my-cluster --data-connector-type Kusto \ --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"`
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name kusto --data-connector-type Kusto \ --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"`
 
 ### `az sre connector delete`
 
@@ -546,8 +537,8 @@ Update an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Type of the data connector. Case-insensitive; portal names such as 'Azure Data Explorer' or 'MCP server' are also accepted. Allowed values: KustoClient (default; Azure Data Explorer), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. Knowledge types use --extended-properties instead of --data-source. GenevaMetrics is available only in Microsoft tenants. |
-| `--data-source` | String | No |  |  | Data source connection string or endpoint. For 'Kusto' (Azure Data Explorer Cluster), this must include a database name, e.g. 'https://cluster.kusto.windows.net/databasename' -- a bare cluster URL with no database is rejected server-side with 'Kusto DataSource must include a database name'. |
+| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. |
+| `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint of the connector |
 | `--extended-properties` | Dictionary | No |  |  | Additional properties for the data connector which can be used to store custom key-value pairs |
 | `--identity` | String | No |  |  | Identity used to access the data source |

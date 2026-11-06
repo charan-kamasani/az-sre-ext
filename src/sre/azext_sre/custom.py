@@ -1032,24 +1032,17 @@ class _DataConnectorTypeArgMixin:
         # existing ._help dict rather than replace it.
         if data_connector_type is not None and isinstance(getattr(data_connector_type, "_help", None), dict):
             data_connector_type._help["short-summary"] = (
-                "Type of the data connector. Case-insensitive; portal "
-                "names such as 'Azure Data Explorer' or 'MCP server' are "
-                "also accepted. Allowed values: KustoClient (default; "
-                "Azure Data Explorer), Kusto, Mcp, Outlook, Teams, "
-                "LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, "
-                "Documentation, AppInsights, KnowledgeText, KnowledgeFile, "
-                "KnowledgeWebPage, KnowledgeRepository. Knowledge types "
-                "use --extended-properties instead of --data-source. "
-                "GenevaMetrics is available only in Microsoft tenants."
+                "Connector type (case-insensitive; portal names also accepted). "
+                "Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, "
+                "LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, "
+                "AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, "
+                "KnowledgeRepository."
             )
         data_source = getattr(schema, "data_source", None)
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
             data_source._help["short-summary"] = (
-                "Data source connection string or endpoint. For 'Kusto' "
-                "(Azure Data Explorer Cluster), this must include a database name, "
-                "e.g. 'https://cluster.kusto.windows.net/databasename' -- a "
-                "bare cluster URL with no database is rejected server-side "
-                "with 'Kusto DataSource must include a database name'."
+                "Connection string or endpoint. For Kusto, include the database: "
+                "https://cluster.kusto.windows.net/database."
             )
         return schema
 
@@ -1354,56 +1347,29 @@ class ConnectorCreate(
 ):
     """Create an Agent Connector.
 
-    :example: Connect an agent to Azure Data Explorer -- matches the portal's
-        "Add connector" > "Azure Data Explorer" flow exactly: just a name and
-        type, no --data-source or --mcp-endpoint needed (uses the agent's
-        system-assigned identity by default, same as the portal)
+    :example: Connect Azure Data Explorer
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name azure-data-explorer --data-connector-type "Azure Data Explorer"
+            --name adx --data-connector-type "Azure Data Explorer"
 
-    :example: Same, but with a user-assigned identity (portal's "Add identity")
+    :example: Connect the GitHub MCP server
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name azure-data-explorer --data-connector-type "Azure Data Explorer" \\
-            --identity /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<identity>
+            --name github --data-connector-type Mcp --github true
 
-    :example: Connect an agent's GitHub MCP connector using your own gh auth
+    :example: Connect a custom MCP server with a bearer token
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name conn-mcp --data-connector-type Mcp --github true
-
-    :example: Connect a custom MCP server by its own endpoint (live-verified payload)
-        az sre connector create --agent-name myagent --resource-group myrg \\
-            --name conn-mcp-custom --data-connector-type Mcp \\
-            --mcp-endpoint "https://myserver.contoso.com/mcp"
-
-    :example: Connect a custom MCP server using a static bearer token/PAT
-        (portal's "Bearer token" authentication method)
-        az sre connector create --agent-name myagent --resource-group myrg \\
-            --name conn-mcp-bearer --data-connector-type Mcp \\
+            --name mcp --data-connector-type Mcp \\
             --mcp-endpoint "https://myserver.contoso.com/mcp" \\
             --bearer-token "$MY_SERVER_TOKEN"
 
-    :example: Connect a custom MCP server using the agent's managed identity
-        (portal's "Managed identity" authentication method; combine with
-        --identity to use a user-assigned identity instead of the
-        system-assigned default)
+    :example: Connect a custom MCP server with the agent's managed identity
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name conn-mcp-mi --data-connector-type Mcp \\
+            --name mcp --data-connector-type Mcp \\
             --mcp-endpoint "https://myserver.contoso.com/mcp" \\
-            --managed-identity-auth true --mi-token-scope "api://myserver/.default"
+            --managed-identity-auth true
 
-    :example: Connect a custom MCP server using OAuth with Dynamic Client
-        Registration (portal's "OAuth (dynamic client registration)"
-        authentication method -- finish consent afterwards in the portal)
+    :example: Connect one Kusto cluster and database
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name conn-mcp-oauth --data-connector-type Mcp \\
-            --mcp-endpoint "https://myserver.contoso.com/mcp" --oauth-dcr true
-
-    :example: Connect a single Kusto/Azure Data Explorer cluster+database directly
-        (legacy 'Kusto' type, as opposed to the default 'KustoClient'/"Azure Data
-        Explorer" type above -- --data-source must include the database name,
-        live-verified payload)
-        az sre connector create --agent-name myagent --resource-group myrg \\
-            --name my-cluster --data-connector-type Kusto \\
+            --name kusto --data-connector-type Kusto \\
             --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"
     """
 
