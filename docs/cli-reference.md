@@ -75,7 +75,7 @@ This is the mirror image of 'sre managed-resource': that group grants the agent'
 
 ### `az sre access grant`
 
-Grant a built-in SRE Agent RBAC role to a user, group, or principal.
+Grant an agent role to a user, group or principal.
 
 **Syntax**
 
@@ -121,7 +121,7 @@ assignment scoped to the agent itself.
 
 ### `az sre access revoke`
 
-Revoke a built-in SRE Agent RBAC role from a user, group, or principal.
+Revoke an agent role from a user, group or principal.
 
 **Syntax**
 
@@ -244,7 +244,7 @@ List SRE Agents in a subscription or resource group.
 
 ### `az sre agent list-models`
 
-List the model providers/names supported for new SRE Agents in a region.
+List the models supported for new agents in a region.
 
 Use this before 'sre agent create' to confirm --default-model is supported in the region you're deploying to.
 
@@ -466,9 +466,9 @@ Delete an Agent Connector.
 
 ### `az sre connector list`
 
-List an SRE Agent's Connectors, including OAuth consent status
+List connectors, including OAuth consent status.
 
-(consentStatus: Consented/PendingConsent) for EntraOAuth-backed Mcp connectors.
+consentStatus (Consented/PendingConsent) is shown for EntraOAuth-backed Mcp connectors.
 
 **Syntax**
 
@@ -483,7 +483,7 @@ List an SRE Agent's Connectors, including OAuth consent status
 
 ### `az sre connector list-secret`
 
-Get a Data Connector's details including its secret(s) in plain text.
+Show a connector with its secrets in plain text.
 
 Unlike 'sre connector show'/'sre connector list', which redact secret fields server-side, this command returns them unredacted.
 
@@ -505,9 +505,9 @@ Unlike 'sre connector show'/'sre connector list', which redact secret fields ser
 
 ### `az sre connector show`
 
-Show the details of an Agent Connector, including OAuth consent
+Show a connector, including OAuth consent status.
 
-status for EntraOAuth-backed Mcp connectors.
+consentStatus is shown for EntraOAuth-backed Mcp connectors.
 
 **Syntax**
 
@@ -687,7 +687,7 @@ Not to be confused with 'sre access' (who can manage/use the agent) or 'sre repo
 
 ### `az sre identity assign`
 
-Assign a system- and/or user-assigned managed identity to an SRE Agent.
+Assign a managed identity to an agent.
 
 **Syntax**
 
@@ -712,7 +712,7 @@ Assign a system- and/or user-assigned managed identity to an SRE Agent.
 
 ### `az sre identity remove`
 
-Remove a system- and/or user-assigned managed identity from an SRE Agent.
+Remove a managed identity from an agent.
 
 **Syntax**
 
@@ -734,7 +734,7 @@ Remove a system- and/or user-assigned managed identity from an SRE Agent.
 
 ### `az sre identity show`
 
-Show the managed identity (-ies) currently assigned to an SRE Agent.
+Show the managed identities assigned to an agent.
 
 **Syntax**
 
@@ -760,7 +760,7 @@ WARNING -- this is NOT the portal's single "Custom instructions" text box. That 
 
 ### `az sre instructions create`
 
-Create or update a named, reusable prompt snippet ('commonPrompts').
+Create or update a reusable prompt snippet.
 
 WARNING -- this does NOT set the portal's single "Custom instructions" text box. Use 'az sre agent settings update' for that instead. Use the same --name (e.g. "default") each time to update a given snippet in place, or pass --overwrite to replace an existing one.
 
@@ -816,7 +816,7 @@ WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions cre
 
 ### `az sre instructions list`
 
-List an agent's named, reusable prompt snippets ('commonPrompts').
+List an agent's reusable prompt snippets.
 
 WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions create -h'.
 
@@ -966,7 +966,7 @@ Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles together o
 
 ### `az sre managed-resource grant`
 
-Grant the agent's managed identity Reader + Monitoring Contributor on a scope.
+Give the agent Reader and Monitoring Contributor on a scope.
 
 **Syntax**
 
@@ -995,9 +995,9 @@ Grant the agent's managed identity Reader + Monitoring Contributor on a scope.
 
 ### `az sre managed-resource list`
 
-List the external scopes the agent's managed identity currently has
+List the scopes the agent's managed identity can access.
 
-access to (i.e. every role assignment where the agent is the assignee).
+Shows every role assignment where the agent is the assignee.
 
 **Syntax**
 
@@ -1016,7 +1016,7 @@ access to (i.e. every role assignment where the agent is the assignee).
 
 ### `az sre managed-resource revoke`
 
-Revoke the agent's managed identity's Reader + Monitoring Contributor on a scope.
+Remove the agent's Reader and Monitoring Contributor on a scope.
 
 **Syntax**
 
@@ -1049,7 +1049,7 @@ Configures VNet injection and outbound egress for the agent's own sandboxed tool
 
 ### `az sre network update`
 
-Configure VNet injection and sandbox egress for an SRE Agent (preview).
+Configure VNet injection and sandbox egress (preview).
 
 **Syntax**
 
@@ -1091,7 +1091,7 @@ Supports GitHub and Azure DevOps. GitLab isn't exposed by this CLI yet.
 
 ### `az sre repo connect`
 
-Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
+Connect a GitHub or Azure DevOps repo to an agent.
 
 **Syntax**
 
@@ -1267,7 +1267,7 @@ List response plans.
 
 ### `az sre response-plan show`
 
-Show a response plan and its instructions. Use --agent-url to read a shared agent.
+Show a response plan and its instructions.
 
 **Syntax**
 
@@ -1288,7 +1288,7 @@ Show a response plan and its instructions. Use --agent-url to read a shared agen
 
 ### `az sre response-plan update`
 
-Update an existing response plan. Only the flags you pass change.
+Update a response plan. Only the flags you pass change.
 
 Passing a list flag (for example --priority) replaces that whole list. Use 'enable' or 'disable' to turn a plan on or off.
 

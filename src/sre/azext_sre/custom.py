@@ -1463,8 +1463,10 @@ def _annotate_connector_consent_status(connector):
 
 @register_command("sre connector show")
 class ConnectorShow(_GeneratedConnectorShow):
-    """Show the details of an Agent Connector, including OAuth consent
-    status for EntraOAuth-backed Mcp connectors."""
+    """Show a connector, including OAuth consent status.
+
+    consentStatus is shown for EntraOAuth-backed Mcp connectors.
+    """
 
     _args_schema = None
 
@@ -1475,9 +1477,11 @@ class ConnectorShow(_GeneratedConnectorShow):
 
 @register_command("sre connector list")
 class ConnectorList(_GeneratedConnectorList):
-    """List an SRE Agent's Connectors, including OAuth consent status
-    (consentStatus: Consented/PendingConsent) for EntraOAuth-backed Mcp
-    connectors."""
+    """List connectors, including OAuth consent status.
+
+    consentStatus (Consented/PendingConsent) is shown for EntraOAuth-backed
+    Mcp connectors.
+    """
 
     _args_schema = None
 
@@ -1528,7 +1532,7 @@ class _ConnectorNameAliasMixin:
 
 @register_command("sre connector list-secret")
 class ConnectorListSecret(_ConnectorNameAliasMixin, _GeneratedConnectorListSecret):
-    """Get a Data Connector's details including its secret(s) in plain text.
+    """Show a connector with its secrets in plain text.
 
     Unlike 'sre connector show'/'sre connector list', which redact secret
     fields server-side, this command returns them unredacted.
@@ -1562,7 +1566,7 @@ class _IdentityGroup(AAZCommandGroup):
 
 @register_command("sre identity assign")
 class IdentityAssign(_GeneratedIdentityAssign):
-    """Assign a system- and/or user-assigned managed identity to an SRE Agent.
+    """Assign a managed identity to an agent.
 
     :example: Turn on the agent's system-assigned identity
         az sre identity assign --agent-name myagent --resource-group myrg --system-assigned
@@ -1577,7 +1581,7 @@ class IdentityAssign(_GeneratedIdentityAssign):
 
 @register_command("sre identity remove")
 class IdentityRemove(_GeneratedIdentityRemove):
-    """Remove a system- and/or user-assigned managed identity from an SRE Agent.
+    """Remove a managed identity from an agent.
 
     :example: Turn off the agent's system-assigned identity
         az sre identity remove --agent-name myagent --resource-group myrg --system-assigned
@@ -1588,7 +1592,7 @@ class IdentityRemove(_GeneratedIdentityRemove):
 
 @register_command("sre identity show")
 class IdentityShow(_GeneratedIdentityShow):
-    """Show the managed identity (-ies) currently assigned to an SRE Agent."""
+    """Show the managed identities assigned to an agent."""
 
     _args_schema = None
 
@@ -1612,7 +1616,7 @@ class IdentityShow(_GeneratedIdentityShow):
 # --------------------------------------------------------------------------------------------
 @register_command("sre agent list-models")
 class SupportedAgentModelList(_GeneratedSupportedAgentModelList):
-    """List the model providers/names supported for new SRE Agents in a region.
+    """List the models supported for new agents in a region.
 
     Use this before 'sre agent create' to confirm --default-model is
     supported in the region you're deploying to.
@@ -1960,7 +1964,7 @@ class _ManagedResourceGroup(AAZCommandGroup):
 
 @register_command("sre managed-resource grant")
 class ManagedResourceGrant(_ManagedResourceScopeCommand):
-    """Grant the agent's managed identity Reader + Monitoring Contributor on a scope.
+    """Give the agent Reader and Monitoring Contributor on a scope.
 
     :example: Grant on a subscription
         az sre managed-resource grant --agent-name myagent --resource-group myrg \\
@@ -1993,7 +1997,7 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
 
 @register_command("sre managed-resource revoke")
 class ManagedResourceRevoke(_ManagedResourceScopeCommand):
-    """Revoke the agent's managed identity's Reader + Monitoring Contributor on a scope.
+    """Remove the agent's Reader and Monitoring Contributor on a scope.
 
     :example: Revoke access to a resource group
         az sre managed-resource revoke --agent-name myagent --resource-group myrg \\
@@ -2017,8 +2021,9 @@ class ManagedResourceRevoke(_ManagedResourceScopeCommand):
 
 @register_command("sre managed-resource list")
 class ManagedResourceList(AAZCommand):
-    """List the external scopes the agent's managed identity currently has
-    access to (i.e. every role assignment where the agent is the assignee).
+    """List the scopes the agent's managed identity can access.
+
+    Shows every role assignment where the agent is the assignee.
 
     :example: List what an agent can currently monitor
         az sre managed-resource list --agent-name myagent --resource-group myrg
@@ -2645,7 +2650,7 @@ class _RoleAssignmentScopeCommand(AAZCommand):
 
 @register_command("sre access grant")
 class GrantAccess(_RoleAssignmentScopeCommand):
-    """Grant a built-in SRE Agent RBAC role to a user, group, or principal.
+    """Grant an agent role to a user, group or principal.
 
     :example: Grant yourself admin access to an agent
         az sre access grant --name myagent --resource-group myrg --role admin --assignee-me
@@ -2677,7 +2682,7 @@ class GrantAccess(_RoleAssignmentScopeCommand):
 
 @register_command("sre access revoke")
 class RevokeAccess(_RoleAssignmentScopeCommand):
-    """Revoke a built-in SRE Agent RBAC role from a user, group, or principal.
+    """Revoke an agent role from a user, group or principal.
 
     :example: Revoke a user's access to an agent
         az sre access revoke --name myagent --resource-group myrg --role user --assignee someone@contoso.com
@@ -2741,7 +2746,7 @@ class AccessList(AAZCommand):
 
 @register_command("sre network update")
 class UpdateNetwork(AAZCommand):
-    """Configure VNet injection and sandbox egress for an SRE Agent (preview).
+    """Configure VNet injection and sandbox egress (preview).
 
     :example: Limit the agent's sandbox egress to one allowed host
         az sre network update --name myagent --resource-group myrg \\
@@ -4499,7 +4504,7 @@ def _response_plan_apply_filter_changes(cli_ctx, agent_name, resource_group, nam
 
 @register_command("sre response-plan update")
 class ResponsePlanUpdate(AAZCommand):
-    """Update an existing response plan. Only the flags you pass change.
+    """Update a response plan. Only the flags you pass change.
 
     Passing a list flag (for example --priority) replaces that whole list.
     Use 'enable' or 'disable' to turn a plan on or off.
@@ -4573,7 +4578,7 @@ class ResponsePlanUpdate(AAZCommand):
 
 @register_command("sre response-plan show")
 class ResponsePlanShow(AAZCommand):
-    """Show a response plan and its instructions. Use --agent-url to read a shared agent.
+    """Show a response plan and its instructions.
 
     :example: Show one plan
         az sre response-plan show -g myrg --agent-name myagent -n sev1-api
@@ -5083,7 +5088,7 @@ class _InstructionsGroup(AAZCommandGroup):
 
 @register_command("sre instructions create")
 class InstructionsCreate(_PinnedExtensionCreate):
-    """Create or update a named, reusable prompt snippet ('commonPrompts').
+    """Create or update a reusable prompt snippet.
 
     WARNING -- this does NOT set the portal's single "Custom instructions"
     text box. Use 'az sre agent settings update' for that instead.
@@ -5137,7 +5142,7 @@ class InstructionsShow(_PinnedExtensionShow):
 
 @register_command("sre instructions list")
 class InstructionsList(_PinnedExtensionList):
-    """List an agent's named, reusable prompt snippets ('commonPrompts').
+    """List an agent's reusable prompt snippets.
 
     WARNING -- NOT the portal's "Custom instructions" box; see
     'sre instructions create -h'.
@@ -5501,7 +5506,7 @@ def _detect_repo_provider(repo_url):
 
 @register_command("sre repo connect")
 class RepoConnect(AAZCommand):
-    """Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
+    """Connect a GitHub or Azure DevOps repo to an agent.
 
     :example: Connect a GitHub repo
         az sre repo connect --agent-name myagent --resource-group myrg \\
