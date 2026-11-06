@@ -374,6 +374,12 @@ Place the CLI in a waiting state until a condition is met.
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
+**Examples**
+
+- Wait until the agent finishes provisioning
+
+  `az sre agent wait -g myrg --agent-name myagent --created`
+
 ## `az sre automation`
 
 Manage agent automations.
@@ -462,6 +468,12 @@ Delete an Agent Connector.
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
+**Examples**
+
+- Delete a connector without a prompt
+
+  `az sre connector delete -g myrg --agent-name myagent -n conn-kusto --yes`
+
 ### `az sre connector list`
 
 List connectors, including OAuth consent status.
@@ -478,6 +490,12 @@ consentStatus (Consented/PendingConsent) is shown for EntraOAuth-backed Mcp conn
 | `--max-items` | String | No |  |  | Total number of items to return in the command's output. If the total number of items available is more than the value specified, a token is provided in the command's output. To resume pagination, provide the token value in `--next-token` argument of a subsequent command. |
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List an agent's connectors
+
+  `az sre connector list -g myrg --agent-name myagent`
 
 ### `az sre connector list-secret`
 
@@ -517,6 +535,12 @@ consentStatus is shown for EntraOAuth-backed Mcp connectors.
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
+**Examples**
+
+- Show one connector
+
+  `az sre connector show -g myrg --agent-name myagent -n conn-kusto`
+
 ### `az sre connector update`
 
 Update an Agent Connector.
@@ -540,6 +564,12 @@ Update an Agent Connector.
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
 | `--identity` | String | No |  |  | Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity. |
+
+**Examples**
+
+- Point a Kusto connector at a different database
+
+  `az sre connector update -g myrg --agent-name myagent -n conn-kusto \ --data-connector-type Kusto \ --data-source https://mycluster.kusto.windows.net/mydb`
 
 ## `az sre endpoint`
 
@@ -743,6 +773,12 @@ Show the managed identities assigned to an agent.
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
+**Examples**
+
+- Show an agent's identities
+
+  `az sre identity show -g myrg --agent-name myagent`
+
 ## `az sre instructions`
 
 Manage named, reusable prompt snippets ('commonPrompts').
@@ -929,6 +965,12 @@ List an SRE Agent's knowledge sources (files and web pages).
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List knowledge sources
+
+  `az sre knowledge list -g myrg --agent-name myagent`
 
 ### `az sre knowledge show`
 

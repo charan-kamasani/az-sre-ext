@@ -392,6 +392,19 @@ class CliInvokeTests(unittest.TestCase):
         with patch("azure.cli.core.get_default_cli", return_value=self._fake_cli(result={"a": 1})):
             self.assertEqual(_cli_invoke(None, "account", "show"), {"a": 1})
 
+    def test_sre_call_forwards_callers_subscription(self):
+        seen = []
+        fake_cli = self._fake_cli()
+        fake_cli.invoke = lambda args, out_file=None: seen.append(args) or 0
+        cli_ctx = SimpleNamespace(data={"subscription_id": "sub-1"})
+        with patch("azure.cli.core.get_default_cli", return_value=fake_cli):
+            _cli_invoke(cli_ctx, "sre", "connector", "list", "-g", "rg")
+            _cli_invoke(cli_ctx, "account", "show")
+            _cli_invoke(cli_ctx, "sre", "agent", "show", "--subscription", "other")
+        self.assertEqual(seen[0][-2:], ["--subscription", "sub-1"])
+        self.assertNotIn("--subscription", seen[1])
+        self.assertEqual(seen[2].count("--subscription"), 1)
+
     def test_resource_not_found_error_wrapped_as_clierror(self):
         fake_cli = self._fake_cli(invoke_side_effect=ResourceNotFoundError("no such thing"))
         with patch("azure.cli.core.get_default_cli", return_value=fake_cli):
