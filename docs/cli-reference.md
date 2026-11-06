@@ -419,16 +419,16 @@ Create an Agent Connector.
 | `--endpoint` | String | No |  |  | Endpoint of the connector |
 | `--extended-properties` | Dictionary | No |  |  | Additional properties for the data connector which can be used to store custom key-value pairs |
 | `--identity` | String | No |  |  | Identity used to access the data source |
-| `--file-path` | String | No |  |  | Local file to ingest, instead of hand-building --extended-properties yourself. For --data-connector-type KnowledgeFile, the CLI reads and base64-encodes the file into extended-properties.fileContent/fileName. For KnowledgeText, the CLI reads the file as UTF-8 text into extended-properties.content. |
-| `--mcp-endpoint` | String | No |  |  | For --data-connector-type Mcp: the MCP server's HTTP endpoint URL. Builds both --data-source and the nested extended-properties.transport/endpoint the service actually requires (confirmed live: a bare --data-source alone is rejected with 'Endpoint value is required for MCP connector with HTTP transport.'). |
-| `--github` | Boolean | No |  | `false`, `true` | For --data-connector-type Mcp: shortcut for --mcp-endpoint pointed at the real public GitHub Copilot MCP server (https://api.githubcopilot.com/mcp/). |
-| `--tool-access` | Boolean | No |  | `false`, `true` | For --data-connector-type KustoClient/'Azure Data Explorer': shortcut for the portal's 'Allow agent to use query tools from this connector' checkbox (Review + add step). Builds extended-properties.toolsVisibleToMetaAgent -- true sets it to ['*'], false to [] (confirmed live: both values persist and read back correctly). |
-| `--bearer-token` | String | No |  |  | For --data-connector-type Mcp: a static bearer token/PAT/API key sent on every request to the MCP server (the portal wizard's 'Bearer token' authentication method). Builds extended-properties.authType=BearerToken + bearerToken. |
-| `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For --data-connector-type Mcp: authenticate to the MCP server using the agent's managed identity (the portal wizard's 'Managed identity' authentication method; combine with --identity to pick a user-assigned identity instead of the system-assigned default, same as other connector types). Builds extended-properties.authType=AzureARM. Implied by --mi-token-scope if that is passed alone. |
-| `--mi-token-scope` | String | No |  |  | For --data-connector-type Mcp with --managed-identity-auth: the Azure AD token scope/audience to request (the portal wizard's 'Azure AD token scope' free-text field). Builds extended-properties.armScope. Defaults to 'https://management.azure.com/.default' if omitted, matching the portal's own default. |
-| `--oauth-dcr` | Boolean | No |  | `false`, `true` | For --data-connector-type Mcp: use OAuth with Dynamic Client Registration (the portal wizard's 'OAuth (dynamic client registration)' authentication method -- the one that shows a real browser 'Authorize' consent redirect; pre-registered client IDs/secrets are not supported, matching the portal's own text). Builds extended-properties.authType=SpecOAuth. Consent is completed afterwards in the portal, not by this command. |
-| `--oauth-scopes` | String | No |  |  | For --data-connector-type Mcp with --oauth-dcr true: comma-separated OAuth scopes to request during the DCR consent flow. Builds extended-properties.scopes. |
-| `--oauth-client-name` | String | No |  |  | For --data-connector-type Mcp with --oauth-dcr true: the client name to register during Dynamic Client Registration. Builds extended-properties.dcrClientName. Optional -- the service picks a default name if omitted. |
+| `--file-path` | String | No |  |  | Local file to ingest. KnowledgeFile: base64-encoded and uploaded. KnowledgeText: read as UTF-8 text. |
+| `--mcp-endpoint` | String | No |  |  | For Mcp: the MCP server's HTTP endpoint URL. |
+| `--github` | Boolean | No |  | `false`, `true` | For Mcp: connect the public GitHub Copilot MCP server (https://api.githubcopilot.com/mcp/). |
+| `--tool-access` | Boolean | No |  | `false`, `true` | For KustoClient: let the agent use query tools from this connector (portal 'Allow agent to use query tools'). |
+| `--bearer-token` | String | No |  |  | For Mcp: static bearer token, PAT or API key sent with every request. |
+| `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one. |
+| `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth: token scope to request. Default: https://management.azure.com/.default. |
+| `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
+| `--oauth-scopes` | String | No |  |  | For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. |
+| `--oauth-client-name` | String | No |  |  | For Mcp with --oauth-dcr: client name to register. Optional. |
 
 **Examples**
 
