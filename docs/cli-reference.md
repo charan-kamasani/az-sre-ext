@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **27 groups** and **85 commands**.
+Public surface: **27 groups** and **84 commands**.
 
 ## Important caveats
 
@@ -834,7 +834,6 @@ plans"): match incoming incidents by platform/title/team/etc. and route matches 
 | `disable` | `az sre incident-filter disable --agent-name <value> --resource-group <value> --name <value>` |
 | `enable` | `az sre incident-filter enable --agent-name <value> --resource-group <value> --name <value>` |
 | `list` | `az sre incident-filter list [--name <value>] [--resource-group <value>] [--agent-url <value>]` |
-| `show` | `az sre incident-filter show [--agent-name <value>] [--resource-group <value>] [--agent-url <value>] --name <value>` |
 
 ### `az sre incident-filter create`
 
@@ -938,21 +937,6 @@ List incident filters.
 - List an agent's incident filters
 
   `az sre incident-filter list -g myrg --agent-name myagent`
-
-### `az sre incident-filter show`
-
-Show an incident filter. Use --agent-url to read a shared agent.
-
-**Syntax**
-
-`az sre incident-filter show [--agent-name <value>] [--resource-group <value>] [--agent-url <value>] --name <value>`
-
-| Option / aliases | Type | Required | Default | Allowed values | Description |
-| --- | --- | --- | --- | --- | --- |
-| `--agent-name` | String | No |  |  | Name of the SRE Agent. |
-| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
-| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this incident filter. |
 
 ## `az sre incident-handler`
 

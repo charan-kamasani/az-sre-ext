@@ -4337,6 +4337,22 @@ def _incident_unwrap_list(kind, result):
     return {"value": items} if kind == "filter" else items
 
 
+QUICKSTART_PLAN_NAME = "quickstart_response_plan"
+
+
+def _warn_if_quickstart_plan(filters, agent_name):
+    """Warn when the portal's quickstart response plan is present: it runs
+    alongside custom plans and can double-process or misroute incidents."""
+    names = {f.get("name") for f in filters if isinstance(f, dict)}
+    if QUICKSTART_PLAN_NAME in names:
+        logger.warning(
+            "Agent '%s' still has the quickstart response plan '%s'. It runs alongside "
+            "your custom plans and can route incidents to the wrong agent or process "
+            "them twice. Remove it with 'az sre incident-filter delete --name %s'.",
+            agent_name, QUICKSTART_PLAN_NAME, QUICKSTART_PLAN_NAME,
+        )
+
+
 def _http_error_text(ex):
     response = getattr(ex, "response", None)
     text = getattr(response, "text", "") if response is not None else ""
@@ -4473,14 +4489,21 @@ class IncidentFilterCreate(AAZCommand):
                 "Only Icm filters can use the \"handlingAgents\" array instead."
             )
         body = {"name": extension_name, "type": "IncidentFilter", "properties": parsed}
-        return _incident_resource_create(
+        result = _incident_resource_create(
             self.cli_ctx, agent_name, resource_group, "incidentFilters", extension_name,
             parsed, _incident_filter_path(extension_name), body,
             bool(_arg_value(self.ctx.args.overwrite)),
         )
-
-
-@register_command("sre incident-filter show")
+        try:
+            existing = _incident_unwrap_list("filter", _extension_resource_list(
+                self.cli_ctx, agent_name, resource_group, "incidentFilters"))
+            _warn_if_quickstart_plan(
+                [f for f in existing.get("value", []) if f.get("name") != extension_name],
+                agent_name,
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass  # the warning is advisory; never fail a successful create
+        return result
 class IncidentFilterShow(AAZCommand):
     """Show an incident filter. Use --agent-url to read a shared agent."""
 
@@ -4550,6 +4573,8 @@ class IncidentFilterList(AAZCommand):
         else:
             result = _incident_unwrap_list("filter", _extension_resource_list(
                 self.cli_ctx, agent_name, resource_group, "incidentFilters"))
+        if isinstance(result, dict) and isinstance(result.get("value"), list):
+            _warn_if_quickstart_plan(result["value"], agent_name or agent_url)
         if isinstance(result, dict) and isinstance(result.get("value"), list) and not result["value"]:
             logger.warning(
                 "No incident filters found on agent '%s'. Add one with "

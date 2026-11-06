@@ -273,7 +273,7 @@ Nothing here is all-or-nothing: do the portal-only step, then continue in the CL
 | Create the response plan | CLI | `az sre incident-filter create`, then `az sre incident-handler create`. |
 | Turn a plan on/off | CLI | `az sre incident-filter enable` / `disable`. |
 | Preview matching incidents | CLI | `az sre incident query --filter-name <name>` (or `--filter '<json>'`). Reads the connected platform's incidents; an agent with no alerts returns an empty list. |
-| Delete the quickstart plan | CLI | `az sre incident-filter list`, then `delete`. The CLI does not flag which plan is the quickstart one. |
+| Delete the quickstart plan | CLI | `az sre incident-filter list`, then `az sre incident-filter delete --name quickstart_response_plan`. `list` and `create` warn when a filter with that name exists (name taken from the runtime source; not yet seen live). |
 | Read investigation findings | CLI | `az sre thread list`, then `az sre thread messages --thread-id <id>`. |
 
 Control-plane gaps behind these rows: ARM has no quickstart-plan or

@@ -81,6 +81,7 @@ from azext_sre.custom import (
     IncidentHandlerCreate,
     IncidentHandlerShow,
     IncidentQuery,
+    _warn_if_quickstart_plan,
     ThreadList,
     ThreadMessages,
     ThreadShow,    IncidentHandlerList,
@@ -1358,6 +1359,14 @@ class IncidentDataPlaneTests(unittest.TestCase):
         with patch("azext_sre.custom._extension_resource_show", return_value=shown):
             _, request = self._thread(IncidentQuery, {}, filter_name="f", filter=None, keywords=None)
         self.assertEqual(request.call_args.kwargs["body"], {"Filter": {"priorities": ["1"]}})
+
+    def test_quickstart_plan_warning(self):
+        with self.assertLogs("cli.azext_sre.custom", level="WARNING") as logs:
+            _warn_if_quickstart_plan([{"name": "quickstart_response_plan"}], "agent")
+        self.assertIn("quickstart response plan", logs.output[0])
+        with patch("azext_sre.custom.logger") as log:
+            _warn_if_quickstart_plan([{"name": "mine"}], "agent")
+        log.warning.assert_not_called()
 
     def test_agent_url_validation(self):
         for kwargs in (
