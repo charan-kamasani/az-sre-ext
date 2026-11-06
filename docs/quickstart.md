@@ -241,22 +241,24 @@ az sre subagent create --resource-group "$RG" --agent-name "$AGENT" \
   --name incident-responder \
   --value '{"instructions":"Gather incident evidence and report findings without changing resources.","handoffDescription":"Incident evidence collection","tools":["ReadFile"],"mcpTools":[],"commonTools":[],"allowedSkills":[],"allowParallelToolCalls":true}'
 
-az sre incident-filter create \
-  --resource-group "$RG" --agent-name "$AGENT" \
-  --name disk-space --value '{"incidentPlatform":"AzMonitor","titleContains":"disk space","handlingAgent":"incident-responder","agentMode":"review","isEnabled":false}'
+az sre response-plan create \
+  --resource-group "$RG" --agent-name "$AGENT" --name disk-space \
+  --platform AzMonitor --subagent incident-responder --title-contains "disk space" \
+  --mode review --disabled \
+  --instructions "Gather disk-usage evidence and report findings."
 
-az sre incident-filter show \
+az sre response-plan show \
   --resource-group "$RG" --agent-name "$AGENT" --name disk-space
 
-az sre incident-handler create \
-  --resource-group "$RG" --agent-name "$AGENT" \
-  --name disk-space-response \
-  --value '{"incidentFilterId":"<id-from-filter-show>","customInstructions":"Gather disk-usage evidence and report findings."}'
-
 # Turn the plan on or off without deleting it (only isEnabled changes)
-az sre incident-filter enable  --resource-group "$RG" --agent-name "$AGENT" --name disk-space
-az sre incident-filter disable --resource-group "$RG" --agent-name "$AGENT" --name disk-space
+az sre response-plan enable  --resource-group "$RG" --agent-name "$AGENT" --name disk-space
+az sre response-plan disable --resource-group "$RG" --agent-name "$AGENT" --name disk-space
 ```
+
+A response plan is an incident filter (the match rules and the subagent that
+handles matches) plus an optional incident handler (instructions) that links to
+the filter. `response-plan` manages both. `incident-filter` and
+`incident-handler` remain for advanced use.
 
 ### Portal vs. CLI for this step (benchmark: tutorial "Step 4: Set up incident response")
 
@@ -270,10 +272,10 @@ Nothing here is all-or-nothing: do the portal-only step, then continue in the CL
 | Connect ServiceNow | CLI (basic auth) or portal (OAuth) | `--incident-management-configuration "{type:ServiceNow,connection-url:'https://<instance>.service-now.com',connection-key:<credentials>}"`. Quote the URL. A missing credential gives `MissingServiceNowCredentials`. Live-checked with fake values only. The OAuth flow opens a browser popup and needs the portal. |
 | Disconnect/switch platform | Portal *Incidents > ... menu* | No verified CLI path. A filter's `incidentPlatform` must match the agent's configured type. |
 | Create the subagent | CLI | `az sre subagent create`. |
-| Create the response plan | CLI | `az sre incident-filter create`, then `az sre incident-handler create`. |
-| Turn a plan on/off | CLI | `az sre incident-filter enable` / `disable`. |
+| Create the response plan | CLI | `az sre response-plan create` (writes the incident filter, plus the handler when `--instructions` is given). Live-verified; CLI-created plans appear in the portal grid. |
+| Turn a plan on/off | CLI | `az sre response-plan enable` / `disable`. |
 | Preview matching incidents | CLI | `az sre incident query --filter-name <name>` (or `--filter '<json>'`). Reads the connected platform's incidents; an agent with no alerts returns an empty list. |
-| Delete the quickstart plan | CLI | `az sre incident-filter list`, then `az sre incident-filter delete --name quickstart_response_plan`. `list` and `create` warn when a filter with that name exists (name taken from the runtime source; not yet seen live). |
+| Delete the quickstart plan | CLI | `az sre response-plan list`, then `az sre response-plan delete --name quickstart_response_plan`. `list` and `create` warn when a plan with that name exists (name taken from the runtime source; not yet seen live). |
 | Read investigation findings | CLI | `az sre thread list`, then `az sre thread messages --thread-id <id>`. |
 
 Control-plane gaps behind these rows: ARM has no quickstart-plan or

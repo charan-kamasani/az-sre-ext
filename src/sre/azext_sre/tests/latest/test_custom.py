@@ -1368,6 +1368,39 @@ class IncidentDataPlaneTests(unittest.TestCase):
             _warn_if_quickstart_plan([{"name": "mine"}], "agent")
         log.warning.assert_not_called()
 
+    def test_response_plan_creates_filter_and_linked_handler(self):
+        from azext_sre.custom import ResponsePlanCreate
+        command = _bare_command(
+            ResponsePlanCreate, agent_name="a", resource_group="rg", extension_name="plan",
+            platform="AzMonitor", subagent="responder", priorities=["Sev1"], title_contains=None,
+            title_not_contains=None, mode="review", disabled=None,
+            instructions="Check logs", processing_guide=None, overwrite=None)
+        created = []
+
+        def fake_create(cli_ctx, agent, rg, ext_type, name, value, path, body, overwrite):
+            created.append((ext_type, value))
+            return {"ok": ext_type}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._incident_resource_create", side_effect=fake_create), \
+             patch("azext_sre.custom._extension_resource_list", return_value={"value": []}):
+            result = command._handler(None)
+        self.assertEqual(set(result), {"filter", "handler"})
+        flt = created[0][1]
+        self.assertEqual((flt["handlingAgent"], flt["agentMode"], flt["isEnabled"]), ("responder", "review", True))
+        self.assertEqual(created[1][1]["incidentFilterId"], "plan")
+
+    def test_response_plan_rejects_bad_mode(self):
+        from azext_sre.custom import ResponsePlanCreate
+        command = _bare_command(
+            ResponsePlanCreate, agent_name="a", resource_group="rg", extension_name="plan",
+            platform="AzMonitor", subagent="s", priorities=None, title_contains=None,
+            title_not_contains=None, mode="yolo", disabled=None,
+            instructions=None, processing_guide=None, overwrite=None)
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             self.assertRaises(CLIError):
+            command._handler(None)
+
     def test_agent_url_validation(self):
         for kwargs in (
             {"agent_url": "http://a.eastus2.azuresre.ai", "agent_name": None, "resource_group": None},

@@ -4348,7 +4348,7 @@ def _warn_if_quickstart_plan(filters, agent_name):
         logger.warning(
             "Agent '%s' still has the quickstart response plan '%s'. It runs alongside "
             "your custom plans and can route incidents to the wrong agent or process "
-            "them twice. Remove it with 'az sre incident-filter delete --name %s'.",
+            "them twice. Remove it with 'az sre response-plan delete --name %s'.",
             agent_name, QUICKSTART_PLAN_NAME, QUICKSTART_PLAN_NAME,
         )
 
@@ -4893,6 +4893,321 @@ class IncidentHandlerDelete(AAZCommand):
         return _extension_resource_delete(
             self.cli_ctx, agent_name, resource_group, "incidentHandlers", extension_name,
         )
+
+
+# ---- sre response-plan (portal: Incidents > Triggers & response plans) ----
+# A response plan is an incident filter (the match rules and the handling
+# subagent) plus an optional incident handler (instructions) that points at
+# the filter through incidentFilterId. The portal grid lists the filter.
+@register_command_group("sre response-plan")
+class _ResponsePlanGroup(AAZCommandGroup):
+    """Manage incident response plans (portal: Incidents > "Triggers &
+    response plans"). A plan routes matching incidents to a subagent.
+    """
+
+
+RESPONSE_PLAN_PLATFORMS = ("AzMonitor", "PagerDuty", "ServiceNow", "Icm")
+RESPONSE_PLAN_MODES = ("autonomous", "review")
+
+
+def _response_plan_target_schema(schema, with_name=True):
+    schema.agent_name = AAZStrArg(
+        options=["--agent-name"], help="Name of the SRE Agent.", required=True,
+    )
+    schema.resource_group = AAZResourceGroupNameArg(required=True)
+    if with_name:
+        schema.extension_name = AAZStrArg(
+            options=["--name", "-n", "--extension-name"],
+            help="Name of the response plan.",
+            required=True,
+        )
+
+
+def _response_plan_handlers_for(cli_ctx, agent_name, resource_group, plan_name):
+    handlers = _incident_unwrap_list("handler", _extension_resource_list(
+        cli_ctx, agent_name, resource_group, "incidentHandlers"))
+    return [h for h in handlers if isinstance(h, dict) and h.get("incidentFilterId") == plan_name]
+
+
+@register_command("sre response-plan create")
+class ResponsePlanCreate(AAZCommand):
+    """Create or update an incident response plan.
+
+    Routes incidents that match the criteria to a subagent. Connect the
+    incident platform first ('az sre agent update
+    --incident-management-configuration') and create the subagent first
+    ('az sre subagent create'). Behind the scenes this writes an incident
+    filter, plus an incident handler when --instructions or
+    --processing-guide is given.
+
+    :example: Route high-severity Azure Monitor incidents to a subagent in review mode
+        az sre response-plan create -g myrg --agent-name myagent -n sev1-api \\
+            --platform AzMonitor --subagent incident-responder --priority Sev0 Sev1 \\
+            --title-contains api --mode review
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        _response_plan_target_schema(schema)
+        schema.platform = AAZStrArg(
+            options=["--platform"], required=True,
+            help="Incident platform: " + ", ".join(RESPONSE_PLAN_PLATFORMS) + ".",
+        )
+        schema.subagent = AAZStrArg(
+            options=["--subagent"], required=True,
+            help="Name of the existing subagent that handles matched incidents.",
+        )
+        schema.priorities = AAZListArg(
+            options=["--priority"],
+            help="Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all.",
+        )
+        schema.priorities.Element = AAZStrArg()
+        schema.title_contains = AAZStrArg(
+            options=["--title-contains"], help="Only match incidents whose title contains this text.",
+        )
+        schema.title_not_contains = AAZListArg(
+            options=["--title-not-contains"],
+            help="Space-separated texts; skip incidents whose title contains any of them.",
+        )
+        schema.title_not_contains.Element = AAZStrArg()
+        schema.mode = AAZStrArg(
+            options=["--mode"], default="autonomous",
+            help="Agent autonomy: autonomous (portal default) or review (agent proposes, you approve).",
+        )
+        schema.disabled = AAZBoolArg(
+            options=["--disabled"], help="Create the plan turned off.",
+        )
+        schema.instructions = AAZStrArg(
+            options=["--instructions"], help="Custom instructions the subagent follows for matched incidents.",
+        )
+        schema.processing_guide = AAZListArg(
+            options=["--processing-guide"],
+            help="Quoted step-by-step guidance for the subagent, one value per step.",
+        )
+        schema.processing_guide.Element = AAZStrArg()
+        schema.overwrite = AAZBoolArg(
+            options=["--overwrite"], help="Allow replacing an existing response plan.",
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        args = self.ctx.args
+        agent_name = _arg_value(args.agent_name)
+        resource_group = _arg_value(args.resource_group)
+        name = _arg_value(args.extension_name)
+        platform = _arg_value(args.platform)
+        mode = _arg_value(args.mode)
+        overwrite = bool(_arg_value(args.overwrite))
+        if platform not in RESPONSE_PLAN_PLATFORMS:
+            raise CLIError(f"--platform must be one of: {', '.join(RESPONSE_PLAN_PLATFORMS)}.")
+        if mode not in RESPONSE_PLAN_MODES:
+            raise CLIError(f"--mode must be one of: {', '.join(RESPONSE_PLAN_MODES)}.")
+        flt = {
+            "incidentPlatform": platform,
+            "handlingAgent": _arg_value(args.subagent),
+            "agentMode": mode,
+            "isEnabled": not bool(_arg_value(args.disabled)),
+        }
+        for key, arg in (("priorities", args.priorities), ("titleNotContains", args.title_not_contains)):
+            values = _arg_value(arg)
+            if values:
+                flt[key] = list(values)
+        title = _arg_value(args.title_contains)
+        if title:
+            flt["titleContains"] = title
+        _validate_incident_filters_shape(flt)
+        filter_body = {"name": name, "type": "IncidentFilter", "properties": flt}
+        result = {"filter": _incident_resource_create(
+            self.cli_ctx, agent_name, resource_group, "incidentFilters", name,
+            flt, _incident_filter_path(name), filter_body, overwrite)}
+        instructions = _arg_value(args.instructions)
+        guide = _arg_value(args.processing_guide)
+        if instructions or guide:
+            handler = {"id": name, "incidentFilterId": name}
+            if instructions:
+                handler["customInstructions"] = instructions
+            if guide:
+                handler["incidentProcessingGuide"] = list(guide)
+            _validate_incident_handlers_shape(handler)
+            try:
+                result["handler"] = _incident_resource_create(
+                    self.cli_ctx, agent_name, resource_group, "incidentHandlers", name,
+                    handler, _incident_handler_path(name), handler, overwrite)
+            except Exception as ex:  # pylint: disable=broad-except
+                raise CLIError(
+                    f"Response plan '{name}' was created, but its instructions were not saved: {ex}"
+                ) from ex
+        try:
+            existing = _incident_unwrap_list("filter", _extension_resource_list(
+                self.cli_ctx, agent_name, resource_group, "incidentFilters"))
+            _warn_if_quickstart_plan(
+                [f for f in existing.get("value", []) if f.get("name") != name], agent_name)
+        except Exception:  # pylint: disable=broad-except
+            pass  # the warning is advisory; never fail a successful create
+        return result
+
+
+@register_command("sre response-plan show")
+class ResponsePlanShow(AAZCommand):
+    """Show a response plan and its instructions. Use --agent-url to read a shared agent.
+
+    :example: Show one plan
+        az sre response-plan show -g myrg --agent-name myagent -n sev1-api
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        _add_read_target_args(schema, short_name=False)
+        schema.extension_name = AAZStrArg(
+            options=["--name", "-n", "--extension-name"],
+            help="Name of the response plan.",
+            required=True,
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name, resource_group, agent_url = _read_target(self.ctx.args)
+        name = _arg_value(self.ctx.args.extension_name)
+        if agent_url:
+            flt = _data_plane_request(
+                self.cli_ctx, agent_name, resource_group, "GET",
+                _incident_filter_path(name), missing_ok=True, agent_url=agent_url)
+            if flt is None:
+                raise ResourceNotFoundError(f"Response plan '{name}' not found on agent '{agent_url}'.")
+            handlers = _data_plane_request(
+                self.cli_ctx, agent_name, resource_group, "GET",
+                _incident_handler_path(), agent_url=agent_url) or []
+            handlers = [h for h in handlers if h.get("incidentFilterId") == name]
+        else:
+            flt = _incident_unwrap("filter", _extension_resource_show(
+                self.cli_ctx, agent_name, resource_group, "incidentFilters", name))
+            handlers = _response_plan_handlers_for(self.cli_ctx, agent_name, resource_group, name)
+        return {"filter": flt, "handlers": handlers}
+
+
+@register_command("sre response-plan list")
+class ResponsePlanList(AAZCommand):
+    """List response plans.
+
+    :example: List an agent's response plans
+        az sre response-plan list -g myrg --agent-name myagent
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        _add_read_target_args(schema)
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name, resource_group, agent_url = _read_target(self.ctx.args)
+        if agent_url:
+            result = _data_plane_request(
+                self.cli_ctx, agent_name, resource_group, "GET", _incident_filter_path(),
+                agent_url=agent_url)
+        else:
+            result = _incident_unwrap_list("filter", _extension_resource_list(
+                self.cli_ctx, agent_name, resource_group, "incidentFilters"))
+        filters = result.get("value", []) if isinstance(result, dict) else []
+        _warn_if_quickstart_plan(filters, agent_name or agent_url)
+        if not filters:
+            logger.warning(
+                "No response plans found on agent '%s'. Add one with "
+                "'az sre response-plan create'.", agent_name or agent_url)
+        return filters
+
+
+@register_command(
+    "sre response-plan delete",
+    confirmation="Delete this response plan and its instructions?",
+)
+class ResponsePlanDelete(AAZCommand):
+    """Delete a response plan and its linked instructions."""
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        _response_plan_target_schema(schema)
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        name = _arg_value(self.ctx.args.extension_name)
+        for handler in _response_plan_handlers_for(self.cli_ctx, agent_name, resource_group, name):
+            handler_id = handler.get("id") or name
+            _extension_resource_delete(
+                self.cli_ctx, agent_name, resource_group, "incidentHandlers", handler_id)
+        return _extension_resource_delete(
+            self.cli_ctx, agent_name, resource_group, "incidentFilters", name)
+
+
+@register_command("sre response-plan enable")
+class ResponsePlanEnable(AAZCommand):
+    """Turn on a response plan.
+
+    :example: Enable a plan
+        az sre response-plan enable -g myrg --agent-name myagent -n sev1-api
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        return _incident_filter_toggle_schema(cls, super()._build_arguments_schema(*args, **kwargs))
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        return _set_incident_filter_enabled(self, True)
+
+
+@register_command("sre response-plan disable")
+class ResponsePlanDisable(AAZCommand):
+    """Turn off a response plan without deleting it.
+
+    :example: Disable a plan
+        az sre response-plan disable -g myrg --agent-name myagent -n sev1-api
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        return _incident_filter_toggle_schema(cls, super()._build_arguments_schema(*args, **kwargs))
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        return _set_incident_filter_enabled(self, False)
 
 
 # ---- sre thread / sre incident (read what the agent did with an incident) ----

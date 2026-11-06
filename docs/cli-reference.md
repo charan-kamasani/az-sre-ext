@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **27 groups** and **84 commands**.
+Public surface: **28 groups** and **90 commands**.
 
 ## Important caveats
 
@@ -58,6 +58,7 @@ Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "val
 | `network` | Control an SRE Agent's sandbox networking (preview). |
 | `plugin` | Manage community plugins that add skills, tools, and integrations. |
 | `repo` | Connect a code repository so the agent can read source during investigations. |
+| `response-plan` | Manage incident response plans (portal: Incidents > "Triggers & |
 | `skill` | Manage custom skills -- specialized capabilities the agent can use. |
 | `subagent` | Manage named sub-agents the meta-agent can hand off work to. |
 | `thread` | Read the agent's conversation threads, including the threads it opens |
@@ -1406,6 +1407,149 @@ Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 - Azure DevOps org blocks PAT creation ("org has a policy
 
   `blocking PAT creation") -- use the agent's own managed identity instead az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo \ --devops-auth-type managed-identity --devops-identity <agent-identity-resource-id>`
+
+## `az sre response-plan`
+
+Manage incident response plans (portal: Incidents > "Triggers &
+
+response plans"). A plan routes matching incidents to a subagent.
+
+| Verb | Exact syntax |
+| --- | --- |
+| `create` | `az sre response-plan create --agent-name <value> --resource-group <value> --name <value> --platform <value> --subagent <value> [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--mode <value>] [--disabled {false,true}] [--instructions <value>] [--processing-guide <json-or-@file>] [--overwrite {false,true}]` |
+| `delete` | `az sre response-plan delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
+| `disable` | `az sre response-plan disable --agent-name <value> --resource-group <value> --name <value>` |
+| `enable` | `az sre response-plan enable --agent-name <value> --resource-group <value> --name <value>` |
+| `list` | `az sre response-plan list [--name <value>] [--resource-group <value>] [--agent-url <value>]` |
+| `show` | `az sre response-plan show [--agent-name <value>] [--resource-group <value>] [--agent-url <value>] --name <value>` |
+
+### `az sre response-plan create`
+
+Create or update an incident response plan.
+
+Routes incidents that match the criteria to a subagent. Connect the incident platform first ('az sre agent update --incident-management-configuration') and create the subagent first ('az sre subagent create'). Behind the scenes this writes an incident filter, plus an incident handler when --instructions or --processing-guide is given.
+
+**Syntax**
+
+`az sre response-plan create --agent-name <value> --resource-group <value> --name <value> --platform <value> --subagent <value> [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--mode <value>] [--disabled {false,true}] [--instructions <value>] [--processing-guide <json-or-@file>] [--overwrite {false,true}]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of the response plan. |
+| `--platform` | String | Yes |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. |
+| `--subagent` | String | Yes |  |  | Name of the existing subagent that handles matched incidents. |
+| `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all. |
+| `--title-contains` | String | No |  |  | Only match incidents whose title contains this text. |
+| `--title-not-contains` | List | No |  |  | Space-separated texts; skip incidents whose title contains any of them. |
+| `--mode` | String | No | autonomous |  | Agent autonomy: autonomous (portal default) or review (agent proposes, you approve). |
+| `--disabled` | Boolean | No |  | `false`, `true` | Create the plan turned off. |
+| `--instructions` | String | No |  |  | Custom instructions the subagent follows for matched incidents. |
+| `--processing-guide` | List | No |  |  | Quoted step-by-step guidance for the subagent, one value per step. |
+| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing response plan. |
+
+**Examples**
+
+- Route high-severity Azure Monitor incidents to a subagent in review mode
+
+  `az sre response-plan create -g myrg --agent-name myagent -n sev1-api \ --platform AzMonitor --subagent incident-responder --priority Sev0 Sev1 \ --title-contains api --mode review`
+
+### `az sre response-plan delete`
+
+Delete a response plan and its linked instructions.
+
+**Syntax**
+
+`az sre response-plan delete --agent-name <value> --resource-group <value> --name <value> [--yes]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of the response plan. |
+| `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
+
+### `az sre response-plan disable`
+
+Turn off a response plan without deleting it.
+
+**Syntax**
+
+`az sre response-plan disable --agent-name <value> --resource-group <value> --name <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this incident filter. |
+
+**Examples**
+
+- Disable a plan
+
+  `az sre response-plan disable -g myrg --agent-name myagent -n sev1-api`
+
+### `az sre response-plan enable`
+
+Turn on a response plan.
+
+**Syntax**
+
+`az sre response-plan enable --agent-name <value> --resource-group <value> --name <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this incident filter. |
+
+**Examples**
+
+- Enable a plan
+
+  `az sre response-plan enable -g myrg --agent-name myagent -n sev1-api`
+
+### `az sre response-plan list`
+
+List response plans.
+
+**Syntax**
+
+`az sre response-plan list [--name <value>] [--resource-group <value>] [--agent-url <value>]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `-n`, `--name`, `--agent-name` | String | No |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
+
+**Examples**
+
+- List an agent's response plans
+
+  `az sre response-plan list -g myrg --agent-name myagent`
+
+### `az sre response-plan show`
+
+Show a response plan and its instructions. Use --agent-url to read a shared agent.
+
+**Syntax**
+
+`az sre response-plan show [--agent-name <value>] [--resource-group <value>] [--agent-url <value>] --name <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | No |  |  | Name of the SRE Agent. |
+| `--resource-group`, `-g` | String | No |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--agent-url` | String | No |  |  | Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared agent that is not in your subscription. Read-only commands only. |
+| `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of the response plan. |
+
+**Examples**
+
+- Show one plan
+
+  `az sre response-plan show -g myrg --agent-name myagent -n sev1-api`
 
 ## `az sre skill`
 
