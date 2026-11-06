@@ -265,6 +265,13 @@ def _cli_invoke(cli_ctx, *args, allow_missing=False):
     from azure.cli.core import get_default_cli
     from azure.cli.core.azclierror import ResourceNotFoundError as _RNFE
 
+    args = list(args)
+    # The nested CLI starts fresh, so pass along the caller's --subscription.
+    subscription = (getattr(cli_ctx, "data", None) or {}).get("subscription_id")
+    if (subscription and args and args[0] == "sre"
+            and "--subscription" not in args and "--ids" not in args):
+        args += ["--subscription", subscription]
+
     cli = get_default_cli()
     cli.out_file = io.StringIO()
     try:
