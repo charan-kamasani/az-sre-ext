@@ -32,9 +32,9 @@ from knack.help_files import helps  # pylint: disable=unused-import
 # live help-only walkthrough of 'sre hook create').
 helps['sre'] = """
 type: group
-short-summary: Manage Azure SRE Agent resources -- the agent itself, what it can access, how it's customized, who can use it, and how it's doing.
+short-summary: Manage Azure SRE Agent resources.
 long-summary: |-
-  Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "value"}') can fail with a confusing "unrecognized arguments" error -- a PowerShell/.cmd quoting quirk, not an az sre bug. Workaround: pass --value @path\\to\\file.json instead.
+  In PowerShell, pass JSON with --value @file.json instead of inline.
 examples:
   - name: Create an agent with an Anthropic default model.
     text: |-

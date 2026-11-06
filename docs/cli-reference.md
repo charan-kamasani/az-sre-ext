@@ -36,9 +36,9 @@ These Azure CLI global options apply to every command and are not repeated in ea
 
 ## `az sre`
 
-Manage Azure SRE Agent resources -- the agent itself, what it can access, how it's customized, who can use it, and how it's doing.
+Manage Azure SRE Agent resources.
 
-Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "value"}') can fail with a confusing "unrecognized arguments" error -- a PowerShell/.cmd quoting quirk, not an az sre bug. Workaround: pass --value @path\to\file.json instead.
+In PowerShell, pass JSON with --value @file.json instead of inline.
 
 | Subgroup | Summary |
 | --- | --- |
@@ -55,7 +55,7 @@ Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "val
 | `network` | Control an SRE Agent's sandbox networking (preview). |
 | `plugin` | Manage community plugins that add skills, tools, and integrations. |
 | `repo` | Connect a code repository so the agent can read source during investigations. |
-| `response-plan` | Manage incident response plans (portal: Incidents > "Triggers & |
+| `response-plan` | Route incidents to a subagent (portal: Triggers & response plans). |
 | `skill` | Manage custom skills -- specialized capabilities the agent can use. |
 | `subagent` | Manage named sub-agents the meta-agent can hand off work to. |
 | `tool` | Manage custom tools the agent can call. |
@@ -1135,9 +1135,7 @@ Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 
 ## `az sre response-plan`
 
-Manage incident response plans (portal: Incidents > "Triggers &
-
-response plans"). A plan routes matching incidents to a subagent.
+Route incidents to a subagent (portal: Triggers & response plans).
 
 | Verb | Exact syntax |
 | --- | --- |

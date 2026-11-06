@@ -4329,9 +4329,7 @@ def _incident_filter_toggle_schema(cls, schema):
 # the filter through incidentFilterId. The portal grid lists the filter.
 @register_command_group("sre response-plan")
 class _ResponsePlanGroup(AAZCommandGroup):
-    """Manage incident response plans (portal: Incidents > "Triggers &
-    response plans"). A plan routes matching incidents to a subagent.
-    """
+    """Route incidents to a subagent (portal: Triggers & response plans)."""
 
 
 RESPONSE_PLAN_PLATFORMS = ("AzMonitor", "PagerDuty", "ServiceNow", "Icm")
