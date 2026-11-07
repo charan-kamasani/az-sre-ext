@@ -1,31 +1,43 @@
 # Azure SRE Agent CLI extension
 
-`az sre` creates and manages [Azure SRE Agent](https://learn.microsoft.com/azure/sre-agent/overview)
-resources from the command line: agent lifecycle, identity, access, repositories, data
-connectors, tools, skills, scheduled tasks and incident response plans. Everything is scriptable,
-so you can set up and tear down agents from a pipeline or share a setup as code.
+`sre` is an Azure CLI extension for creating and operating Azure SRE Agent
+(`Microsoft.App/agents`) resources. It manages agents, identities, access,
+repositories, data connectors, tools, skills, scheduled tasks, and incident
+response plans under `az sre`.
 
 > [!NOTE]
-> This extension is in preview. Commands and options may change between releases.
+> This project is in preview. The command surface is not stable. Use it in
+> test subscriptions until a release is published.
+
+> [!IMPORTANT]
+> Reviewing CLI ergonomics? Start with the generated
+> **[`az sre` CLI reference](docs/cli-reference.md)**. It contains every group,
+> command, exact syntax, option, and default.
 
 ## Quick start
 
-You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or later
-with the `sre` extension installed, and an Azure subscription where you can create resources.
+The shortest useful test creates a disposable agent, connects a repository and an
+Azure Data Explorer data source, then removes the disposable Azure resources. You need
+[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or later with
+the `sre` extension installed, and a subscription where you can create resources.
 
-Sign in and create an agent. Use your own values. The examples use bash; in PowerShell, set
-variables as `$RG = "my-rg"` and end continued lines with a backtick (`` ` ``) instead of `\`.
-
-```bash
-SUBSCRIPTION_ID="<subscription-id>"
-RG="<resource-group>"
-AGENT="<agent-name>"
-LOCATION="eastus2"
-```
+Sign in, then set the subscription and a unique test context. The examples use bash; in
+PowerShell, set variables as `$RG = "my-rg"` and end continued lines with a backtick
+(`` ` ``) instead of `\`:
 
 ```bash
 az login
 
+SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+LOCATION="eastus2"
+TEST_ID="$(date +%s)"
+RG="rg-sre-${TEST_ID}"
+AGENT="sre-${TEST_ID}"
+```
+
+Create the agent:
+
+```bash
 az group create \
   --subscription "$SUBSCRIPTION_ID" \
   --name "$RG" \
@@ -44,7 +56,8 @@ az sre agent show \
   --output table
 ```
 
-Connect a repository and a data source (here, an Azure Data Explorer cluster the agent can query):
+Connect a repository. GitHub asks you to sign in in the browser. In CI, pass
+`--github-token` or set `GITHUB_TOKEN` instead:
 
 ```bash
 az sre repo connect \
@@ -52,7 +65,11 @@ az sre repo connect \
   --resource-group "$RG" \
   --agent-name "$AGENT" \
   --repo-url "https://github.com/<org>/<repo>"
+```
 
+Connect an Azure Data Explorer cluster the agent can query:
+
+```bash
 az sre connector create \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
@@ -61,23 +78,29 @@ az sre connector create \
   --data-connector-type "Azure Data Explorer"
 ```
 
-`repo connect` opens a GitHub sign-in in the browser. In CI, pass `--github-token` or set
-`GITHUB_TOKEN`. A new connector links the data source but doesn't give the agent access
-to it, so grant the agent's identity a reader role on the data source next.
+A new connector links the data source but doesn't give the agent access to it. Grant the
+agent's identity a reader role on the data source next.
 
-To clean up, delete the resource group, which removes the agent with it:
+For access, incident routing, tools and skills, see the [quickstart](docs/quickstart.md) and
+the [operations guide](docs/operations.md).
+
+### Clean up
+
+> [!CAUTION]
+> This permanently deletes the resource group and everything in it, including the agent.
+> Confirm the variables before running it. It does not delete the repository or the
+> Azure Data Explorer cluster.
 
 ```bash
+printf 'Deleting subscription=%s resource-group=%s\n' \
+  "$SUBSCRIPTION_ID" "$RG"
+
 az group delete \
   --subscription "$SUBSCRIPTION_ID" \
   --name "$RG" \
   --yes \
   --no-wait
 ```
-
-Run `az sre <command> --help` for required arguments and examples. The
-[quickstart](docs/quickstart.md) covers data sources, access and incident routing, and the
-[CLI reference](docs/cli-reference.md) lists every command.
 
 ## What you can do
 
@@ -102,8 +125,54 @@ Run `az sre <command> --help` for required arguments and examples. The
 | `usage` | `list` | View agent usage and billing statistics. |
 | `automation` | **scheduled-task:** `create, show, list, delete`<br>**http-trigger:** `create, show, list, delete` | Manage scheduled runs and inbound webhook triggers. |
 
-Run `az sre <group> --help` for any group. Exact syntax, options and defaults for every
-command are in the generated [CLI reference](docs/cli-reference.md).
+Run `az sre <group> --help` for any group.
+
+## CLI reference
+
+The generated **[CLI reference](docs/cli-reference.md)** lists every command, option,
+default and example. It is generated from the loaded extension's own command metadata.
+
+Regenerate it with one command:
+
+```bash
+python scripts/generate_cli_reference.py
+```
+
+The repository hook regenerates and stages it on commit attempts, and CI fails if it drifts.
+
+## Testing
+
+Run the credential-free smoke test:
+
+```bash
+az sre --help
+az extension show --name sre
+```
+
+Offline unit tests need no Azure credentials:
+
+```bash
+cd src/sre
+python -m unittest discover -s azext_sre/tests -v
+```
+
+Live tests create and delete isolated Azure resources. Follow the setup and cleanup steps in
+the [testing guide](docs/testing.md).
+
+## Development
+
+Install the tracked commit hook and the test dependencies:
+
+```bash
+git config core.hooksPath .githooks
+
+cd src/sre
+pip install azure-cli-core azure-cli-testsdk build setuptools wheel
+```
+
+Most commands are generated from the `Microsoft.App/agents` API spec under
+`azext_sre/aaz/latest/`. Don't edit those by hand. Hand-written behavior lives in
+`azext_sre/custom.py`. See the [development guide](docs/development.md).
 
 ## More documentation
 
@@ -123,24 +192,3 @@ command are in the generated [CLI reference](docs/cli-reference.md).
 ## Feedback
 
 Found a bug or want a command added? [Open an issue](https://github.com/charan-kamasani/az-sre-ext/issues).
-
-## Contributing
-
-Run the offline unit tests (no Azure credentials needed):
-
-```bash
-cd src/sre
-pip install azure-cli-core azure-cli-testsdk build setuptools wheel
-python -m unittest discover -s azext_sre/tests
-```
-
-Install the commit hook once per checkout. It regenerates `docs/cli-reference.md` on every commit:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-Most commands are generated from the `Microsoft.App/agents` API spec and live under
-`azext_sre/aaz/latest/`. Don't edit those by hand. Hand-written behavior lives in
-`azext_sre/custom.py`. See the [development guide](docs/development.md),
-[testing guide](docs/testing.md) and [source code guide](docs/source-code.md).
