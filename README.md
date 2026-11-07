@@ -25,59 +25,29 @@ runtime) directly. See [Implementation plan](PLAN.md) for the full
 control-plane/data-plane breakdown, including which features are
 intentionally out of scope and why.
 
-## Quick use
+## Quick start
 
-Every noun below is a flat top-level group directly under `az sre` — the only
-nesting is where a resource genuinely only exists inside another one
-(`az sre plugin marketplace`/`az sre plugin install`, `az sre automation
-scheduled-task`/`http-trigger`, and `az sre agent settings`). `response-plan`
-is its own flat top-level group (`az sre response-plan ...`), not nested
-under `automation`, despite living in the portal's "Automation" tab alongside
-scheduled tasks/HTTP triggers — see
-[docs/operations.md](docs/operations.md#az-sre-automation-group-for-scheduled-tasks-http-triggers-and-incident-filters)
-for why. See [docs/cli-reference.md](docs/cli-reference.md) for the
-complete, always-current list.
-
-The shortest useful walkthrough creates a disposable agent, grants a
-collaborator RBAC access to it, inspects its connection details, then removes
-it.
+Sign in, create an agent, connect a repository, and list what it can reach. Replace
+the placeholders with your own resource group and names:
 
 ```bash
-SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
-LOCATION="eastus2"
-RG="rg-sre-demo"
-AGENT="my-sre-agent"
-
-az group create --subscription "$SUBSCRIPTION_ID" --name "$RG" --location "$LOCATION"
-
-az sre agent create \
-  --subscription "$SUBSCRIPTION_ID" \
-  --resource-group "$RG" \
-  --name "$AGENT" \
-  --location "$LOCATION"
+az login
+az group create --name <rg> --location eastus2
+az sre agent create -g <rg> --name <agent> --location eastus2
+az sre repo connect -g <rg> --agent-name <agent> --repo-url https://github.com/<org>/<repo>
+az sre connector list -g <rg> --agent-name <agent> --output table
 ```
 
-Grant a teammate a built-in role (see [`MANAGED_RESOURCE_ROLES`/`_ROLES`
-in `custom.py`](src/sre/azext_sre/custom.py) for the full
-`admin`/`user`/`author`/`reader` mapping — confirmed against real
-`az role definition list` output, not the Portal's friendly labels):
+Clean up:
 
 ```bash
-az sre access grant \
-  --resource-group "$RG" \
-  --agent-name "$AGENT" \
-  --role user \
-  --assignee someone@example.com
+az sre agent delete -g <rg> --name <agent> --yes
+az group delete --name <rg> --yes --no-wait
 ```
 
-Inspect the agent's endpoint info and clean up:
-
-```bash
-az sre endpoint show --resource-group "$RG" --name "$AGENT"
-
-az sre agent delete --resource-group "$RG" --name "$AGENT" --yes
-az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
-```
+Run `az sre <command> --help` for required arguments and examples. The
+[quickstart](docs/quickstart.md) covers data sources, access and incident routing, and the
+[CLI reference](docs/cli-reference.md) lists every command.
 
 ## SRE Agent CLI Command Reference
 
