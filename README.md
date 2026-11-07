@@ -51,7 +51,7 @@ az sre agent show \
   --output table
 ```
 
-Connect a repository and a data source:
+Connect a repository and a data source (here, an Azure Data Explorer cluster the agent can query):
 
 ```bash
 az sre repo connect \
@@ -65,7 +65,7 @@ az sre connector create \
   --resource-group "$RG" \
   --agent-name "$AGENT" \
   --name adx \
-  --data-connector-type KustoClient
+  --data-connector-type "Azure Data Explorer"
 ```
 
 `repo connect` opens a GitHub sign-in in the browser. In CI, pass `--github-token` or set

@@ -91,7 +91,7 @@ az sre managed-resource grant \
   --target-resource-group "<resource-group-to-monitor>"
 ```
 
-Connect a data source, for example Azure Data Explorer:
+Connect a data source, for example an Azure Data Explorer cluster the agent can query:
 
 ```bash
 az sre connector create \
@@ -99,7 +99,7 @@ az sre connector create \
   --resource-group "$RG" \
   --agent-name "$AGENT" \
   --name adx \
-  --data-connector-type KustoClient
+  --data-connector-type "Azure Data Explorer"
 ```
 
 Creating a connector links it to the agent. It does not give the agent permission
