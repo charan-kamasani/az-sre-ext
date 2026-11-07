@@ -46,12 +46,23 @@ AGENT="quickstart-agent"
 ## 1. Create an agent
 
 ```bash
-az group create --subscription "$SUBSCRIPTION_ID" --name "$RG" --location "$LOCATION"
+az group create \
+  --subscription "$SUBSCRIPTION_ID" \
+  --name "$RG" \
+  --location "$LOCATION"
 
-az sre agent create -g "$RG" --name "$AGENT" --location "$LOCATION" \
+az sre agent create \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --name "$AGENT" \
+  --location "$LOCATION" \
   --default-model "{provider:anthropic,name:automatic}"
 
-az sre agent show -g "$RG" --name "$AGENT" --output table
+az sre agent show \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --name "$AGENT" \
+  --output table
 ```
 
 To see the models available in a region first, run `az sre agent list-models --location "$LOCATION"`.
@@ -62,22 +73,33 @@ Connect the repository that holds your service's code. GitHub asks you to sign i
 in the browser the first time:
 
 ```bash
-az sre repo connect -g "$RG" --agent-name "$AGENT" \
-  --repo-url https://github.com/<org>/<repo>
+az sre repo connect \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --agent-name "$AGENT" \
+  --repo-url "https://github.com/<org>/<repo>"
 ```
 
 Let the agent read the Azure resources it will investigate:
 
 ```bash
-az sre managed-resource grant -g "$RG" --agent-name "$AGENT" \
-  --target-subscription "$SUBSCRIPTION_ID" --target-resource-group <resource-group-to-monitor>
+az sre managed-resource grant \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --agent-name "$AGENT" \
+  --target-subscription "$SUBSCRIPTION_ID" \
+  --target-resource-group "<resource-group-to-monitor>"
 ```
 
 Connect a data source, for example Azure Data Explorer:
 
 ```bash
-az sre connector create -g "$RG" --agent-name "$AGENT" \
-  --name adx --data-connector-type KustoClient
+az sre connector create \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --agent-name "$AGENT" \
+  --name adx \
+  --data-connector-type KustoClient
 ```
 
 Creating a connector links it to the agent. It does not give the agent permission
@@ -90,8 +112,15 @@ Send high-severity Azure Monitor incidents to a subagent. Start in review mode s
 you approve each action:
 
 ```bash
-az sre response-plan create -g "$RG" --agent-name "$AGENT" -n sev1-api \
-  --platform AzMonitor --subagent <subagent-name> --priority Sev0 Sev1 --mode review
+az sre response-plan create \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --agent-name "$AGENT" \
+  --name sev1-api \
+  --platform AzMonitor \
+  --subagent "<subagent-name>" \
+  --priority Sev0 Sev1 \
+  --mode review
 ```
 
 Pause the plan without deleting it with `az sre response-plan disable`.
@@ -99,8 +128,16 @@ Pause the plan without deleting it with `az sre response-plan disable`.
 ## 4. Clean up
 
 ```bash
-az sre agent delete -g "$RG" --name "$AGENT" --yes
-az group delete --subscription "$SUBSCRIPTION_ID" --name "$RG" --yes --no-wait
+az sre agent delete \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --name "$AGENT" \
+  --yes
+
+az group delete \
+  --subscription "$SUBSCRIPTION_ID" \
+  --name "$RG" \
+  --yes --no-wait
 ```
 
 ## Next steps

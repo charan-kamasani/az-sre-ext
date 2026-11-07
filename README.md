@@ -27,16 +27,48 @@ intentionally out of scope and why.
 
 ## Quick start
 
-Sign in, create an agent, connect a repository and a data source, and check the agent. Replace
-the placeholders with your own resource group and names:
+Sign in, create an agent, connect a repository and a data source, and check the agent.
+Set your own values first:
+
+```bash
+SUBSCRIPTION_ID="<subscription-id>"
+RG="<resource-group>"
+AGENT="<agent-name>"
+LOCATION="eastus2"
+```
 
 ```bash
 az login
-az group create --name <rg> --location eastus2
-az sre agent create -g <rg> --name <agent> --location eastus2
-az sre repo connect -g <rg> --agent-name <agent> --repo-url https://github.com/<org>/<repo>
-az sre connector create -g <rg> --agent-name <agent> --name adx --data-connector-type KustoClient
-az sre agent show -g <rg> --name <agent> --output table
+
+az group create \
+  --subscription "$SUBSCRIPTION_ID" \
+  --name "$RG" \
+  --location "$LOCATION"
+
+az sre agent create \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --name "$AGENT" \
+  --location "$LOCATION"
+
+az sre repo connect \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --agent-name "$AGENT" \
+  --repo-url "https://github.com/<org>/<repo>"
+
+az sre connector create \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --agent-name "$AGENT" \
+  --name adx \
+  --data-connector-type KustoClient
+
+az sre agent show \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --name "$AGENT" \
+  --output table
 ```
 
 A new connector links the data source but doesn't give the agent access to it. Grant
@@ -45,10 +77,17 @@ the agent's identity a reader role on the data source next (see the quickstart).
 Clean up:
 
 ```bash
-az sre agent delete -g <rg> --name <agent> --yes
-az group delete --name <rg> --yes --no-wait
-```
+az sre agent delete \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --name "$AGENT" \
+  --yes
 
+az group delete \
+  --subscription "$SUBSCRIPTION_ID" \
+  --name "$RG" \
+  --yes --no-wait
+```
 Run `az sre <command> --help` for required arguments and examples. The
 [quickstart](docs/quickstart.md) covers data sources, access and incident routing, and the
 [CLI reference](docs/cli-reference.md) lists every command.
