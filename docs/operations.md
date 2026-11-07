@@ -678,7 +678,7 @@ agent: the real cause is a **missing** sibling property, not an
 is specified at all, the real API requires all three of `allow`/`ask`/`deny`
 (each can be an empty array). The CLI's client-side validator now catches
 this and names the missing key(s) instead of surfacing that misleading 400,
-and `docs/portal-walkthrough-benchmark.md`'s own example was fixed to include all three keys.
+and `docs/quickstart.md`'s own example was fixed to include all three keys.
 
 See [docs/testing.md](testing.md#live-verification-workflow) for the
 round-trip (PUT then GET) technique used to confirm a shape, and why
