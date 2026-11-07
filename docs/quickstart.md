@@ -1,25 +1,78 @@
 # Quickstart: set up your SRE agent
 
-The [README quick start](../README.md#quick-start) creates an agent and connects a
-repository and a data source. This guide picks up from there: share the agent, let it
-monitor your Azure resources, add a custom skill and route incidents to it.
+This guide takes you from nothing to a working SRE agent: create it, connect a repository
+and a data source, share it, let it monitor your Azure resources, add a custom skill and
+route incidents to it. The first steps repeat the [README quick start](../README.md#quick-start),
+so you can follow this page on its own.
 
-## Before you start
+You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or
+later with the `sre` extension installed, and a subscription where you can create
+resources. The examples use bash. In PowerShell, set variables as `$RG = "my-rg"` and end
+continued lines with a backtick (`` ` ``). Flags that take JSON need extra care on Windows;
+see [JSON quoting on Windows](operations.md#windows-powershell-json-quoting).
 
-Finish the [README quick start](../README.md#quick-start) first, and keep the same shell
-open so these variables are still set:
+## Set up your context
 
 ```bash
+az login
+
 SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
-RG="<resource-group>"
-AGENT="<agent-name>"
+LOCATION="eastus2"
+TEST_ID="$(date +%s)"
+RG="rg-sre-${TEST_ID}"
+AGENT="sre-${TEST_ID}"
 ```
 
-The examples use bash. In PowerShell, set variables as `$RG = "my-rg"` and end continued
-lines with a backtick (`` ` ``). Flags that take JSON need extra care on Windows; see
-[JSON quoting on Windows](operations.md#windows-powershell-json-quoting).
+## Create the agent
 
-## 1. Share the agent
+```bash
+az group create \
+  --subscription "$SUBSCRIPTION_ID" \
+  --name "$RG" \
+  --location "$LOCATION"
+
+az sre agent create \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --name "$AGENT" \
+  --location "$LOCATION"
+
+az sre agent show \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --name "$AGENT" \
+  --output table
+```
+
+## Connect a repository
+
+GitHub asks you to sign in in the browser. In CI, pass `--github-token` or set
+`GITHUB_TOKEN` instead.
+
+```bash
+az sre repo connect \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --agent-name "$AGENT" \
+  --repo-url "https://github.com/<org>/<repo>"
+```
+
+## Connect a data source
+
+Connect an Azure Data Explorer cluster the agent can query:
+
+```bash
+az sre connector create \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --agent-name "$AGENT" \
+  --name adx \
+  --data-connector-type "Azure Data Explorer"
+```
+
+A new connector links the data source but doesn't give the agent access to it. Grant the
+agent's identity a reader role on the data source next.
+## Share the agent
 
 Give yourself, a teammate or a group a built-in role on the agent: `admin`, `author`,
 `user` or `reader`.
@@ -36,7 +89,7 @@ az sre access grant \
 To grant the role to the signed-in user, pass `--assignee-me true` instead of `--assignee`.
 List who has access with `az sre access list`.
 
-## 2. Let the agent monitor your Azure resources
+## Let the agent monitor your Azure resources
 
 An agent can only investigate resources its identity can read. Grant it Reader and
 Monitoring Contributor on the resource group to monitor:
@@ -53,7 +106,7 @@ az sre managed-resource grant \
 To cover a whole subscription, omit `--target-resource-group`. Check the result with
 `az sre managed-resource list` and undo it with `az sre managed-resource revoke`.
 
-## 3. Add a custom skill
+## Add a custom skill
 
 A skill teaches the agent a procedure. Write it as a `SKILL.md` file with a description
 and the steps to follow:
@@ -81,7 +134,7 @@ az sre skill create \
   --file-path ./SKILL.md
 ```
 
-## 4. Route incidents to the agent
+## Route incidents to the agent
 
 Send high-severity Azure Monitor incidents to a subagent. Start in review mode, so the
 agent proposes actions and you approve each one. The subagent must already exist.
@@ -102,9 +155,21 @@ Pause the plan without deleting it with `az sre response-plan disable`.
 
 ## Clean up
 
-Delete the resource group from the README quick start. This removes the agent with it.
-See [Clean up](../README.md#clean-up) for the command.
+> [!CAUTION]
+> This permanently deletes the resource group and everything in it, including the agent.
+> Confirm the variables before running it. It does not delete the repository or the
+> Azure Data Explorer cluster.
 
+```bash
+printf 'Deleting subscription=%s resource-group=%s\n' \
+  "$SUBSCRIPTION_ID" "$RG"
+
+az group delete \
+  --subscription "$SUBSCRIPTION_ID" \
+  --name "$RG" \
+  --yes \
+  --no-wait
+```
 ## Next steps
 
 - [CLI reference](cli-reference.md): every command, option and example
