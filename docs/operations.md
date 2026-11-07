@@ -601,7 +601,7 @@ live-verification pass (12 of 15 extension types confirmed live):
 | `globalSettings` (`agent settings`) | `{}` plus optional `toolPermissions`/`toolStatuses`/`skillStatuses`/`customInstructions`/`approvalExpirationSetting` | Shape-confirmed from the control-plane team's own integration tests — true ARM singleton, `DELETE` unsupported, reset via `agent settings update --value '{}'` |
 | `pluginMarketplaces` (`plugin marketplace`), `pluginInstallations` (`plugin install`) | See `PLAN.md` | Create/show live-verified; K8s-backed install provisioning not exercised in this sandbox |
 | `tools` (`tool`), `skills` (`skill`), `hooks` (`hook`), `repositories` (`repo connect`) | Confirmed | Live-verified end to end (PUT + GET round-trip against a real agent) |
-| `incidentFilters` (`response-plan`), `incidentHandlers` (`response-plan`) | Filter: `{name,type:"IncidentFilter",properties:{...}}`; handler: flat JSON with `id` | Dedicated commands use the ARM extension routes with a data-plane replay for the real error; enable/disable use the data plane. Direct API create/read-back and rebuilt CLI list verified; full CLI CRUD (create, show, list, duplicate guard, overwrite, delete) verified on a disposable agent. Real alert ingestion is not yet tested. |
+| `incidentFilters` (`response-plan`), `incidentHandlers` (`response-plan`) | Filter: `{name,type:"IncidentFilter",properties:{...}}`; handler: flat JSON with `id` | Filter operations use ARM, including enable/disable; linked handler operations use the agent's v2 API because the deployed ARM handler proxy returns 404. Read back both halves when verifying a plan; configuration persistence alone does not prove real alert ingestion. |
 | `githubAuths`, `azureDevOpsAuths` (both wired up for you by `repo connect`) | Shape-confirmed from authoritative source | Live-create rejected by real credential/token validation on the service side, not a shape defect |
 | `subagents` | No model found | Believed server-managed / Agent-Canvas-only, not CLI-creatable |
 
@@ -719,7 +719,11 @@ source than the ARM control-plane proxy) and live-verified by creating a
 real `LinkTool` on `mytestagent`:
 
 - The polymorphic discriminator field is **`type`** (values: `KustoTool`,
-  `LinkTool`, `PythonTool`, `HttpClientTool`), not `toolType`.
+  `LinkTool`, `PythonFunctionTool`, `HttpClientTool`), not `toolType`.
+- `PythonTool` remains accepted as a legacy CLI alias. The CLI normalizes it
+  to `PythonFunctionTool` before encoding the request; the runtime rejects
+  the old discriminator. Executable code and the other configuration fields
+  are preserved.
 - `LinkTool`'s link field is **`template`**, not `url`. `url` is a real
   field, but only on `HttpClientTool`.
 
@@ -922,7 +926,16 @@ Scheduled task and HTTP trigger were live-verified end-to-end against
 portal's Automation tab (status, type, and for HTTP triggers the real
 `triggerUrl`), then deleted via CLI and confirmed gone from the portal.
 
-Incident filter and handler create, show, list and delete use the ARM extension routes. On the generic ARM validation error, create replays the request on the agent data plane to surface the real reason. `enable`/`disable` and `--agent-url` reads use the data plane:
+Incident filter create, update, show, list and delete use the ARM extension
+routes, as do `enable` and `disable`. On the generic ARM validation error,
+filter creation replays the request on the agent data plane to surface the
+real reason. `--agent-url` reads use the data plane.
+
+Linked instructions are managed through the agent's v2 incident-handler API
+for create, read, update and delete. The deployed ARM `incidentHandlers`
+collection returns 404 even when the filter exists, so using that proxy can
+leave a partially created response plan and break its default `show`.
+The CLI does not use the ARM handler proxy:
 
 - `/api/v2/incidentManagement/incidentFilters[/{name}]`
 - `/api/v2/extendedAgent/incidentHandlers[/{id}]`
@@ -932,12 +945,12 @@ token for `https://azuresre.dev`. The caller needs the appropriate SRE Agent
 data-plane role as well as ARM read access. Filter lists return a `value`
 collection; handler lists return an array.
 
-Earlier ARM requests returned "The extension configuration is invalid".
-Live testing showed the ARM routes work. The failures came from agents with
+Earlier filter ARM requests returned "The extension configuration is invalid".
+Live testing showed the filter ARM routes work. The failures came from agents with
 no incident platform configured, or a `handlingAgent` that did not exist, with
 ARM collapsing the downstream reason into the generic message. On an agent
-with Azure Monitor configured, ARM create/show/list/delete of filters and
-handlers all succeeded (a handler's `incidentFilterId` is the filter name).
+with Azure Monitor configured, the filter ARM operations succeeded.
+A handler's `incidentFilterId` is the filter name; its own `id` can differ.
 Remaining control-plane bug: some downstream validation errors are still
 masked by the generic message, which is why create replays on the data plane.
 

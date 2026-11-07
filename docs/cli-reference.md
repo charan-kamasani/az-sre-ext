@@ -1146,7 +1146,7 @@ Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 
 Manage incident response plans (portal: Incidents > "Triggers &
 
-response plans"). A plan routes matching incidents to a subagent.
+response plans"). A plan routes matching incidents to a subagent. Match criteria use ARM; linked instructions use the agent API.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -1573,7 +1573,7 @@ Create or update a custom tool.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Tool configuration as a JSON document. Discriminator field is "type" (not "toolType"), one of: KustoTool/LinkTool/PythonTool/HttpClientTool. Common fields: type/name/description/connector/toolMode/parameters. Per-type fields -- LinkTool: "template" (not "url") e.g. {"type": "LinkTool", "name": "docs", "description": "...", "template": "https://..."}; KustoTool: database/query/clusterHint; HttpClientTool: url/method/body/headers/auth (this is the one type that really does use "url"); PythonTool: functionCode/timeoutSeconds/dependencies/authEnabled/authScopes. Live-confirmed shape -- "toolType"/"url" at the top level (an earlier, now-fixed example) silently fails server-side with an opaque InternalServerError, only "type"/"template" works for LinkTool. |
+| `--value` | String | Yes |  |  | Tool configuration as a JSON document. Discriminator field is "type" (not "toolType"), one of: KustoTool/LinkTool/PythonFunctionTool/HttpClientTool. PythonTool is accepted as a legacy alias for PythonFunctionTool. Common fields: type/name/description/connector/toolMode/parameters. Per-type fields -- LinkTool: "template" (not "url") e.g. {"type": "LinkTool", "name": "docs", "description": "...", "template": "https://..."}; KustoTool: database/query/clusterHint; HttpClientTool: url/method/body/headers/auth (this is the one type that really does use "url"); PythonFunctionTool: functionCode/timeoutSeconds/dependencies/authEnabled/authScopes. Live-confirmed shape -- "toolType"/"url" at the top level (an earlier, now-fixed example) silently fails server-side with an opaque InternalServerError, only "type"/"template" works for LinkTool. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**

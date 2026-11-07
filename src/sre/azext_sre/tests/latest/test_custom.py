@@ -12,6 +12,7 @@ rebuilt one.
 """
 
 import base64
+import copy
 import json
 import os
 import tempfile
@@ -1129,6 +1130,157 @@ class IncidentHandlersShapeValidationTests(unittest.TestCase):
         self.assertIn("incidentProcessingGuide must be a JSON array of strings", str(raised.exception))
 
 
+class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.filters = {}
+        self.handlers = {}
+        self.handler_error = None
+        self.handler_path = "/api/v2/extendedAgent/incidentHandlers"
+        for replacement in (
+            patch.object(AAZCommand, "_handler", lambda command, command_args: None),
+            patch("azext_sre.custom._extension_resource_create", side_effect=self._arm_create),
+            patch("azext_sre.custom._extension_resource_show", side_effect=self._arm_show),
+            patch("azext_sre.custom._extension_resource_list", side_effect=self._arm_list),
+            patch("azext_sre.custom._extension_resource_delete", side_effect=self._arm_delete),
+            patch("azext_sre.custom._data_plane_request", side_effect=self._agent_request),
+        ):
+            replacement.start()
+            self.addCleanup(replacement.stop)
+
+    def _arm_create(self, cli_ctx, agent, group, extension_type, name, value, overwrite=False):
+        if extension_type != "incidentFilters":
+            raise ResourceNotFoundError("The ARM handler proxy is unavailable.")
+        self.filters[name] = json.loads(value)
+        return self._arm_show(cli_ctx, agent, group, extension_type, name)
+
+    def _arm_show(self, cli_ctx, agent, group, extension_type, name):
+        if extension_type != "incidentFilters":
+            raise ResourceNotFoundError("The ARM handler proxy is unavailable.")
+        return {"name": name, "properties": {"value": copy.deepcopy(self.filters[name])}}
+
+    def _arm_list(self, cli_ctx, agent, group, extension_type):
+        return {"value": [
+            self._arm_show(cli_ctx, agent, group, extension_type, name) for name in self.filters
+        ]}
+
+    def _arm_delete(self, cli_ctx, agent, group, extension_type, name):
+        if extension_type != "incidentFilters":
+            raise ResourceNotFoundError("The ARM handler proxy is unavailable.")
+        del self.filters[name]
+
+    def _agent_request(self, cli_ctx, agent, group, method, path, body=None,
+                       missing_ok=False, agent_url=None):
+        if method == "GET" and path == self.handler_path:
+            return copy.deepcopy(list(self.handlers.values()))
+        if not path.startswith(self.handler_path + "/"):
+            raise ResourceNotFoundError(path)
+        name = path.rsplit("/", 1)[-1]
+        if method == "PUT":
+            if self.handler_error:
+                raise self.handler_error
+            self.handlers[name] = copy.deepcopy(body)
+            return copy.deepcopy(self.handlers[name])
+        if method == "DELETE":
+            self.handlers.pop(name, None)
+            return {}
+        raise ResourceNotFoundError(path)
+
+    def _command(self, command_cls, **overrides):
+        values = dict(
+            agent_name="agent", resource_group="rg", extension_name="plan", agent_url=None,
+            platform=None, subagent=None, mode=None, disabled=None, priorities=None,
+            title_contains=None, title_not_contains=None, incident_types=None,
+            impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
+            instructions=None, processing_guide=None, overwrite=None,
+        )
+        return _bare_command(command_cls, **{**values, **overrides})._handler(None)
+
+    def _create(self, **overrides):
+        from azext_sre.custom import ResponsePlanCreate
+        return self._command(
+            ResponsePlanCreate, **{
+                "platform": "AzMonitor", "subagent": "responder", "mode": "review",
+                "disabled": True, "instructions": "Check logs", **overrides,
+            })
+
+    def test_create_persists_instructions_and_default_show_reads_the_linked_handler(self):
+        from azext_sre.custom import ResponsePlanShow
+        self._create(processing_guide=["Read metrics"])
+        shown = self._command(ResponsePlanShow)
+        self.assertEqual(shown["handlers"], [{
+            "id": "plan", "incidentFilterId": "plan", "customInstructions": "Check logs",
+            "incidentProcessingGuide": ["Read metrics"],
+        }])
+        self.assertFalse(shown["filter"]["properties"]["isEnabled"])
+
+    def test_show_without_instructions_returns_an_empty_handler_list(self):
+        from azext_sre.custom import ResponsePlanShow
+        self._create(instructions=None)
+        self.assertEqual(self._command(ResponsePlanShow)["handlers"], [])
+
+    def test_update_preserves_existing_handler_identity_and_processing_guide(self):
+        from azext_sre.custom import ResponsePlanUpdate
+        self._create(instructions=None)
+        self.handlers["custom-handler"] = {
+            "id": "custom-handler", "incidentFilterId": "plan",
+            "customInstructions": "Old instructions", "incidentProcessingGuide": ["Read metrics"],
+        }
+        self._command(ResponsePlanUpdate, instructions="Check dependencies")
+        self.assertEqual(self.handlers, {"custom-handler": {
+            "id": "custom-handler", "incidentFilterId": "plan",
+            "customInstructions": "Check dependencies", "incidentProcessingGuide": ["Read metrics"],
+        }})
+        self.assertFalse(self.filters["plan"]["isEnabled"])
+
+    def test_update_creates_instructions_for_a_plan_with_no_handler(self):
+        from azext_sre.custom import ResponsePlanUpdate, ResponsePlanShow
+        self._create(instructions=None)
+        self._command(ResponsePlanUpdate, instructions="Check dependencies")
+        self.assertEqual(
+            self._command(ResponsePlanShow)["handlers"][0]["customInstructions"], "Check dependencies")
+
+    def test_delete_removes_all_linked_handlers_without_touching_another_plan(self):
+        from azext_sre.custom import ResponsePlanDelete
+        self._create()
+        self.handlers["extra"] = {"id": "extra", "incidentFilterId": "plan"}
+        unrelated = {"id": "other", "incidentFilterId": "other-plan", "customInstructions": "Keep"}
+        self.handlers["other"] = unrelated
+        self._command(ResponsePlanDelete)
+        self.assertEqual(self.handlers, {"other": unrelated})
+        self.assertNotIn("plan", self.filters)
+
+    def test_duplicate_handler_is_rejected_without_overwriting_its_instructions(self):
+        from azext_sre.custom import _incident_handler_path, _incident_resource_create
+        existing = {"id": "plan", "incidentFilterId": "other-plan", "customInstructions": "Keep"}
+        self.handlers["plan"] = existing
+        replacement = {"id": "plan", "incidentFilterId": "plan", "customInstructions": "Replace"}
+        with self.assertRaises(ResourceExistsError):
+            _incident_resource_create(
+                None, "agent", "rg", "incidentHandlers", "plan", replacement,
+                _incident_handler_path("plan"), replacement, False)
+        self.assertEqual(self.handlers["plan"], existing)
+
+    def test_create_reports_partial_failure_when_the_agent_rejects_instructions(self):
+        response = Response()
+        response.status_code = 403
+        response._content = b"Forbidden"
+        self.handler_error = HTTPError("Forbidden", response=response)
+        with self.assertRaisesRegex(CLIError, "created, but its instructions were not saved"):
+            self._create()
+        self.assertIn("plan", self.filters)
+        self.assertFalse(self.filters["plan"]["isEnabled"])
+        self.assertEqual(self.handlers, {})
+
+    def test_unexpected_handler_collection_is_an_error_not_missing_instructions(self):
+        from azext_sre.custom import ResponsePlanShow
+        self._create(instructions=None)
+        for response in (None, {}, {"value": []}, [None]):
+            with self.subTest(response=response), \
+                 patch("azext_sre.custom._data_plane_request", return_value=response), \
+                 self.assertRaisesRegex(CLIError, "unexpected incident-handler collection"):
+                self._command(ResponsePlanShow)
+
+
 class IncidentDataPlaneTests(unittest.TestCase):
     def _run(self, cls, result=None, **args):
         command = _bare_command(
@@ -1366,6 +1518,31 @@ class ToolsShapeValidationTests(unittest.TestCase):
     """--extension-type tools' inner shape is confirmed via sreagent-runtime
     (the real SRE Agent runtime/CLI source) -- Agent.Cli/Models/ToolSpecV2.cs
     + Kusto/Link/Python/HttpClientToolSpecV2.cs."""
+
+    def test_python_tool_alias_and_runtime_type_preserve_executable_configuration(self):
+        for tool_type in ("PythonTool", "PythonFunctionTool"):
+            with self.subTest(tool_type=tool_type):
+                value = {
+                    "type": tool_type, "description": "Read-only evidence",
+                    "functionCode": "def main() -> dict:\n    return {'status': 200}\n",
+                    "parameters": [], "timeoutSeconds": 30, "dependencies": [],
+                    "authEnabled": False, "authScopes": [],
+                }
+                encoded = _encode_extension_value(json.dumps(value), "tools")
+                decoded = json.loads(base64.b64decode(encoded))
+                self.assertEqual(decoded, {**value, "type": "PythonFunctionTool"})
+
+    def test_python_tool_types_reject_invalid_executable_and_authentication_fields(self):
+        invalid = {
+            "functionCode": 123, "dependencies": "requests",
+            "authEnabled": "false", "authScopes": "https://example.com",
+        }
+        for tool_type in ("PythonTool", "PythonFunctionTool"):
+            for field, value in invalid.items():
+                with self.subTest(tool_type=tool_type, field=field), self.assertRaises(CLIError):
+                    _encode_extension_value(json.dumps({
+                        "type": tool_type, "functionCode": "def main(): pass", field: value,
+                    }), "tools")
 
     def test_accepts_a_real_kusto_tool_payload(self):
         raw = json.dumps({
