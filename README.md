@@ -14,6 +14,27 @@ response plans under `az sre`.
 > **[`az sre` CLI reference](docs/cli-reference.md)**. It contains every group,
 > command, exact syntax, option, and default.
 
+## Install
+
+You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or
+later. The install script downloads the latest release wheel, verifies its SHA-256
+checksum and adds it with `az extension add`.
+
+macOS, Linux and WSL:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/charan-kamasani/az-sre-ext/master/scripts/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/charan-kamasani/az-sre-ext/master/scripts/install.ps1 | iex
+```
+
+To install a specific release, set `SRE_INSTALL_VERSION` (for example `v1.0.0b1`) first.
+Check the install with `az sre --help`.
+
 ## Quick start
 
 Create an agent, connect a repository and an Azure Data Explorer data source, then clean
@@ -185,6 +206,7 @@ Most commands are generated from the `Microsoft.App/agents` API spec under
 | [Operations](docs/operations.md) | Agent lifecycle, RBAC, connectors, and confirmed/unconfirmed runbook extension payload shapes |
 | [Networking](docs/networking.md) | VNet injection, sandbox egress, and safe sequencing for `network update` |
 | [Testing](docs/testing.md) | Coverage layers and the live-verification workflow (rebuild/reinstall, throwaway agents, round-trip shape confirmation) |
+| [Releasing](docs/release.md) | Cut a release and how the install scripts work |
 | [Development](docs/development.md) | Architecture, local validation, CLI reference regeneration, commit hook |
 | [Source code guide](docs/source-code.md) | Repository layout, generated vs. hand-authored code, how a command flows, security boundaries |
 | [Implementation plan](PLAN.md) | Scope, architecture decisions, evidence, roadmap, and open blockers |
