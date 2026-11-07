@@ -32,8 +32,11 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/charan-kamasani/az-sre-ext/master/scripts/install.ps1 | iex
 ```
 
-To install a specific release, set `SRE_INSTALL_VERSION` (for example `v1.0.0b1`) first.
-Check the install with `az sre --help`.
+To pin a release, pass `--release-tag v1.0.0b1` (PowerShell: `-ReleaseTag`), or set
+`SRE_INSTALL_RELEASE_TAG`. If the [GitHub CLI](https://cli.github.com) is installed and
+signed in, the script also verifies the release's build-provenance attestation. Add
+`--require-attestation` to make that check mandatory. Check the install with
+`az sre --help`.
 
 ## Quick start
 
