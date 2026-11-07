@@ -393,6 +393,19 @@ class CliInvokeTests(unittest.TestCase):
         with patch("azure.cli.core.get_default_cli", return_value=self._fake_cli(result={"a": 1})):
             self.assertEqual(_cli_invoke(None, "account", "show"), {"a": 1})
 
+    def test_sre_call_forwards_callers_subscription(self):
+        seen = []
+        fake_cli = self._fake_cli()
+        fake_cli.invoke = lambda args, out_file=None: seen.append(args) or 0
+        cli_ctx = SimpleNamespace(data={"subscription_id": "sub-1"})
+        with patch("azure.cli.core.get_default_cli", return_value=fake_cli):
+            _cli_invoke(cli_ctx, "sre", "connector", "list", "-g", "rg")
+            _cli_invoke(cli_ctx, "account", "show")
+            _cli_invoke(cli_ctx, "sre", "agent", "show", "--subscription", "other")
+        self.assertEqual(seen[0][-2:], ["--subscription", "sub-1"])
+        self.assertNotIn("--subscription", seen[1])
+        self.assertEqual(seen[2].count("--subscription"), 1)
+
     def test_resource_not_found_error_wrapped_as_clierror(self):
         fake_cli = self._fake_cli(invoke_side_effect=ResourceNotFoundError("no such thing"))
         with patch("azure.cli.core.get_default_cli", return_value=fake_cli):
@@ -2877,6 +2890,29 @@ class ArgSchemaHelpRegressionTests(unittest.TestCase):
         schema = Create._build_arguments_schema()
         cmd_arg = schema.default_model.provider.to_cmd_arg("provider")
         self.assertIn("Anthropic", cmd_arg.type.settings.get("help"))
+
+
+class ArgHelpLengthBudgetTests(unittest.TestCase):
+    """Keep per-argument help short, like built-in az commands."""
+
+    MAX_CHARS = 400
+
+    def test_argument_help_within_budget(self):
+        from azext_sre import custom
+        too_long = []
+        for name, cls in vars(custom).items():
+            if not (isinstance(cls, type) and hasattr(cls, "_build_arguments_schema")
+                    and getattr(cls, "AZ_NAME", None)):
+                continue
+            try:
+                schema = cls._build_arguments_schema()
+            except Exception:  # pylint: disable=broad-except
+                continue
+            for arg_name, arg in schema._fields.items():
+                text = (getattr(arg, "_help", None) or {}).get("short-summary") or ""
+                if len(text) > self.MAX_CHARS:
+                    too_long.append((cls.AZ_NAME, arg_name, len(text)))
+        self.assertEqual(too_long, [])
 
 
 class _NoOpPreOperationsBase:

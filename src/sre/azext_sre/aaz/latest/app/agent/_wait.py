@@ -16,6 +16,9 @@ from azure.cli.core.aaz import *
 )
 class Wait(AAZWaitCommand):
     """Place the CLI in a waiting state until a condition is met.
+
+    :example: Wait until the agent finishes provisioning
+        az sre agent wait -g myrg --agent-name myagent --created
     """
 
     _aaz_info = {

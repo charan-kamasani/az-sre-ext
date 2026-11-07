@@ -101,18 +101,13 @@ logger = get_logger(__name__)
 # calls.
 API_VERSION = "2026-01-01"
 
-# Networking (VNet injection + sandbox egress) is only supported by the
-# REAL deployed api-version 2026-11-01-preview (confirmed live via
-# `az provider show --namespace Microsoft.App`). It is NOT present in
-# 2026-01-01 (the version aaz/latest is generated against) and the
-# 2026-07-01 public-spec version that DOES have it is NOT actually
-# deployed to production (ARM rejects it -- see running notes section 25).
-# There is no public swagger for 2026-11-01-preview yet, so these fields
-# cannot be codegen'd; the shape below was read directly from the
-# internal control-plane source (AAPT-SREAgent-ControlPlane repo,
-# src/WebApi/Views/Version20261101Preview/AgentView.cs) with Dalibor's
-# repo access, not from any public spec. Treat this as hand-maintained
-# and re-verify against that source if the service's shape ever changes.
+# Networking fields (VNet injection, sandbox egress) are not in the generated
+# 2026-01-01 code, so they are hand-written against 2026-11-01-preview. The
+# service returns them on read in both versions; writing them on 2026-01-01
+# has not been verified. 2026-07-01 is not deployed to production. There is no
+# public swagger for 2026-11-01-preview, so the shape was read from the
+# control-plane source (src/WebApi/Views/Version20261101Preview/AgentView.cs).
+# Align on one version before GA.
 NETWORK_API_VERSION = "2026-11-01-preview"
 
 
@@ -269,6 +264,13 @@ def _cli_invoke(cli_ctx, *args, allow_missing=False):
 
     from azure.cli.core import get_default_cli
     from azure.cli.core.azclierror import ResourceNotFoundError as _RNFE
+
+    args = list(args)
+    # The nested CLI starts fresh, so pass along the caller's --subscription.
+    subscription = (getattr(cli_ctx, "data", None) or {}).get("subscription_id")
+    if (subscription and args and args[0] == "sre"
+            and "--subscription" not in args and "--ids" not in args):
+        args += ["--subscription", subscription]
 
     cli = get_default_cli()
     cli.out_file = io.StringIO()
@@ -498,14 +500,7 @@ class _GrantAccessToMeMixin:
         schema = super()._build_arguments_schema(*args, **kwargs)
         schema.grant_access_to_me = AAZStrArg(
             options=["--grant-access-to-me"],
-            help="Grant the signed-in user a built-in SRE Agent role "
-            "immediately after creating the agent: 'admin', 'user', "
-            "'author', or 'reader'. Resolves your object ID via "
-            "'az ad signed-in-user show' automatically -- equivalent to "
-            "running 'sre access grant --assignee <your-object-id>' "
-            "as a separate, manual follow-up command. Cannot be combined "
-            "with --no-wait (the grant runs in post_operations, which the "
-            "no-wait code path never reaches).",
+            help="Grant yourself a built-in role after creation. Cannot be used with --no-wait.",
             enum={key: key for key in GrantAccess._ROLES},
         )
         return schema
@@ -684,22 +679,14 @@ class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdenti
         # _DefaultSystemIdentityMixin) directly on these args, not just in
         # a runtime warning -- a new user reading --help before running the
         # command had no way to know this would happen otherwise.
-        schema.mi_system_assigned.help = (
-            "Set the system managed identity. If this and --mi-user-assigned "
-            "are both omitted, a new user-assigned identity is auto-created "
-            "and both are enabled, matching the portal's own default."
+        schema.mi_system_assigned._help["short-summary"] = (
+            "Enable the system-assigned identity. Default: a user-assigned identity is created and both are enabled."
         )
-        schema.mi_user_assigned.help = (
-            "Set the user managed identities. Support shorthand-syntax, "
-            "json-file and yaml-file. Try \"??\" to show more. If this and "
-            "--mi-system-assigned are both omitted, a new user-assigned "
-            "identity is auto-created and both are enabled, matching the "
-            "portal's own default."
+        schema.mi_user_assigned._help["short-summary"] = (
+            "User-assigned identities to attach."
         )
         schema.log_configuration._help["short-summary"] = (
-            "Log configurations. If omitted, the agent is created without "
-            "an Application Insights link (not required by the service, "
-            "but you lose trace view -- a warning is printed)."
+            "Application Insights link for traces. Without it, a warning is shown and trace view is unavailable."
         )
         cls._args_schema = schema
         return cls._args_schema
@@ -1005,13 +992,7 @@ def _normalize_data_connector_type(value):
 
 @register_command_group("sre connector")
 class _ConnectorGroup(AAZCommandGroup):
-    """Connect an SRE Agent to an external data source it can query or act on.
-
-    Use 'sre connector create' to add one, 'sre connector list'/'show' to
-    see what's connected (see --help on those for the full supported type
-    list). The portal's larger "Additional connectors" catalog (Gmail,
-    SharePoint, OneDrive, etc.) has no public API yet -- portal-only.
-    """
+    """Connect an SRE Agent to an external data source it can query or act on."""
 
 
 class _DataConnectorTypeArgMixin:
@@ -1032,53 +1013,26 @@ class _DataConnectorTypeArgMixin:
         # existing ._help dict rather than replace it.
         if data_connector_type is not None and isinstance(getattr(data_connector_type, "_help", None), dict):
             data_connector_type._help["short-summary"] = (
-                "Type of the data connector. Portal display name shown "
-                "first, wire/API value in parentheses (both accepted, "
-                "case-insensitive): 'Azure Data Explorer' (KustoClient -- "
-                "the default type, matching the portal's own 'Azure Data "
-                "Explorer' option exactly; no --data-source needed), "
-                "'Azure Data Explorer Cluster' (Kusto -- legacy, pinned to "
-                "one cluster via --data-source, no portal entry point), "
-                "'MCP server' (Mcp, a.k.a. 'User provided connector' -- "
-                "possibly also PagerDuty/ServiceNow/etc. via a custom "
-                "endpoint, not a separate type; note Datadog/Splunk/S360/"
-                "EV2 have their own dedicated portal cards and may not "
-                "actually route through this generic type -- unverified), "
-                "'Office 365 Outlook' (Outlook), 'Microsoft Teams' "
-                "(Teams), 'IcM connector' (Icm, a.k.a. 'Microsoft IcM', "
-                "singleton per agent), 'DGrep' (Dgrep, a.k.a. 'Microsoft "
-                "DGrep', singleton per agent), 'Log Analytics Workspace' "
-                "(LogAnalytics), 'EV2' (Ev2Mcp), 'Geneva Metrics' "
-                "(GenevaMetrics -- restricted to Microsoft's 13 known "
-                "first-party tenants, matching the portal's own "
-                "connector-picker gate), 'S360 connector' (S360), "
-                "'Documentation connector' (Documentation), 'Database "
-                "query connector (user)' (KustoUser -- correlation not "
-                "create-and-inspect confirmed), 'Database indexing "
-                "connector' (KustoDataIndexer -- same caveat), 'Azure "
-                "DevOps AI Search' (AzureDevOpsBuiltinMcp -- same caveat), "
-                "and four knowledge-item types that need "
-                "--extended-properties instead of --data-source: "
-                "'KnowledgeText', 'KnowledgeFile', 'KnowledgeWebPage', "
-                "'KnowledgeRepository' (none of these four appear in the "
-                "portal's Connectors picker -- they live in a separate "
-                "portal section). Also accepts 'TsgCrawler', "
-                "'ConnectorGateway', 'AzureMonitor', 'MonitorClient' (no "
-                "portal picker card found for any of these), and one of "
-                "'AppInsights'/'ApplicationInsights' (the portal shows a "
-                "single 'Application Insights' card, but which of these "
-                "two wire values it persists as is not yet confirmed -- "
-                "both are accepted here)."
+                "Connector type (case-insensitive; portal names also accepted). "
+                "Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, "
+                "LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, "
+                "AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, "
+                "KnowledgeRepository."
             )
         data_source = getattr(schema, "data_source", None)
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
             data_source._help["short-summary"] = (
-                "Data source connection string or endpoint. For 'Kusto' "
-                "(Azure Data Explorer Cluster), this must include a database name, "
-                "e.g. 'https://cluster.kusto.windows.net/databasename' -- a "
-                "bare cluster URL with no database is rejected server-side "
-                "with 'Kusto DataSource must include a database name'."
+                "Connection string or endpoint. For Kusto, include the database: "
+                "https://cluster.kusto.windows.net/database."
             )
+        for _name, _text in (
+            ("endpoint", "Endpoint URL, used by endpoint-based connector types such as Mcp."),
+            ("identity", "Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity."),
+            ("extended_properties", "Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository."),
+        ):
+            _arg = getattr(schema, _name, None)
+            if _arg is not None and isinstance(getattr(_arg, "_help", None), dict):
+                _arg._help["short-summary"] = _text
         return schema
 
     def pre_operations(self):
@@ -1126,39 +1080,22 @@ class _ConnectorConvenienceArgsMixin:
         schema.file_path = AAZStrArg(
             options=["--file-path"],
             arg_group="Properties",
-            help="Local file to ingest, instead of hand-building "
-            "--extended-properties yourself. For --data-connector-type "
-            "KnowledgeFile, the CLI reads and base64-encodes the file into "
-            "extended-properties.fileContent/fileName. For KnowledgeText, "
-            "the CLI reads the file as UTF-8 text into "
-            "extended-properties.content.",
+            help="Local file to ingest. KnowledgeFile: base64-encoded and uploaded. KnowledgeText: read as UTF-8 text.",
         )
         schema.mcp_endpoint = AAZStrArg(
             options=["--mcp-endpoint"],
-            arg_group="Properties",
-            help="For --data-connector-type Mcp: the MCP server's HTTP "
-            "endpoint URL. Builds both --data-source and the nested "
-            "extended-properties.transport/endpoint the service actually "
-            "requires (confirmed live: a bare --data-source alone is "
-            "rejected with 'Endpoint value is required for MCP connector "
-            "with HTTP transport.').",
+            arg_group="MCP",
+            help="For Mcp: the MCP server's HTTP endpoint URL.",
         )
         schema.github = AAZBoolArg(
             options=["--github"],
-            arg_group="Properties",
-            help="For --data-connector-type Mcp: shortcut for "
-            "--mcp-endpoint pointed at the real public GitHub Copilot MCP "
-            "server (https://api.githubcopilot.com/mcp/).",
+            arg_group="MCP",
+            help="For Mcp: connect the public GitHub Copilot MCP server (https://api.githubcopilot.com/mcp/).",
         )
         schema.tool_access = AAZBoolArg(
             options=["--tool-access"],
             arg_group="Properties",
-            help="For --data-connector-type KustoClient/'Azure Data "
-            "Explorer': shortcut for the portal's 'Allow agent to use "
-            "query tools from this connector' checkbox (Review + add "
-            "step). Builds extended-properties.toolsVisibleToMetaAgent -- "
-            "true sets it to ['*'], false to [] (confirmed live: both "
-            "values persist and read back correctly).",
+            help="For KustoClient: let the agent use query tools from this connector (portal 'Allow agent to use query tools').",
         )
         # --bearer-token / --managed-identity-auth / --mi-token-scope /
         # --oauth-dcr / --oauth-scopes / --oauth-client-name: convenience
@@ -1173,59 +1110,33 @@ class _ConnectorConvenienceArgsMixin:
         # as the pre-existing "transport"/"endpoint" keys above).
         schema.bearer_token = AAZStrArg(
             options=["--bearer-token"],
-            arg_group="Properties",
-            help="For --data-connector-type Mcp: a static bearer token/PAT/"
-            "API key sent on every request to the MCP server (the portal "
-            "wizard's 'Bearer token' authentication method). Builds "
-            "extended-properties.authType=BearerToken + bearerToken.",
+            arg_group="MCP",
+            help="For Mcp: static bearer token, PAT or API key sent with every request.",
         )
         schema.managed_identity_auth = AAZBoolArg(
             options=["--managed-identity-auth"],
-            arg_group="Properties",
-            help="For --data-connector-type Mcp: authenticate to the MCP "
-            "server using the agent's managed identity (the portal "
-            "wizard's 'Managed identity' authentication method; combine "
-            "with --identity to pick a user-assigned identity instead of "
-            "the system-assigned default, same as other connector types). "
-            "Builds extended-properties.authType=AzureARM. Implied by "
-            "--mi-token-scope if that is passed alone.",
+            arg_group="MCP",
+            help="For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one.",
         )
         schema.mi_token_scope = AAZStrArg(
             options=["--mi-token-scope"],
-            arg_group="Properties",
-            help="For --data-connector-type Mcp with --managed-identity-"
-            "auth: the Azure AD token scope/audience to request (the "
-            "portal wizard's 'Azure AD token scope' free-text field). "
-            "Builds extended-properties.armScope. Defaults to "
-            "'https://management.azure.com/.default' if omitted, matching "
-            "the portal's own default.",
+            arg_group="MCP",
+            help="For Mcp with --managed-identity-auth: token scope to request. Default: https://management.azure.com/.default.",
         )
         schema.oauth_dcr = AAZBoolArg(
             options=["--oauth-dcr"],
-            arg_group="Properties",
-            help="For --data-connector-type Mcp: use OAuth with Dynamic "
-            "Client Registration (the portal wizard's 'OAuth (dynamic "
-            "client registration)' authentication method -- the one that "
-            "shows a real browser 'Authorize' consent redirect; "
-            "pre-registered client IDs/secrets are not supported, "
-            "matching the portal's own text). Builds "
-            "extended-properties.authType=SpecOAuth. Consent is completed "
-            "afterwards in the portal, not by this command.",
+            arg_group="MCP",
+            help="For Mcp: use OAuth with dynamic client registration. Finish consent in the portal.",
         )
         schema.oauth_scopes = AAZStrArg(
             options=["--oauth-scopes"],
-            arg_group="Properties",
-            help="For --data-connector-type Mcp with --oauth-dcr true: "
-            "comma-separated OAuth scopes to request during the DCR "
-            "consent flow. Builds extended-properties.scopes.",
+            arg_group="MCP",
+            help="For Mcp with --oauth-dcr: comma-separated OAuth scopes to request.",
         )
         schema.oauth_client_name = AAZStrArg(
             options=["--oauth-client-name"],
-            arg_group="Properties",
-            help="For --data-connector-type Mcp with --oauth-dcr true: "
-            "the client name to register during Dynamic Client "
-            "Registration. Builds extended-properties.dcrClientName. "
-            "Optional -- the service picks a default name if omitted.",
+            arg_group="MCP",
+            help="For Mcp with --oauth-dcr: client name to register. Optional.",
         )
         return schema
 
@@ -1425,56 +1336,29 @@ class ConnectorCreate(
 ):
     """Create an Agent Connector.
 
-    :example: Connect an agent to Azure Data Explorer -- matches the portal's
-        "Add connector" > "Azure Data Explorer" flow exactly: just a name and
-        type, no --data-source or --mcp-endpoint needed (uses the agent's
-        system-assigned identity by default, same as the portal)
+    :example: Connect Azure Data Explorer
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name azure-data-explorer --data-connector-type "Azure Data Explorer"
+            --name adx --data-connector-type "Azure Data Explorer"
 
-    :example: Same, but with a user-assigned identity (portal's "Add identity")
+    :example: Connect the GitHub MCP server
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name azure-data-explorer --data-connector-type "Azure Data Explorer" \\
-            --identity /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<identity>
+            --name github --data-connector-type Mcp --github true
 
-    :example: Connect an agent's GitHub MCP connector using your own gh auth
+    :example: Connect a custom MCP server with a bearer token
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name conn-mcp --data-connector-type Mcp --github true
-
-    :example: Connect a custom MCP server by its own endpoint (live-verified payload)
-        az sre connector create --agent-name myagent --resource-group myrg \\
-            --name conn-mcp-custom --data-connector-type Mcp \\
-            --mcp-endpoint "https://myserver.contoso.com/mcp"
-
-    :example: Connect a custom MCP server using a static bearer token/PAT
-        (portal's "Bearer token" authentication method)
-        az sre connector create --agent-name myagent --resource-group myrg \\
-            --name conn-mcp-bearer --data-connector-type Mcp \\
+            --name mcp --data-connector-type Mcp \\
             --mcp-endpoint "https://myserver.contoso.com/mcp" \\
             --bearer-token "$MY_SERVER_TOKEN"
 
-    :example: Connect a custom MCP server using the agent's managed identity
-        (portal's "Managed identity" authentication method; combine with
-        --identity to use a user-assigned identity instead of the
-        system-assigned default)
+    :example: Connect a custom MCP server with the agent's managed identity
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name conn-mcp-mi --data-connector-type Mcp \\
+            --name mcp --data-connector-type Mcp \\
             --mcp-endpoint "https://myserver.contoso.com/mcp" \\
-            --managed-identity-auth true --mi-token-scope "api://myserver/.default"
+            --managed-identity-auth true
 
-    :example: Connect a custom MCP server using OAuth with Dynamic Client
-        Registration (portal's "OAuth (dynamic client registration)"
-        authentication method -- finish consent afterwards in the portal)
+    :example: Connect one Kusto cluster and database
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name conn-mcp-oauth --data-connector-type Mcp \\
-            --mcp-endpoint "https://myserver.contoso.com/mcp" --oauth-dcr true
-
-    :example: Connect a single Kusto/Azure Data Explorer cluster+database directly
-        (legacy 'Kusto' type, as opposed to the default 'KustoClient'/"Azure Data
-        Explorer" type above -- --data-source must include the database name,
-        live-verified payload)
-        az sre connector create --agent-name myagent --resource-group myrg \\
-            --name my-cluster --data-connector-type Kusto \\
+            --name kusto --data-connector-type Kusto \\
             --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"
     """
 
@@ -1488,7 +1372,13 @@ class ConnectorCreate(
 
 @register_command("sre connector update")
 class ConnectorUpdate(_DataConnectorTypeArgMixin, _GeneratedConnectorUpdate):
-    """Update an Agent Connector."""
+    """Update an Agent Connector.
+
+    :example: Point a Kusto connector at a different database
+        az sre connector update -g myrg --agent-name myagent -n conn-kusto \\
+            --data-connector-type Kusto \\
+            --data-source https://mycluster.kusto.windows.net/mydb
+    """
 
     _args_schema = None
 
@@ -1580,8 +1470,13 @@ def _annotate_connector_consent_status(connector):
 
 @register_command("sre connector show")
 class ConnectorShow(_GeneratedConnectorShow):
-    """Show the details of an Agent Connector, including OAuth consent
-    status for EntraOAuth-backed Mcp connectors."""
+    """Show a connector, including OAuth consent status.
+
+    consentStatus is shown for EntraOAuth-backed Mcp connectors.
+
+    :example: Show one connector
+        az sre connector show -g myrg --agent-name myagent -n conn-kusto
+    """
 
     _args_schema = None
 
@@ -1592,9 +1487,14 @@ class ConnectorShow(_GeneratedConnectorShow):
 
 @register_command("sre connector list")
 class ConnectorList(_GeneratedConnectorList):
-    """List an SRE Agent's Connectors, including OAuth consent status
-    (consentStatus: Consented/PendingConsent) for EntraOAuth-backed Mcp
-    connectors."""
+    """List connectors, including OAuth consent status.
+
+    consentStatus (Consented/PendingConsent) is shown for EntraOAuth-backed
+    Mcp connectors.
+
+    :example: List an agent's connectors
+        az sre connector list -g myrg --agent-name myagent
+    """
 
     _args_schema = None
 
@@ -1620,7 +1520,11 @@ class ConnectorList(_GeneratedConnectorList):
 
 @register_command("sre connector delete")
 class ConnectorDelete(_GeneratedConnectorDelete):
-    """Delete an Agent Connector."""
+    """Delete an Agent Connector.
+
+    :example: Delete a connector without a prompt
+        az sre connector delete -g myrg --agent-name myagent -n conn-kusto --yes
+    """
 
     _args_schema = None
 
@@ -1645,7 +1549,7 @@ class _ConnectorNameAliasMixin:
 
 @register_command("sre connector list-secret")
 class ConnectorListSecret(_ConnectorNameAliasMixin, _GeneratedConnectorListSecret):
-    """Get a Data Connector's details including its secret(s) in plain text.
+    """Show a connector with its secrets in plain text.
 
     Unlike 'sre connector show'/'sre connector list', which redact secret
     fields server-side, this command returns them unredacted.
@@ -1670,16 +1574,16 @@ class ConnectorListSecret(_ConnectorNameAliasMixin, _GeneratedConnectorListSecre
 # --------------------------------------------------------------------------------------------
 @register_command_group("sre identity")
 class _IdentityGroup(AAZCommandGroup):
-    """Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls.
+    """Manage the agent's own managed identity.
 
-    Not to be confused with 'sre access' (who can manage/use the agent) or
+    Used for the agent's Azure RBAC-gated calls. Not to be confused with 'sre access' (who can manage/use the agent) or
     'sre repo connect' (repo auth).
     """
 
 
 @register_command("sre identity assign")
 class IdentityAssign(_GeneratedIdentityAssign):
-    """Assign a system- and/or user-assigned managed identity to an SRE Agent.
+    """Assign a managed identity to an agent.
 
     :example: Turn on the agent's system-assigned identity
         az sre identity assign --agent-name myagent --resource-group myrg --system-assigned
@@ -1694,7 +1598,7 @@ class IdentityAssign(_GeneratedIdentityAssign):
 
 @register_command("sre identity remove")
 class IdentityRemove(_GeneratedIdentityRemove):
-    """Remove a system- and/or user-assigned managed identity from an SRE Agent.
+    """Remove a managed identity from an agent.
 
     :example: Turn off the agent's system-assigned identity
         az sre identity remove --agent-name myagent --resource-group myrg --system-assigned
@@ -1705,7 +1609,11 @@ class IdentityRemove(_GeneratedIdentityRemove):
 
 @register_command("sre identity show")
 class IdentityShow(_GeneratedIdentityShow):
-    """Show the managed identity (-ies) currently assigned to an SRE Agent."""
+    """Show the managed identities assigned to an agent.
+
+    :example: Show an agent's identities
+        az sre identity show -g myrg --agent-name myagent
+    """
 
     _args_schema = None
 
@@ -1729,7 +1637,7 @@ class IdentityShow(_GeneratedIdentityShow):
 # --------------------------------------------------------------------------------------------
 @register_command("sre agent list-models")
 class SupportedAgentModelList(_GeneratedSupportedAgentModelList):
-    """List the model providers/names supported for new SRE Agents in a region.
+    """List the models supported for new agents in a region.
 
     Use this before 'sre agent create' to confirm --default-model is
     supported in the region you're deploying to.
@@ -1863,6 +1771,9 @@ class AgentSettingsUpdate(AAZCommand):
     :example: Set the portal's "Custom instructions" text box
         az sre agent settings update -g myrg --agent-name myagent \\
             --value '{"customInstructions": "Always cite the runbook section you used."}'
+
+    :example: Allow, ask for approval, or deny specific tools
+        --value '{"toolPermissions": {"allow": ["kusto-query"], "ask": [], "deny": ["run-shell"]}}'
     """
 
     _args_schema = None
@@ -1879,19 +1790,9 @@ class AgentSettingsUpdate(AAZCommand):
         schema.value = AAZStrArg(
             options=["--value"],
             help=(
-                "Global settings as a JSON document (confirmed via the "
-                "control plane's own real round-trip integration test, "
-                "GlobalSettingsExtensionTests.cs). All top-level fields are "
-                "optional: toolPermissions, toolStatuses/skillStatuses "
-                "(arrays of {\"name\": ..., \"enabled\": true/false}), "
-                "customInstructions (string), approvalExpirationSetting "
-                "({\"enabled\": true/false, \"approvalExpirationInMinutes\": "
-                "<number>}). CAUTION: if you include toolPermissions at "
-                "all, it must have all three of 'allow'/'ask'/'deny' "
-                "(each an array of tool-name strings, [] if unused) -- "
-                "live-confirmed the real API rejects a partial "
-                "toolPermissions object (e.g. just 'deny') with a "
-                "misleading \"unrecognized property\" error."
+                "Settings as JSON. Optional fields: customInstructions, toolPermissions, "
+                "toolStatuses, skillStatuses, approvalExpirationSetting. If you set "
+                "toolPermissions, include all of allow, ask and deny (use [] if unused)."
             ),
             required=True,
         )
@@ -2045,10 +1946,7 @@ class _ManagedResourceScopeCommand(AAZCommand):
         )
         schema.target_subscription = AAZStrArg(
             options=["--target-subscription"],
-            help="Target subscription name or ID. Used alone for subscription-level "
-            "scope, or with --target-resource-group for resource-group-level scope. "
-            "(Named --target-subscription, not --subscription, because the latter is "
-            "a reserved global az CLI argument.)",
+            help="Target subscription name or ID. Alone: subscription scope. With --target-resource-group: resource-group scope.",
         )
         schema.target_resource_group = AAZStrArg(
             options=["--target-resource-group"],
@@ -2078,7 +1976,7 @@ class _ManagedResourceScopeCommand(AAZCommand):
 
 @register_command_group("sre managed-resource")
 class _ManagedResourceGroup(AAZCommandGroup):
-    """Let the agent's own managed identity monitor resources outside its own resource group.
+    """Let the agent monitor resources outside its resource group.
 
     Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles
     together on a subscription, resource group, or management group.
@@ -2087,7 +1985,7 @@ class _ManagedResourceGroup(AAZCommandGroup):
 
 @register_command("sre managed-resource grant")
 class ManagedResourceGrant(_ManagedResourceScopeCommand):
-    """Grant the agent's managed identity Reader + Monitoring Contributor on a scope.
+    """Give the agent Reader and Monitoring Contributor on a scope.
 
     :example: Grant on a subscription
         az sre managed-resource grant --agent-name myagent --resource-group myrg \\
@@ -2120,7 +2018,7 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
 
 @register_command("sre managed-resource revoke")
 class ManagedResourceRevoke(_ManagedResourceScopeCommand):
-    """Revoke the agent's managed identity's Reader + Monitoring Contributor on a scope.
+    """Remove the agent's Reader and Monitoring Contributor on a scope.
 
     :example: Revoke access to a resource group
         az sre managed-resource revoke --agent-name myagent --resource-group myrg \\
@@ -2144,8 +2042,9 @@ class ManagedResourceRevoke(_ManagedResourceScopeCommand):
 
 @register_command("sre managed-resource list")
 class ManagedResourceList(AAZCommand):
-    """List the external scopes the agent's managed identity currently has
-    access to (i.e. every role assignment where the agent is the assignee).
+    """List the scopes the agent's managed identity can access.
+
+    Shows every role assignment where the agent is the assignee.
 
     :example: List what an agent can currently monitor
         az sre managed-resource list --agent-name myagent --resource-group myrg
@@ -2257,9 +2156,7 @@ class KnowledgeCreate(AAZCommand):
         schema.url = AAZStrArg(
             options=["--url"],
             help="Web page URL to ingest. Required for --type webpage. "
-            "Live-confirmed wire shape: forwarded as extended-properties "
-            "url=<url> only (never --data-source, which the service rejects "
-            "with a 500 for this connector type).",
+            "Cannot be combined with --data-source.",
         )
         schema.data_source = AAZStrArg(
             options=["--data-source"],
@@ -2357,7 +2254,11 @@ class KnowledgeShow(AAZCommand):
 
 @register_command("sre knowledge list")
 class KnowledgeList(AAZCommand):
-    """List an SRE Agent's knowledge sources (files and web pages)."""
+    """List an SRE Agent's knowledge sources (files and web pages).
+
+    :example: List knowledge sources
+        az sre knowledge list -g myrg --agent-name myagent
+    """
 
     _args_schema = None
 
@@ -2496,11 +2397,10 @@ class Stop(_GeneratedStop):
 
 @register_command("sre endpoint show")
 class GetConnection(AAZCommand):
-    """Resolve and save an SRE Agent's data-plane connection.
+    """Save an agent's data-plane endpoint for other tools.
 
-    Mirrors 'az aks get-credentials' writing kubeconfig for kubectl: the
-    control plane and data plane are separate CLIs/binaries, and this
-    command is their only bridge.
+    Like 'az aks get-credentials', it writes the connection details that
+    data-plane tools read.
 
     :example: Resolve and save the data-plane endpoint for an agent
         az sre endpoint show --agent-name myagent --resource-group myrg
@@ -2522,9 +2422,7 @@ class GetConnection(AAZCommand):
         schema.data_plane_audience = AAZStrArg(
             options=["--data-plane-audience"],
             help=(
-                "Audience used to request the data-plane access token. "
-                "The data plane uses a separate token from the control "
-                "plane -- see running notes section 1a."
+                "Audience for the data-plane access token."
             ),
             default="https://azuresre.dev",
         )
@@ -2772,7 +2670,7 @@ class _RoleAssignmentScopeCommand(AAZCommand):
 
 @register_command("sre access grant")
 class GrantAccess(_RoleAssignmentScopeCommand):
-    """Grant a built-in SRE Agent RBAC role to a user, group, or principal.
+    """Grant an agent role to a user, group or principal.
 
     :example: Grant yourself admin access to an agent
         az sre access grant --name myagent --resource-group myrg --role admin --assignee-me
@@ -2804,7 +2702,7 @@ class GrantAccess(_RoleAssignmentScopeCommand):
 
 @register_command("sre access revoke")
 class RevokeAccess(_RoleAssignmentScopeCommand):
-    """Revoke a built-in SRE Agent RBAC role from a user, group, or principal.
+    """Revoke an agent role from a user, group or principal.
 
     :example: Revoke a user's access to an agent
         az sre access revoke --name myagent --resource-group myrg --role user --assignee someone@contoso.com
@@ -2868,7 +2766,7 @@ class AccessList(AAZCommand):
 
 @register_command("sre network update")
 class UpdateNetwork(AAZCommand):
-    """Configure VNet injection and sandbox egress for an SRE Agent (preview).
+    """Configure VNet injection and sandbox egress (preview).
 
     :example: Limit the agent's sandbox egress to one allowed host
         az sre network update --name myagent --resource-group myrg \\
@@ -2905,8 +2803,7 @@ class UpdateNetwork(AAZCommand):
         schema.sandbox_configuration = AAZObjectArg(
             options=["--sandbox-configuration"],
             help=(
-                "Sandbox egress/package configuration for code the agent runs. Shorthand "
-                "JSON, e.g. --sandbox-configuration \"{egress:{mode:Limited,allowed-hosts:[example.com]}}\"."
+                "Sandbox egress and packages. Shorthand, e.g. \"{egress:{mode:Limited,allowed-hosts:[example.com]}}\"."
             ),
         )
         sandbox_configuration = schema.sandbox_configuration
@@ -4091,20 +3988,8 @@ class ToolCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "tools"
     _args_schema = None
     _VALUE_HELP = (
-        "Tool configuration as a JSON document. Discriminator field is "
-        "\"type\" (not \"toolType\"), one of: KustoTool/LinkTool/PythonFunctionTool/"
-        "HttpClientTool. PythonTool is accepted as a legacy alias for "
-        "PythonFunctionTool. Common fields: type/name/description/connector/"
-        "toolMode/parameters. Per-type fields -- LinkTool: \"template\" "
-        "(not \"url\") e.g. {\"type\": \"LinkTool\", \"name\": \"docs\", "
-        "\"description\": \"...\", \"template\": \"https://...\"}; "
-        "KustoTool: database/query/clusterHint; HttpClientTool: url/method/"
-        "body/headers/auth (this is the one type that really does use "
-        "\"url\"); PythonFunctionTool: functionCode/timeoutSeconds/dependencies/"
-        "authEnabled/authScopes. Live-confirmed shape -- "
-        "\"toolType\"/\"url\" at the top level (an earlier, now-fixed "
-        "example) silently fails server-side with an opaque "
-        "InternalServerError, only \"type\"/\"template\" works for LinkTool."
+        "Tool configuration as JSON. \"type\" is KustoTool, LinkTool, PythonFunctionTool or "
+        "HttpClientTool. PythonTool is a legacy alias for PythonFunctionTool."
     )
 
 
@@ -4161,8 +4046,11 @@ class _AutomationGroup(AAZCommandGroup):
 
 @register_command_group("sre automation scheduled-task")
 class _AutomationScheduledTaskGroup(AAZCommandGroup):
-    """Manage scheduled tasks: run the agent on a timer (cron) against a
-    prompt, optionally bounded to a time window or a maximum run count."""
+    """Manage scheduled tasks that run the agent on a cron timer.
+
+    Runs the agent against a prompt, optionally bounded to a time window or
+    a maximum run count.
+    """
 
 
 @register_command("sre automation scheduled-task create")
@@ -4177,22 +4065,7 @@ class AutomationScheduledTaskCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "scheduledTasks"
     _args_schema = None
     _VALUE_HELP = (
-        "Scheduled task configuration as a JSON document. Fields: "
-        "\"cronExpression\" (standard 5-field cron, e.g. \"0 */6 * * *\" "
-        "for every 6 hours), \"agentPrompt\" (what to ask the agent each "
-        "run), \"description\", \"agent\" (name of a connected sub-agent "
-        "to target instead of the primary agent), \"threadId\" (continue "
-        "an existing conversation thread instead of starting a new one "
-        "each run -- confirmed via sreagent-runtime: leaving this unset "
-        "lets each run get its own thread, pinning it to a fixed value "
-        "reuses that one thread across every run (the portal's "
-        "\"Message grouping for updates\" dropdown is UI sugar over "
-        "this same field)), \"startTime\"/\"endTime\" (ISO 8601, bound the "
-        "schedule's active window), \"maxExecutions\" (stop after N "
-        "runs), \"notificationChannel\", \"modelTier\", \"agentMode\". "
-        "Example: {\"cronExpression\": \"0 9 * * 1-5\", \"agentPrompt\": "
-        "\"Summarize overnight alerts\", \"description\": \"Daily alert "
-        "digest\"}."
+        "Task configuration as JSON. Fields: cronExpression, agentPrompt, description, agent, threadId, startTime, endTime, maxExecutions."
     )
 
 
@@ -4237,8 +4110,11 @@ class AutomationScheduledTaskDelete(_PinnedExtensionDelete):
 
 @register_command_group("sre automation http-trigger")
 class _AutomationHttpTriggerGroup(AAZCommandGroup):
-    """Manage HTTP triggers: run the agent against a prompt from an inbound
-    webhook call instead of a schedule."""
+    """Manage HTTP triggers that run the agent on a webhook call.
+
+    Runs the agent against a prompt when an inbound webhook call arrives,
+    instead of on a schedule.
+    """
 
 
 @register_command("sre automation http-trigger create")
@@ -4253,16 +4129,7 @@ class AutomationHttpTriggerCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "httpTriggers"
     _args_schema = None
     _VALUE_HELP = (
-        "HTTP trigger configuration as a JSON document. Fields: "
-        "\"agentPrompt\" (what to ask the agent when the webhook fires), "
-        "\"description\", \"agent\" (name of a connected sub-agent to "
-        "target instead of the primary agent), \"threadId\" (continue an "
-        "existing conversation thread instead of starting a new one each "
-        "call -- same unset-vs-pinned behavior as scheduled-task's "
-        "threadId above), \"modelTier\", \"agentMode\". Example: "
-        "{\"agentPrompt\": "
-        "\"Investigate the attached alert payload\", \"description\": "
-        "\"Webhook from external monitor\"}."
+        "Trigger configuration as JSON. Fields: agentPrompt, description, agent, threadId."
     )
 
 
@@ -4464,8 +4331,7 @@ def _incident_filter_toggle_schema(cls, schema):
 # the filter through incidentFilterId. The portal grid lists the filter.
 @register_command_group("sre response-plan")
 class _ResponsePlanGroup(AAZCommandGroup):
-    """Manage incident response plans (portal: Incidents > "Triggers &
-    response plans"). A plan routes matching incidents to a subagent.
+    """Route incidents to a subagent (portal: Triggers & response plans).
 
     Match criteria use ARM; linked instructions use the agent API.
     """
@@ -4578,23 +4444,13 @@ def _response_plan_handler_fields(args):
 class ResponsePlanCreate(AAZCommand):
     """Create or update an incident response plan.
 
-    Routes incidents that match the criteria to a subagent. Connect the
-    incident platform first ('az sre agent update
-    --incident-management-configuration') and create the subagent first
-    ('az sre subagent create'). Behind the scenes this writes an incident
-    filter, plus an incident handler when --instructions or
-    --processing-guide is given.
+    Routes matching incidents to a subagent. Connect the incident platform and
+    create the subagent first.
 
     :example: Route high-severity Azure Monitor incidents to a subagent in review mode
         az sre response-plan create -g myrg --agent-name myagent -n sev1-api \\
             --platform AzMonitor --subagent incident-responder --priority Sev0 Sev1 \\
             --title-contains api --mode review
-
-    :example: Full setup order -- connect the platform, create the subagent, then the plan
-        az sre agent update -g myrg -n myagent --incident-management-configuration "{type:AzMonitor}"
-        az sre subagent create -g myrg --agent-name myagent -n incident-responder --value @subagent.json
-        az sre response-plan create -g myrg --agent-name myagent -n disk-space \\
-            --platform AzMonitor --subagent incident-responder --title-contains "disk space"
 
     :example: Skip noisy incidents and give the subagent step-by-step guidance
         az sre response-plan create -g myrg --agent-name myagent -n api-errors \\
@@ -4602,12 +4458,7 @@ class ResponsePlanCreate(AAZCommand):
             --title-not-contains test synthetic \\
             --processing-guide "Check recent deployments" "Query error rates in App Insights"
 
-    :example: Match by incident type and service, and tune incident merging
-        az sre response-plan create -g myrg --agent-name myagent -n web-livesite \\
-            --platform AzMonitor --subagent incident-responder --incident-type LiveSite \\
-            --impacted-service Web --merge-window-hours 6
-
-    :example: Change an existing plan with 'az sre response-plan update' (create needs --overwrite)
+    :example: Change an existing plan
         az sre response-plan update -g myrg --agent-name myagent -n api-errors --mode autonomous
     """
 
@@ -4704,7 +4555,7 @@ def _response_plan_apply_filter_changes(cli_ctx, agent_name, resource_group, nam
 
 @register_command("sre response-plan update")
 class ResponsePlanUpdate(AAZCommand):
-    """Update an existing response plan. Only the flags you pass change.
+    """Update a response plan. Only the flags you pass change.
 
     Passing a list flag (for example --priority) replaces that whole list.
     Use 'enable' or 'disable' to turn a plan on or off.
@@ -4778,7 +4629,7 @@ class ResponsePlanUpdate(AAZCommand):
 
 @register_command("sre response-plan show")
 class ResponsePlanShow(AAZCommand):
-    """Show a response plan and its instructions. Use --agent-url to read a shared agent.
+    """Show a response plan and its instructions.
 
     :example: Show one plan
         az sre response-plan show -g myrg --agent-name myagent -n sev1-api
@@ -5109,19 +4960,7 @@ class SubagentCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "subagents"
     _args_schema = None
     _VALUE_HELP = (
-        "Sub-agent configuration as a JSON document. Required fields: "
-        "instructions/handoffDescription (strings), tools/mcpTools/"
-        "commonTools/allowedSkills (arrays of strings -- 'tools' is this "
-        "sub-agent's base tool allowlist, typically just [\"ReadFile\"] "
-        "for a read-only specialist), allowParallelToolCalls (bool). "
-        "Optional: hooks -- {\"PreToolUse\": [{\"type\": \"command\", "
-        "\"matcher\": \"(?s:.*)\", \"timeout\": 30, \"failMode\": "
-        "\"block\", \"script\": \"...\"}]} (also settable via "
-        "--pre-tool-use-script-file). Live-confirmed shape -- the server "
-        "echoes back a much richer schema on read (handoffs, connectors, "
-        "agentsAsTools, maxReflectionCount, temperature, llmModelName, "
-        "permissions, etc.), all server-defaulted to null when omitted "
-        "here."
+        "Sub-agent configuration as JSON. Required: instructions, handoffDescription, tools, mcpTools, commonTools, allowedSkills, allowParallelToolCalls."
     )
 
     @classmethod
@@ -5225,50 +5064,23 @@ class _HookGroup(AAZCommandGroup):
 class HookCreate(_PinnedExtensionCreate):
     """Create or update a hook.
 
-    :example: Create a prompt-based hook that runs after every Bash tool call (live-verified payload)
+    :example: Run a prompt after every Bash tool call
         az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check \\
-            --value '{"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands", "hook": {"type": "prompt", "prompt": "Review the last tool call. If it looks destructive, warn the user.", "matcher": "Bash.*", "failMode": "Allow"}}'
+            --value @hook.json
 
-    :example: Create a command-based hook that runs after every Bash tool call (live-verified payload)
-        az sre hook create --agent-name myagent --resource-group myrg --name post-tool-echo \\
-            --value '{"eventType": "PostToolUse", "activationMode": "always", "description": "Blocks dangerous commands", "hook": {"type": "command", "command": "echo ok", "matcher": "Bash.*", "timeout": 30, "failMode": "Allow"}}'
+        hook.json:
+        {"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands",
+         "hook": {"type": "prompt", "prompt": "Warn if the last tool call looks destructive.",
+                  "matcher": "Bash.*", "failMode": "Allow"}}
 
-    :example: Windows PowerShell -- inline JSON with embedded quotes does not
-        survive az.cmd's batch-file argument re-tokenizing here. Recommended
-        fix: write the JSON to a file and pass --value @path instead
-        (live-verified, no quoting at all, works in plain powershell.exe/pwsh)
-        @'
-        {"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands", "hook": {"type": "prompt", "prompt": "Review the last tool call. If it looks destructive, warn the user.", "matcher": "Bash.*", "failMode": "Allow"}}
-        '@ | Set-Content -Path "$env:TEMP\\hook.json"
-        az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check --value "@$env:TEMP\\hook.json" --overwrite true
-
-    :example: Windows PowerShell -- alternative if you'd rather not write a
-        temp file: wrap the whole command in 'cmd /c' and backslash-escape the
-        inner double quotes (live-verified, also works, but --value @path
-        above is simpler and preferred)
-        cmd /c 'az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check --value "{\\"eventType\\": \\"PostToolUse\\", \\"activationMode\\": \\"always\\", \\"description\\": \\"Flag risky commands\\", \\"hook\\": {\\"type\\": \\"prompt\\", \\"prompt\\": \\"Review the last tool call. If it looks destructive, warn the user.\\", \\"matcher\\": \\"Bash.*\\", \\"failMode\\": \\"Allow\\"}}" --overwrite true'
+    :example: Run a command instead of a prompt
+        --value @hook.json, with "hook": {"type": "command", "command": "echo ok", "matcher": "Bash.*", "timeout": 30}
     """
 
     _EXTENSION_TYPE = "hooks"
     _args_schema = None
     _VALUE_HELP = (
-        "Hook configuration as a JSON document, e.g. "
-        "{\"eventType\": \"Stop\", \"activationMode\": \"always\", "
-        "\"description\": \"...\", \"hook\": {\"type\": \"prompt\", "
-        "\"prompt\": \"...\"}} -- top-level fields: eventType (\"Start\", "
-        "\"PreToolUse\", \"PostToolUse\", or \"Stop\"; the portal UI only "
-        "offers the latter two today)/activationMode "
-        "(\"always\" or \"onDemand\", lowercase)/description, plus a nested "
-        "\"hook\" object: type (\"prompt\" or \"command\")/prompt/command/"
-        "script/matcher/model/timeout/failMode (\"Allow\" or \"Block\" -- "
-        "what happens if the hook itself errors/times out, not its "
-        "decision)/maxRejections/sources. "
-        "Live-confirmed shape -- do not put hookType/prompt at the top "
-        "level, they must be nested under \"hook\". "
-        "IMPORTANT: --value.hook.matcher (a tool-name regex, e.g. "
-        "\"Bash.*\") is required when eventType is \"PreToolUse\" or "
-        "\"PostToolUse\" -- the real API rejects an otherwise-identical "
-        "payload without it; not required for \"Start\"/\"Stop\"."
+        "Hook configuration as JSON: eventType, activationMode, description and a nested \"hook\" object. hook.matcher is required for PreToolUse and PostToolUse."
     )
 
 
@@ -5325,7 +5137,7 @@ class _InstructionsGroup(AAZCommandGroup):
 
 @register_command("sre instructions create")
 class InstructionsCreate(_PinnedExtensionCreate):
-    """Create or update a named, reusable prompt snippet ('commonPrompts').
+    """Create or update a reusable prompt snippet.
 
     WARNING -- this does NOT set the portal's single "Custom instructions"
     text box. Use 'az sre agent settings update' for that instead.
@@ -5357,11 +5169,7 @@ class InstructionsCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "commonPrompts"
     _args_schema = None
     _VALUE_HELP = (
-        "Prompt snippet as a JSON document of the form "
-        "{\"prompt\": \"...\"} -- the \"prompt\" field holds the free text "
-        "(confirmed live round-trip). NOT the portal's 'Custom "
-        "instructions' box -- use 'az sre agent settings update "
-        "--value \\'{\"customInstructions\": \"...\"}\\'' for that."
+        "Prompt snippet as JSON: {\"prompt\": \"...\"}. For custom instructions, use 'az sre agent settings update'."
     )
 
 
@@ -5383,7 +5191,7 @@ class InstructionsShow(_PinnedExtensionShow):
 
 @register_command("sre instructions list")
 class InstructionsList(_PinnedExtensionList):
-    """List an agent's named, reusable prompt snippets ('commonPrompts').
+    """List an agent's reusable prompt snippets.
 
     WARNING -- NOT the portal's "Custom instructions" box; see
     'sre instructions create -h'.
@@ -5452,13 +5260,7 @@ class PluginMarketplaceCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "pluginMarketplaces"
     _args_schema = None
     _VALUE_HELP = (
-        "Marketplace configuration as a JSON document. Fields: sourceType "
-        "(\"github\"), sourceUrl (\"owner/repo\" short form, NOT a full "
-        "https:// URL -- a full URL is rejected server-side as an invalid "
-        "extension configuration), owner ({\"name\": \"...\"}), "
-        "description. Example: {\"sourceType\": \"github\", \"sourceUrl\": "
-        "\"owner/repo\", \"owner\": {\"name\": \"owner\"}, \"description\": "
-        "\"...\"}."
+        "Marketplace configuration as JSON. Fields: sourceType (\"github\"), sourceUrl (\"owner/repo\", not a full URL), owner, description."
     )
 
 
@@ -5531,12 +5333,7 @@ class PluginInstallCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "pluginInstallations"
     _args_schema = None
     _VALUE_HELP = (
-        "Plugin install configuration as a JSON document, e.g. "
-        "{\"marketplaceName\": \"<name from 'sre plugin marketplace list'>\", "
-        "\"pluginName\": \"<plugin>\", \"source\": {\"type\": \"relative\", "
-        "\"repo\": \"<marketplace sourceUrl>\", \"url\": \"<plugin's path in the repo>\"}}. "
-        "The 'source' block is required on create -- the service does not "
-        "auto-resolve it from marketplaceName/pluginName alone."
+        "Plugin install configuration as JSON. Requires marketplaceName, pluginName and a \"source\" block."
     )
 
 
@@ -5758,16 +5555,13 @@ def _detect_repo_provider(repo_url):
 
 @register_command("sre repo connect")
 class RepoConnect(AAZCommand):
-    """Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
+    """Connect a GitHub or Azure DevOps repo to an agent.
 
-    :example: Connect a GitHub repo (provider auto-detected from the URL;
-        resolves a token automatically -- explicit flag, or a browser-based
-        device-flow prompt, in that order)
+    :example: Connect a GitHub repo
         az sre repo connect --agent-name myagent --resource-group myrg \\
             --repo-url https://github.com/contoso/my-service
 
-    :example: Connect a GitHub repo with an explicit token (e.g. in CI, where
-        no interactive browser is available)
+    :example: Connect a GitHub repo with a token
         az sre repo connect --agent-name myagent --resource-group myrg \\
             --repo-url https://github.com/contoso/my-service \\
             --github-token $env:GITHUB_TOKEN
@@ -5776,8 +5570,7 @@ class RepoConnect(AAZCommand):
         az sre repo connect --agent-name myagent --resource-group myrg \\
             --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo
 
-    :example: Azure DevOps org blocks PAT creation ("org has a policy
-        blocking PAT creation") -- use the agent's own managed identity instead
+    :example: Connect an Azure DevOps repo with a managed identity
         az sre repo connect --agent-name myagent --resource-group myrg \\
             --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo \\
             --devops-auth-type managed-identity --devops-identity <agent-identity-resource-id>
@@ -5798,8 +5591,7 @@ class RepoConnect(AAZCommand):
         schema.resource_group = AAZResourceGroupNameArg(required=True)
         schema.repo_url = AAZStrArg(
             options=["--repo-url"],
-            help="HTTPS clone URL of the repo, e.g. https://github.com/org/repo "
-            "or https://dev.azure.com/org/project/_git/repo.",
+            help="HTTPS clone URL of the repo.",
             required=True,
         )
         schema.provider = AAZStrArg(
@@ -5817,48 +5609,29 @@ class RepoConnect(AAZCommand):
         )
         schema.github_token = AAZStrArg(
             options=["--github-token"],
-            help="GitHub token to use directly (GitHub repos only). No 'gh' "
-            "CLI or Azure CLI needed when this, or the GITHUB_TOKEN/GH_TOKEN "
-            "env vars, are set. If omitted, this command falls back to a "
-            "native GitHub OAuth Device Flow in your browser -- no 'gh' "
-            "required.",
+            help="GitHub token. Default: GITHUB_TOKEN/GH_TOKEN, else browser sign-in.",
         )
         schema.devops_organization = AAZStrArg(
             options=["--devops-organization"],
-            help="Azure DevOps organization name, e.g. 'contoso' for "
-            "dev.azure.com/contoso (Azure DevOps repos only; auto-detected "
-            "from --repo-url when it is a dev.azure.com URL).",
+            help="Azure DevOps organization. Default: taken from --repo-url.",
         )
         schema.devops_auth_type = AAZStrArg(
             options=["--devops-auth-type"],
-            help="Azure DevOps auth mechanism. 'pat' (default) mints a PAT via "
-            "the vssps REST API -- some orgs block this with a "
-            "'DisablePatCreationPolicyViolation' org policy, in which case use "
-            "'managed-identity' with --devops-identity instead (the identity "
-            "must already be added as a user/group member of the Azure DevOps "
-            "org -- this command does not grant that membership).",
+            help="Azure DevOps auth method. Use managed-identity if your org blocks PAT creation.",
             enum={"pat": "pat", "managed-identity": "managed-identity"},
             default="pat",
         )
         schema.devops_identity = AAZStrArg(
             options=["--devops-identity"],
-            help="Resource ID of the user- or system-assigned managed identity "
-            "to authenticate with Azure DevOps as (required when "
-            "--devops-auth-type managed-identity). Typically the SRE Agent's "
-            "own identity -- see 'az sre agent show --query identity'.",
+            help="Managed identity resource ID. Required with --devops-auth-type managed-identity.",
         )
         schema.devops_federated_client_id = AAZStrArg(
             options=["--devops-federated-client-id"],
-            help="Federated client ID, only needed alongside "
-            "--devops-federated-tenant-id for a user-assigned identity in a "
-            "different tenant than the Azure DevOps org (managed-identity auth "
-            "only; both or neither must be set).",
+            help="Federated client ID, for an identity in a different tenant. Use with --devops-federated-tenant-id.",
         )
         schema.devops_federated_tenant_id = AAZStrArg(
             options=["--devops-federated-tenant-id"],
-            help="Federated tenant ID, only needed alongside "
-            "--devops-federated-client-id (managed-identity auth only; both or "
-            "neither must be set).",
+            help="Federated tenant ID. Use with --devops-federated-client-id.",
         )
         cls._args_schema = schema
         return schema

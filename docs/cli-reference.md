@@ -36,9 +36,9 @@ These Azure CLI global options apply to every command and are not repeated in ea
 
 ## `az sre`
 
-Manage Azure SRE Agent resources -- the agent itself, what it can access, how it's customized, who can use it, and how it's doing.
+Manage Azure SRE Agent resources.
 
-Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "value"}') can fail with a confusing "unrecognized arguments" error -- a PowerShell/.cmd quoting quirk, not an az sre bug. Workaround: pass --value @path\to\file.json instead.
+In PowerShell, pass JSON with --value @file.json instead of inline.
 
 | Subgroup | Summary |
 | --- | --- |
@@ -48,14 +48,14 @@ Windows PowerShell note: inline JSON in --value/etc. (e.g. --value '{"key": "val
 | `connector` | Connect an SRE Agent to an external data source it can query or act on. |
 | `endpoint` | Resolve the URL used to actually talk to an SRE Agent's data plane. |
 | `hook` | Manage lifecycle hooks that run a prompt or script at a specific agent event. |
-| `identity` | Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls. |
+| `identity` | Manage the agent's own managed identity. |
 | `instructions` | Manage named, reusable prompt snippets ('commonPrompts'). |
 | `knowledge` | Add files or web pages the agent can read and reason over. |
-| `managed-resource` | Let the agent's own managed identity monitor resources outside its own resource group. |
+| `managed-resource` | Let the agent monitor resources outside its resource group. |
 | `network` | Control an SRE Agent's sandbox networking (preview). |
 | `plugin` | Manage community plugins that add skills, tools, and integrations. |
 | `repo` | Connect a code repository so the agent can read source during investigations. |
-| `response-plan` | Manage incident response plans (portal: Incidents > "Triggers & |
+| `response-plan` | Route incidents to a subagent (portal: Triggers & response plans). |
 | `skill` | Manage custom skills -- specialized capabilities the agent can use. |
 | `subagent` | Manage named sub-agents the meta-agent can hand off work to. |
 | `tool` | Manage custom tools the agent can call. |
@@ -75,7 +75,7 @@ This is the mirror image of 'sre managed-resource': that group grants the agent'
 
 ### `az sre access grant`
 
-Grant a built-in SRE Agent RBAC role to a user, group, or principal.
+Grant an agent role to a user, group or principal.
 
 **Syntax**
 
@@ -121,7 +121,7 @@ assignment scoped to the agent itself.
 
 ### `az sre access revoke`
 
-Revoke a built-in SRE Agent RBAC role from a user, group, or principal.
+Revoke an agent role from a user, group or principal.
 
 **Syntax**
 
@@ -176,18 +176,18 @@ Create an SRE Agent.
 | `--no-wait` | Flag | No |  |  | Do not wait for the long-running operation to finish. |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--system-assigned`, `--mi-system-assigned` | String | No |  |  | Set the system managed identity. |
-| `--user-assigned`, `--mi-user-assigned` | List | No |  |  | Set the user managed identities. |
+| `--system-assigned`, `--mi-system-assigned` | String | No |  |  | Enable the system-assigned identity. Default: a user-assigned identity is created and both are enabled. |
+| `--user-assigned`, `--mi-user-assigned` | List | No |  |  | User-assigned identities to attach. |
 | `--action-configuration` | Object | No |  |  | Configuration for action |
 | `--agent-identity` | Object | No |  |  | Agent identity configuration for accessing resources |
 | `--default-model` | Object | No |  |  | Default AI model configuration for the agent |
 | `--incident-management-configuration` | Object | No |  |  | Incident management configurations |
 | `--knowledge-graph-configuration` | Object | No |  |  | Knowledge graph configuration for agent |
-| `--log-configuration` | Object | No |  |  | Log configurations. If omitted, the agent is created without an Application Insights link (not required by the service, but you lose trace view -- a warning is printed). |
+| `--log-configuration` | Object | No |  |  | Application Insights link for traces. Without it, a warning is shown and trace view is unavailable. |
 | `--upgrade-channel` | String | No |  | `Preview`, `Stable` | The upgrade channel of the agent |
 | `--location`, `-l` | String | Yes |  |  | The geo-location where the resource lives |
 | `--tags` | Dictionary | No |  |  | Resource tags. |
-| `--grant-access-to-me` | String | No |  | `admin`, `user`, `author`, `reader` | Grant the signed-in user a built-in SRE Agent role immediately after creating the agent: 'admin', 'user', 'author', or 'reader'. Resolves your object ID via 'az ad signed-in-user show' automatically -- equivalent to running 'sre access grant --assignee <your-object-id>' as a separate, manual follow-up command. Cannot be combined with --no-wait (the grant runs in post_operations, which the no-wait code path never reaches). |
+| `--grant-access-to-me` | String | No |  | `admin`, `user`, `author`, `reader` | Grant yourself a built-in role after creation. Cannot be used with --no-wait. |
 
 **Examples**
 
@@ -244,7 +244,7 @@ List SRE Agents in a subscription or resource group.
 
 ### `az sre agent list-models`
 
-List the model providers/names supported for new SRE Agents in a region.
+List the models supported for new agents in a region.
 
 Use this before 'sre agent create' to confirm --default-model is supported in the region you're deploying to.
 
@@ -374,6 +374,12 @@ Place the CLI in a waiting state until a condition is met.
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
+**Examples**
+
+- Wait until the agent finishes provisioning
+
+  `az sre agent wait -g myrg --agent-name myagent --created`
+
 ## `az sre automation`
 
 Manage agent automations.
@@ -382,14 +388,12 @@ Covers scheduled tasks and HTTP triggers. Response plans live under 'az sre resp
 
 | Subgroup | Summary |
 | --- | --- |
-| `http-trigger` | Manage HTTP triggers: run the agent against a prompt from an inbound |
-| `scheduled-task` | Manage scheduled tasks: run the agent on a timer (cron) against a |
+| `http-trigger` | Manage HTTP triggers that run the agent on a webhook call. |
+| `scheduled-task` | Manage scheduled tasks that run the agent on a cron timer. |
 
 ## `az sre connector`
 
 Connect an SRE Agent to an external data source it can query or act on.
-
-Use 'sre connector create' to add one, 'sre connector list'/'show' to see what's connected (see --help on those for the full supported type list). The portal's larger "Additional connectors" catalog (Gmail, SharePoint, OneDrive, etc.) has no public API yet -- portal-only.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -414,48 +418,39 @@ Create an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Type of the data connector. Portal display name shown first, wire/API value in parentheses (both accepted, case-insensitive): 'Azure Data Explorer' (KustoClient -- the default type, matching the portal's own 'Azure Data Explorer' option exactly; no --data-source needed), 'Azure Data Explorer Cluster' (Kusto -- legacy, pinned to one cluster via --data-source, no portal entry point), 'MCP server' (Mcp, a.k.a. 'User provided connector' -- possibly also PagerDuty/ServiceNow/etc. via a custom endpoint, not a separate type; note Datadog/Splunk/S360/EV2 have their own dedicated portal cards and may not actually route through this generic type -- unverified), 'Office 365 Outlook' (Outlook), 'Microsoft Teams' (Teams), 'IcM connector' (Icm, a.k.a. 'Microsoft IcM', singleton per agent), 'DGrep' (Dgrep, a.k.a. 'Microsoft DGrep', singleton per agent), 'Log Analytics Workspace' (LogAnalytics), 'EV2' (Ev2Mcp), 'Geneva Metrics' (GenevaMetrics -- restricted to Microsoft's 13 known first-party tenants, matching the portal's own connector-picker gate), 'S360 connector' (S360), 'Documentation connector' (Documentation), 'Database query connector (user)' (KustoUser -- correlation not create-and-inspect confirmed), 'Database indexing connector' (KustoDataIndexer -- same caveat), 'Azure DevOps AI Search' (AzureDevOpsBuiltinMcp -- same caveat), and four knowledge-item types that need --extended-properties instead of --data-source: 'KnowledgeText', 'KnowledgeFile', 'KnowledgeWebPage', 'KnowledgeRepository' (none of these four appear in the portal's Connectors picker -- they live in a separate portal section). Also accepts 'TsgCrawler', 'ConnectorGateway', 'AzureMonitor', 'MonitorClient' (no portal picker card found for any of these), and one of 'AppInsights'/'ApplicationInsights' (the portal shows a single 'Application Insights' card, but which of these two wire values it persists as is not yet confirmed -- both are accepted here). |
-| `--data-source` | String | No |  |  | Data source connection string or endpoint. For 'Kusto' (Azure Data Explorer Cluster), this must include a database name, e.g. 'https://cluster.kusto.windows.net/databasename' -- a bare cluster URL with no database is rejected server-side with 'Kusto DataSource must include a database name'. |
-| `--endpoint` | String | No |  |  | Endpoint of the connector |
-| `--extended-properties` | Dictionary | No |  |  | Additional properties for the data connector which can be used to store custom key-value pairs |
-| `--identity` | String | No |  |  | Identity used to access the data source |
-| `--file-path` | String | No |  |  | Local file to ingest, instead of hand-building --extended-properties yourself. For --data-connector-type KnowledgeFile, the CLI reads and base64-encodes the file into extended-properties.fileContent/fileName. For KnowledgeText, the CLI reads the file as UTF-8 text into extended-properties.content. |
-| `--mcp-endpoint` | String | No |  |  | For --data-connector-type Mcp: the MCP server's HTTP endpoint URL. Builds both --data-source and the nested extended-properties.transport/endpoint the service actually requires (confirmed live: a bare --data-source alone is rejected with 'Endpoint value is required for MCP connector with HTTP transport.'). |
-| `--github` | Boolean | No |  | `false`, `true` | For --data-connector-type Mcp: shortcut for --mcp-endpoint pointed at the real public GitHub Copilot MCP server (https://api.githubcopilot.com/mcp/). |
-| `--tool-access` | Boolean | No |  | `false`, `true` | For --data-connector-type KustoClient/'Azure Data Explorer': shortcut for the portal's 'Allow agent to use query tools from this connector' checkbox (Review + add step). Builds extended-properties.toolsVisibleToMetaAgent -- true sets it to ['*'], false to [] (confirmed live: both values persist and read back correctly). |
-| `--bearer-token` | String | No |  |  | For --data-connector-type Mcp: a static bearer token/PAT/API key sent on every request to the MCP server (the portal wizard's 'Bearer token' authentication method). Builds extended-properties.authType=BearerToken + bearerToken. |
-| `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For --data-connector-type Mcp: authenticate to the MCP server using the agent's managed identity (the portal wizard's 'Managed identity' authentication method; combine with --identity to pick a user-assigned identity instead of the system-assigned default, same as other connector types). Builds extended-properties.authType=AzureARM. Implied by --mi-token-scope if that is passed alone. |
-| `--mi-token-scope` | String | No |  |  | For --data-connector-type Mcp with --managed-identity-auth: the Azure AD token scope/audience to request (the portal wizard's 'Azure AD token scope' free-text field). Builds extended-properties.armScope. Defaults to 'https://management.azure.com/.default' if omitted, matching the portal's own default. |
-| `--oauth-dcr` | Boolean | No |  | `false`, `true` | For --data-connector-type Mcp: use OAuth with Dynamic Client Registration (the portal wizard's 'OAuth (dynamic client registration)' authentication method -- the one that shows a real browser 'Authorize' consent redirect; pre-registered client IDs/secrets are not supported, matching the portal's own text). Builds extended-properties.authType=SpecOAuth. Consent is completed afterwards in the portal, not by this command. |
-| `--oauth-scopes` | String | No |  |  | For --data-connector-type Mcp with --oauth-dcr true: comma-separated OAuth scopes to request during the DCR consent flow. Builds extended-properties.scopes. |
-| `--oauth-client-name` | String | No |  |  | For --data-connector-type Mcp with --oauth-dcr true: the client name to register during Dynamic Client Registration. Builds extended-properties.dcrClientName. Optional -- the service picks a default name if omitted. |
+| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. |
+| `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
+| `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
+| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
+| `--identity` | String | No |  |  | Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity. |
+| `--file-path` | String | No |  |  | Local file to ingest. KnowledgeFile: base64-encoded and uploaded. KnowledgeText: read as UTF-8 text. |
+| `--mcp-endpoint` | String | No |  |  | For Mcp: the MCP server's HTTP endpoint URL. |
+| `--github` | Boolean | No |  | `false`, `true` | For Mcp: connect the public GitHub Copilot MCP server (https://api.githubcopilot.com/mcp/). |
+| `--tool-access` | Boolean | No |  | `false`, `true` | For KustoClient: let the agent use query tools from this connector (portal 'Allow agent to use query tools'). |
+| `--bearer-token` | String | No |  |  | For Mcp: static bearer token, PAT or API key sent with every request. |
+| `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one. |
+| `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth: token scope to request. Default: https://management.azure.com/.default. |
+| `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
+| `--oauth-scopes` | String | No |  |  | For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. |
+| `--oauth-client-name` | String | No |  |  | For Mcp with --oauth-dcr: client name to register. Optional. |
 
 **Examples**
 
-- Connect an agent to Azure Data Explorer -- matches the portal's
+- Connect Azure Data Explorer
 
-  `"Add connector" > "Azure Data Explorer" flow exactly: just a name and type, no --data-source or --mcp-endpoint needed (uses the agent's system-assigned identity by default, same as the portal) az sre connector create --agent-name myagent --resource-group myrg \ --name azure-data-explorer --data-connector-type "Azure Data Explorer"`
-- Same, but with a user-assigned identity (portal's "Add identity")
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name adx --data-connector-type "Azure Data Explorer"`
+- Connect the GitHub MCP server
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name azure-data-explorer --data-connector-type "Azure Data Explorer" \ --identity /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<identity>`
-- Connect an agent's GitHub MCP connector using your own gh auth
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name github --data-connector-type Mcp --github true`
+- Connect a custom MCP server with a bearer token
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp --data-connector-type Mcp --github true`
-- Connect a custom MCP server by its own endpoint (live-verified payload)
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name mcp --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --bearer-token "$MY_SERVER_TOKEN"`
+- Connect a custom MCP server with the agent's managed identity
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp-custom --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp"`
-- Connect a custom MCP server using a static bearer token/PAT
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name mcp --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --managed-identity-auth true`
+- Connect one Kusto cluster and database
 
-  `(portal's "Bearer token" authentication method) az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp-bearer --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --bearer-token "$MY_SERVER_TOKEN"`
-- Connect a custom MCP server using the agent's managed identity
-
-  `(portal's "Managed identity" authentication method; combine with --identity to use a user-assigned identity instead of the system-assigned default) az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp-mi --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --managed-identity-auth true --mi-token-scope "api://myserver/.default"`
-- Connect a custom MCP server using OAuth with Dynamic Client
-
-  `Registration (portal's "OAuth (dynamic client registration)" authentication method -- finish consent afterwards in the portal) az sre connector create --agent-name myagent --resource-group myrg \ --name conn-mcp-oauth --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" --oauth-dcr true`
-- Connect a single Kusto/Azure Data Explorer cluster+database directly
-
-  `(legacy 'Kusto' type, as opposed to the default 'KustoClient'/"Azure Data Explorer" type above -- --data-source must include the database name, live-verified payload) az sre connector create --agent-name myagent --resource-group myrg \ --name my-cluster --data-connector-type Kusto \ --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"`
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name kusto --data-connector-type Kusto \ --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"`
 
 ### `az sre connector delete`
 
@@ -473,11 +468,17 @@ Delete an Agent Connector.
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
 
+**Examples**
+
+- Delete a connector without a prompt
+
+  `az sre connector delete -g myrg --agent-name myagent -n conn-kusto --yes`
+
 ### `az sre connector list`
 
-List an SRE Agent's Connectors, including OAuth consent status
+List connectors, including OAuth consent status.
 
-(consentStatus: Consented/PendingConsent) for EntraOAuth-backed Mcp connectors.
+consentStatus (Consented/PendingConsent) is shown for EntraOAuth-backed Mcp connectors.
 
 **Syntax**
 
@@ -490,9 +491,15 @@ List an SRE Agent's Connectors, including OAuth consent status
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
+**Examples**
+
+- List an agent's connectors
+
+  `az sre connector list -g myrg --agent-name myagent`
+
 ### `az sre connector list-secret`
 
-Get a Data Connector's details including its secret(s) in plain text.
+Show a connector with its secrets in plain text.
 
 Unlike 'sre connector show'/'sre connector list', which redact secret fields server-side, this command returns them unredacted.
 
@@ -514,9 +521,9 @@ Unlike 'sre connector show'/'sre connector list', which redact secret fields ser
 
 ### `az sre connector show`
 
-Show the details of an Agent Connector, including OAuth consent
+Show a connector, including OAuth consent status.
 
-status for EntraOAuth-backed Mcp connectors.
+consentStatus is shown for EntraOAuth-backed Mcp connectors.
 
 **Syntax**
 
@@ -527,6 +534,12 @@ status for EntraOAuth-backed Mcp connectors.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- Show one connector
+
+  `az sre connector show -g myrg --agent-name myagent -n conn-kusto`
 
 ### `az sre connector update`
 
@@ -546,11 +559,17 @@ Update an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Type of the data connector. Portal display name shown first, wire/API value in parentheses (both accepted, case-insensitive): 'Azure Data Explorer' (KustoClient -- the default type, matching the portal's own 'Azure Data Explorer' option exactly; no --data-source needed), 'Azure Data Explorer Cluster' (Kusto -- legacy, pinned to one cluster via --data-source, no portal entry point), 'MCP server' (Mcp, a.k.a. 'User provided connector' -- possibly also PagerDuty/ServiceNow/etc. via a custom endpoint, not a separate type; note Datadog/Splunk/S360/EV2 have their own dedicated portal cards and may not actually route through this generic type -- unverified), 'Office 365 Outlook' (Outlook), 'Microsoft Teams' (Teams), 'IcM connector' (Icm, a.k.a. 'Microsoft IcM', singleton per agent), 'DGrep' (Dgrep, a.k.a. 'Microsoft DGrep', singleton per agent), 'Log Analytics Workspace' (LogAnalytics), 'EV2' (Ev2Mcp), 'Geneva Metrics' (GenevaMetrics -- restricted to Microsoft's 13 known first-party tenants, matching the portal's own connector-picker gate), 'S360 connector' (S360), 'Documentation connector' (Documentation), 'Database query connector (user)' (KustoUser -- correlation not create-and-inspect confirmed), 'Database indexing connector' (KustoDataIndexer -- same caveat), 'Azure DevOps AI Search' (AzureDevOpsBuiltinMcp -- same caveat), and four knowledge-item types that need --extended-properties instead of --data-source: 'KnowledgeText', 'KnowledgeFile', 'KnowledgeWebPage', 'KnowledgeRepository' (none of these four appear in the portal's Connectors picker -- they live in a separate portal section). Also accepts 'TsgCrawler', 'ConnectorGateway', 'AzureMonitor', 'MonitorClient' (no portal picker card found for any of these), and one of 'AppInsights'/'ApplicationInsights' (the portal shows a single 'Application Insights' card, but which of these two wire values it persists as is not yet confirmed -- both are accepted here). |
-| `--data-source` | String | No |  |  | Data source connection string or endpoint. For 'Kusto' (Azure Data Explorer Cluster), this must include a database name, e.g. 'https://cluster.kusto.windows.net/databasename' -- a bare cluster URL with no database is rejected server-side with 'Kusto DataSource must include a database name'. |
-| `--endpoint` | String | No |  |  | Endpoint of the connector |
-| `--extended-properties` | Dictionary | No |  |  | Additional properties for the data connector which can be used to store custom key-value pairs |
-| `--identity` | String | No |  |  | Identity used to access the data source |
+| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. |
+| `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
+| `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
+| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
+| `--identity` | String | No |  |  | Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity. |
+
+**Examples**
+
+- Point a Kusto connector at a different database
+
+  `az sre connector update -g myrg --agent-name myagent -n conn-kusto \ --data-connector-type Kusto \ --data-source https://mycluster.kusto.windows.net/mydb`
 
 ## `az sre endpoint`
 
@@ -564,9 +583,9 @@ Use 'sre endpoint show' to look up and save that live endpoint.
 
 ### `az sre endpoint show`
 
-Resolve and save an SRE Agent's data-plane connection.
+Save an agent's data-plane endpoint for other tools.
 
-Mirrors 'az aks get-credentials' writing kubeconfig for kubectl: the control plane and data plane are separate CLIs/binaries, and this command is their only bridge.
+Like 'az aks get-credentials', it writes the connection details that data-plane tools read.
 
 **Syntax**
 
@@ -576,7 +595,7 @@ Mirrors 'az aks get-credentials' writing kubeconfig for kubectl: the control pla
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent to connect to. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-plane-audience` | String | No | https://azuresre.dev |  | Audience used to request the data-plane access token. The data plane uses a separate token from the control plane -- see running notes section 1a. |
+| `--data-plane-audience` | String | No | https://azuresre.dev |  | Audience for the data-plane access token. |
 
 **Examples**
 
@@ -610,23 +629,17 @@ Create or update a hook.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Hook configuration as a JSON document, e.g. {"eventType": "Stop", "activationMode": "always", "description": "...", "hook": {"type": "prompt", "prompt": "..."}} -- top-level fields: eventType ("Start", "PreToolUse", "PostToolUse", or "Stop"; the portal UI only offers the latter two today)/activationMode ("always" or "onDemand", lowercase)/description, plus a nested "hook" object: type ("prompt" or "command")/prompt/command/script/matcher/model/timeout/failMode ("Allow" or "Block" -- what happens if the hook itself errors/times out, not its decision)/maxRejections/sources. Live-confirmed shape -- do not put hookType/prompt at the top level, they must be nested under "hook". IMPORTANT: --value.hook.matcher (a tool-name regex, e.g. "Bash.*") is required when eventType is "PreToolUse" or "PostToolUse" -- the real API rejects an otherwise-identical payload without it; not required for "Start"/"Stop". |
+| `--value` | String | Yes |  |  | Hook configuration as JSON: eventType, activationMode, description and a nested "hook" object. hook.matcher is required for PreToolUse and PostToolUse. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**
 
-- Create a prompt-based hook that runs after every Bash tool call (live-verified payload)
+- Run a prompt after every Bash tool call
 
-  `az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check \ --value '{"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands", "hook": {"type": "prompt", "prompt": "Review the last tool call. If it looks destructive, warn the user.", "matcher": "Bash.*", "failMode": "Allow"}}'`
-- Create a command-based hook that runs after every Bash tool call (live-verified payload)
+  `az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check \ --value @hook.json hook.json: {"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands", "hook": {"type": "prompt", "prompt": "Warn if the last tool call looks destructive.", "matcher": "Bash.*", "failMode": "Allow"}}`
+- Run a command instead of a prompt
 
-  `az sre hook create --agent-name myagent --resource-group myrg --name post-tool-echo \ --value '{"eventType": "PostToolUse", "activationMode": "always", "description": "Blocks dangerous commands", "hook": {"type": "command", "command": "echo ok", "matcher": "Bash.*", "timeout": 30, "failMode": "Allow"}}'`
-- Windows PowerShell -- inline JSON with embedded quotes does not
-
-  `survive az.cmd's batch-file argument re-tokenizing here. Recommended fix: write the JSON to a file and pass --value @path instead (live-verified, no quoting at all, works in plain powershell.exe/pwsh) @' {"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands", "hook": {"type": "prompt", "prompt": "Review the last tool call. If it looks destructive, warn the user.", "matcher": "Bash.*", "failMode": "Allow"}} '@ \| Set-Content -Path "$env:TEMP\hook.json" az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check --value "@$env:TEMP\hook.json" --overwrite true`
-- Windows PowerShell -- alternative if you'd rather not write a
-
-  `temp file: wrap the whole command in 'cmd /c' and backslash-escape the inner double quotes (live-verified, also works, but --value @path above is simpler and preferred) cmd /c 'az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check --value "{\"eventType\": \"PostToolUse\", \"activationMode\": \"always\", \"description\": \"Flag risky commands\", \"hook\": {\"type\": \"prompt\", \"prompt\": \"Review the last tool call. If it looks destructive, warn the user.\", \"matcher\": \"Bash.*\", \"failMode\": \"Allow\"}}" --overwrite true'`
+  `--value @hook.json, with "hook": {"type": "command", "command": "echo ok", "matcher": "Bash.*", "timeout": 30}`
 
 ### `az sre hook delete`
 
@@ -690,9 +703,9 @@ Show a hook.
 
 ## `az sre identity`
 
-Manage the SRE Agent's own managed identity, used for its Azure RBAC-gated calls.
+Manage the agent's own managed identity.
 
-Not to be confused with 'sre access' (who can manage/use the agent) or 'sre repo connect' (repo auth).
+Used for the agent's Azure RBAC-gated calls. Not to be confused with 'sre access' (who can manage/use the agent) or 'sre repo connect' (repo auth).
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -702,7 +715,7 @@ Not to be confused with 'sre access' (who can manage/use the agent) or 'sre repo
 
 ### `az sre identity assign`
 
-Assign a system- and/or user-assigned managed identity to an SRE Agent.
+Assign a managed identity to an agent.
 
 **Syntax**
 
@@ -727,7 +740,7 @@ Assign a system- and/or user-assigned managed identity to an SRE Agent.
 
 ### `az sre identity remove`
 
-Remove a system- and/or user-assigned managed identity from an SRE Agent.
+Remove a managed identity from an agent.
 
 **Syntax**
 
@@ -749,7 +762,7 @@ Remove a system- and/or user-assigned managed identity from an SRE Agent.
 
 ### `az sre identity show`
 
-Show the managed identity (-ies) currently assigned to an SRE Agent.
+Show the managed identities assigned to an agent.
 
 **Syntax**
 
@@ -759,6 +772,12 @@ Show the managed identity (-ies) currently assigned to an SRE Agent.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- Show an agent's identities
+
+  `az sre identity show -g myrg --agent-name myagent`
 
 ## `az sre instructions`
 
@@ -775,7 +794,7 @@ WARNING -- this is NOT the portal's single "Custom instructions" text box. That 
 
 ### `az sre instructions create`
 
-Create or update a named, reusable prompt snippet ('commonPrompts').
+Create or update a reusable prompt snippet.
 
 WARNING -- this does NOT set the portal's single "Custom instructions" text box. Use 'az sre agent settings update' for that instead. Use the same --name (e.g. "default") each time to update a given snippet in place, or pass --overwrite to replace an existing one.
 
@@ -788,7 +807,7 @@ WARNING -- this does NOT set the portal's single "Custom instructions" text box.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Prompt snippet as a JSON document of the form {"prompt": "..."} -- the "prompt" field holds the free text (confirmed live round-trip). NOT the portal's 'Custom instructions' box -- use 'az sre agent settings update --value \'{"customInstructions": "..."}\'' for that. |
+| `--value` | String | Yes |  |  | Prompt snippet as JSON: {"prompt": "..."}. For custom instructions, use 'az sre agent settings update'. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**
@@ -831,7 +850,7 @@ WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions cre
 
 ### `az sre instructions list`
 
-List an agent's named, reusable prompt snippets ('commonPrompts').
+List an agent's reusable prompt snippets.
 
 WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions create -h'.
 
@@ -900,7 +919,7 @@ Add a knowledge source (file or web page) to an SRE Agent.
 | `--name`, `-n` | String | Yes |  |  | Name of this knowledge source. |
 | `--type` | String | Yes |  | `file`, `text`, `webpage`, `repository` | Kind of knowledge source. One of: file, repository, text, webpage. |
 | `--file-path` | String | No |  |  | Local file to ingest. Required for --type file/text. |
-| `--url` | String | No |  |  | Web page URL to ingest. Required for --type webpage. Live-confirmed wire shape: forwarded as extended-properties url=<url> only (never --data-source, which the service rejects with a 500 for this connector type). |
+| `--url` | String | No |  |  | Web page URL to ingest. Required for --type webpage. Cannot be combined with --data-source. |
 | `--data-source` | String | No |  |  | Raw --data-source passthrough, for --type repository or any case --file-path/--url don't cover. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing knowledge source of the same name. |
 
@@ -947,6 +966,12 @@ List an SRE Agent's knowledge sources (files and web pages).
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
+**Examples**
+
+- List knowledge sources
+
+  `az sre knowledge list -g myrg --agent-name myagent`
+
 ### `az sre knowledge show`
 
 Show a knowledge source.
@@ -969,7 +994,7 @@ Show a knowledge source.
 
 ## `az sre managed-resource`
 
-Let the agent's own managed identity monitor resources outside its own resource group.
+Let the agent monitor resources outside its resource group.
 
 Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles together on a subscription, resource group, or management group.
 
@@ -981,7 +1006,7 @@ Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles together o
 
 ### `az sre managed-resource grant`
 
-Grant the agent's managed identity Reader + Monitoring Contributor on a scope.
+Give the agent Reader and Monitoring Contributor on a scope.
 
 **Syntax**
 
@@ -992,7 +1017,7 @@ Grant the agent's managed identity Reader + Monitoring Contributor on a scope.
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent (NOT the target scope -- use --target-resource-group for that). |
 | `--scope` | String | No |  |  | Full resource ID of the scope to grant access on/from. Alternative to --target-subscription/--target-resource-group/--management-group. |
-| `--target-subscription` | String | No |  |  | Target subscription name or ID. Used alone for subscription-level scope, or with --target-resource-group for resource-group-level scope. (Named --target-subscription, not --subscription, because the latter is a reserved global az CLI argument.) |
+| `--target-subscription` | String | No |  |  | Target subscription name or ID. Alone: subscription scope. With --target-resource-group: resource-group scope. |
 | `--target-resource-group` | String | No |  |  | Target resource group name (requires --target-subscription). Distinct from --resource-group, which locates the agent itself. |
 | `--management-group` | String | No |  |  | Target management group name/ID. |
 
@@ -1010,9 +1035,9 @@ Grant the agent's managed identity Reader + Monitoring Contributor on a scope.
 
 ### `az sre managed-resource list`
 
-List the external scopes the agent's managed identity currently has
+List the scopes the agent's managed identity can access.
 
-access to (i.e. every role assignment where the agent is the assignee).
+Shows every role assignment where the agent is the assignee.
 
 **Syntax**
 
@@ -1031,7 +1056,7 @@ access to (i.e. every role assignment where the agent is the assignee).
 
 ### `az sre managed-resource revoke`
 
-Revoke the agent's managed identity's Reader + Monitoring Contributor on a scope.
+Remove the agent's Reader and Monitoring Contributor on a scope.
 
 **Syntax**
 
@@ -1042,7 +1067,7 @@ Revoke the agent's managed identity's Reader + Monitoring Contributor on a scope
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent (NOT the target scope -- use --target-resource-group for that). |
 | `--scope` | String | No |  |  | Full resource ID of the scope to revoke access on/from. Alternative to --target-subscription/--target-resource-group/--management-group. |
-| `--target-subscription` | String | No |  |  | Target subscription name or ID. Used alone for subscription-level scope, or with --target-resource-group for resource-group-level scope. (Named --target-subscription, not --subscription, because the latter is a reserved global az CLI argument.) |
+| `--target-subscription` | String | No |  |  | Target subscription name or ID. Alone: subscription scope. With --target-resource-group: resource-group scope. |
 | `--target-resource-group` | String | No |  |  | Target resource group name (requires --target-subscription). Distinct from --resource-group, which locates the agent itself. |
 | `--management-group` | String | No |  |  | Target management group name/ID. |
 
@@ -1064,7 +1089,7 @@ Configures VNet injection and outbound egress for the agent's own sandboxed tool
 
 ### `az sre network update`
 
-Configure VNet injection and sandbox egress for an SRE Agent (preview).
+Configure VNet injection and sandbox egress (preview).
 
 **Syntax**
 
@@ -1075,7 +1100,7 @@ Configure VNet injection and sandbox egress for an SRE Agent (preview).
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent to configure networking on. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--vnet-configuration` | Object | No |  |  | VNet injection for the agent itself. Shorthand JSON, e.g. --vnet-configuration "{subnet-resource-id:/subscriptions/.../subnets/mysubnet}". |
-| `--sandbox-configuration` | Object | No |  |  | Sandbox egress/package configuration for code the agent runs. Shorthand JSON, e.g. --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}". |
+| `--sandbox-configuration` | Object | No |  |  | Sandbox egress and packages. Shorthand, e.g. "{egress:{mode:Limited,allowed-hosts:[example.com]}}". |
 
 **Examples**
 
@@ -1106,7 +1131,7 @@ Supports GitHub and Azure DevOps. GitLab isn't exposed by this CLI yet.
 
 ### `az sre repo connect`
 
-Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
+Connect a GitHub or Azure DevOps repo to an agent.
 
 **Syntax**
 
@@ -1116,37 +1141,37 @@ Connect a GitHub or Azure DevOps repo to an SRE Agent in one step.
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--repo-url` | String | Yes |  |  | HTTPS clone URL of the repo, e.g. https://github.com/org/repo or https://dev.azure.com/org/project/_git/repo. |
+| `--repo-url` | String | Yes |  |  | HTTPS clone URL of the repo. |
 | `--provider` | String | No |  | `GitHub`, `AzureDevOps` | Repo provider. Auto-detected from --repo-url's host when omitted. |
 | `--display-name`, `--name`, `-n` | String | No |  |  | Display name for the repo. Defaults to the last path segment of --repo-url. |
 | `--branch` | String | No |  |  | Branch to check out. Defaults to the repo's default branch. |
-| `--github-token` | String | No |  |  | GitHub token to use directly (GitHub repos only). No 'gh' CLI or Azure CLI needed when this, or the GITHUB_TOKEN/GH_TOKEN env vars, are set. If omitted, this command falls back to a native GitHub OAuth Device Flow in your browser -- no 'gh' required. |
-| `--devops-organization` | String | No |  |  | Azure DevOps organization name, e.g. 'contoso' for dev.azure.com/contoso (Azure DevOps repos only; auto-detected from --repo-url when it is a dev.azure.com URL). |
-| `--devops-auth-type` | String | No | pat | `pat`, `managed-identity` | Azure DevOps auth mechanism. 'pat' (default) mints a PAT via the vssps REST API -- some orgs block this with a 'DisablePatCreationPolicyViolation' org policy, in which case use 'managed-identity' with --devops-identity instead (the identity must already be added as a user/group member of the Azure DevOps org -- this command does not grant that membership). |
-| `--devops-identity` | String | No |  |  | Resource ID of the user- or system-assigned managed identity to authenticate with Azure DevOps as (required when --devops-auth-type managed-identity). Typically the SRE Agent's own identity -- see 'az sre agent show --query identity'. |
-| `--devops-federated-client-id` | String | No |  |  | Federated client ID, only needed alongside --devops-federated-tenant-id for a user-assigned identity in a different tenant than the Azure DevOps org (managed-identity auth only; both or neither must be set). |
-| `--devops-federated-tenant-id` | String | No |  |  | Federated tenant ID, only needed alongside --devops-federated-client-id (managed-identity auth only; both or neither must be set). |
+| `--github-token` | String | No |  |  | GitHub token. Default: GITHUB_TOKEN/GH_TOKEN, else browser sign-in. |
+| `--devops-organization` | String | No |  |  | Azure DevOps organization. Default: taken from --repo-url. |
+| `--devops-auth-type` | String | No | pat | `pat`, `managed-identity` | Azure DevOps auth method. Use managed-identity if your org blocks PAT creation. |
+| `--devops-identity` | String | No |  |  | Managed identity resource ID. Required with --devops-auth-type managed-identity. |
+| `--devops-federated-client-id` | String | No |  |  | Federated client ID, for an identity in a different tenant. Use with --devops-federated-tenant-id. |
+| `--devops-federated-tenant-id` | String | No |  |  | Federated tenant ID. Use with --devops-federated-client-id. |
 
 **Examples**
 
-- Connect a GitHub repo (provider auto-detected from the URL;
+- Connect a GitHub repo
 
-  `resolves a token automatically -- explicit flag, or a browser-based device-flow prompt, in that order) az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service`
-- Connect a GitHub repo with an explicit token (e.g. in CI, where
+  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service`
+- Connect a GitHub repo with a token
 
-  `no interactive browser is available) az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service \ --github-token $env:GITHUB_TOKEN`
+  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service \ --github-token $env:GITHUB_TOKEN`
 - Connect an Azure DevOps repo
 
   `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo`
-- Azure DevOps org blocks PAT creation ("org has a policy
+- Connect an Azure DevOps repo with a managed identity
 
-  `blocking PAT creation") -- use the agent's own managed identity instead az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo \ --devops-auth-type managed-identity --devops-identity <agent-identity-resource-id>`
+  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo \ --devops-auth-type managed-identity --devops-identity <agent-identity-resource-id>`
 
 ## `az sre response-plan`
 
-Manage incident response plans (portal: Incidents > "Triggers &
+Route incidents to a subagent (portal: Triggers & response plans).
 
-response plans"). A plan routes matching incidents to a subagent. Match criteria use ARM; linked instructions use the agent API.
+Match criteria use ARM; linked instructions use the agent API.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -1162,7 +1187,7 @@ response plans"). A plan routes matching incidents to a subagent. Match criteria
 
 Create or update an incident response plan.
 
-Routes incidents that match the criteria to a subagent. Connect the incident platform first ('az sre agent update --incident-management-configuration') and create the subagent first ('az sre subagent create'). Behind the scenes this writes an incident filter, plus an incident handler when --instructions or --processing-guide is given.
+Routes matching incidents to a subagent. Connect the incident platform and create the subagent first.
 
 **Syntax**
 
@@ -1194,16 +1219,10 @@ Routes incidents that match the criteria to a subagent. Connect the incident pla
 - Route high-severity Azure Monitor incidents to a subagent in review mode
 
   `az sre response-plan create -g myrg --agent-name myagent -n sev1-api \ --platform AzMonitor --subagent incident-responder --priority Sev0 Sev1 \ --title-contains api --mode review`
-- Full setup order -- connect the platform, create the subagent, then the plan
-
-  `az sre agent update -g myrg -n myagent --incident-management-configuration "{type:AzMonitor}" az sre subagent create -g myrg --agent-name myagent -n incident-responder --value @subagent.json az sre response-plan create -g myrg --agent-name myagent -n disk-space \ --platform AzMonitor --subagent incident-responder --title-contains "disk space"`
 - Skip noisy incidents and give the subagent step-by-step guidance
 
   `az sre response-plan create -g myrg --agent-name myagent -n api-errors \ --platform AzMonitor --subagent incident-responder --priority Sev1 Sev2 \ --title-not-contains test synthetic \ --processing-guide "Check recent deployments" "Query error rates in App Insights"`
-- Match by incident type and service, and tune incident merging
-
-  `az sre response-plan create -g myrg --agent-name myagent -n web-livesite \ --platform AzMonitor --subagent incident-responder --incident-type LiveSite \ --impacted-service Web --merge-window-hours 6`
-- Change an existing plan with 'az sre response-plan update' (create needs --overwrite)
+- Change an existing plan
 
   `az sre response-plan update -g myrg --agent-name myagent -n api-errors --mode autonomous`
 
@@ -1290,7 +1309,7 @@ List response plans.
 
 ### `az sre response-plan show`
 
-Show a response plan and its instructions. Use --agent-url to read a shared agent.
+Show a response plan and its instructions.
 
 **Syntax**
 
@@ -1311,7 +1330,7 @@ Show a response plan and its instructions. Use --agent-url to read a shared agen
 
 ### `az sre response-plan update`
 
-Update an existing response plan. Only the flags you pass change.
+Update a response plan. Only the flags you pass change.
 
 Passing a list flag (for example --priority) replaces that whole list. Use 'enable' or 'disable' to turn a plan on or off.
 
@@ -1474,7 +1493,7 @@ Create or update a named sub-agent.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Sub-agent configuration as a JSON document. Required fields: instructions/handoffDescription (strings), tools/mcpTools/commonTools/allowedSkills (arrays of strings -- 'tools' is this sub-agent's base tool allowlist, typically just ["ReadFile"] for a read-only specialist), allowParallelToolCalls (bool). Optional: hooks -- {"PreToolUse": [{"type": "command", "matcher": "(?s:.*)", "timeout": 30, "failMode": "block", "script": "..."}]} (also settable via --pre-tool-use-script-file). Live-confirmed shape -- the server echoes back a much richer schema on read (handoffs, connectors, agentsAsTools, maxReflectionCount, temperature, llmModelName, permissions, etc.), all server-defaulted to null when omitted here. |
+| `--value` | String | Yes |  |  | Sub-agent configuration as JSON. Required: instructions, handoffDescription, tools, mcpTools, commonTools, allowedSkills, allowParallelToolCalls. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 | `--pre-tool-use-script-file` | String | No |  |  | Path to a script file to run before every tool call this sub-agent makes (the portal's "Manage Hooks" > "Pre Tool Use" button inside the subagent dialog). Merged into --value.hooks.PreToolUse with matcher "(?s:.*)" (every tool), timeout 30s, failMode "block" -- pass --value.hooks directly instead for other matchers/timeouts. |
 
@@ -1573,7 +1592,7 @@ Create or update a custom tool.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Tool configuration as a JSON document. Discriminator field is "type" (not "toolType"), one of: KustoTool/LinkTool/PythonFunctionTool/HttpClientTool. PythonTool is accepted as a legacy alias for PythonFunctionTool. Common fields: type/name/description/connector/toolMode/parameters. Per-type fields -- LinkTool: "template" (not "url") e.g. {"type": "LinkTool", "name": "docs", "description": "...", "template": "https://..."}; KustoTool: database/query/clusterHint; HttpClientTool: url/method/body/headers/auth (this is the one type that really does use "url"); PythonFunctionTool: functionCode/timeoutSeconds/dependencies/authEnabled/authScopes. Live-confirmed shape -- "toolType"/"url" at the top level (an earlier, now-fixed example) silently fails server-side with an opaque InternalServerError, only "type"/"template" works for LinkTool. |
+| `--value` | String | Yes |  |  | Tool configuration as JSON. "type" is KustoTool, LinkTool, PythonFunctionTool or HttpClientTool. PythonTool is a legacy alias for PythonFunctionTool. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**
@@ -1716,19 +1735,22 @@ Always targets the agent's single settings object (there is no --name). Each cal
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--value` | String | Yes |  |  | Global settings as a JSON document (confirmed via the control plane's own real round-trip integration test, GlobalSettingsExtensionTests.cs). All top-level fields are optional: toolPermissions, toolStatuses/skillStatuses (arrays of {"name": ..., "enabled": true/false}), customInstructions (string), approvalExpirationSetting ({"enabled": true/false, "approvalExpirationInMinutes": <number>}). CAUTION: if you include toolPermissions at all, it must have all three of 'allow'/'ask'/'deny' (each an array of tool-name strings, [] if unused) -- live-confirmed the real API rejects a partial toolPermissions object (e.g. just 'deny') with a misleading "unrecognized property" error. |
+| `--value` | String | Yes |  |  | Settings as JSON. Optional fields: customInstructions, toolPermissions, toolStatuses, skillStatuses, approvalExpirationSetting. If you set toolPermissions, include all of allow, ask and deny (use [] if unused). |
 
 **Examples**
 
 - Set the portal's "Custom instructions" text box
 
   `az sre agent settings update -g myrg --agent-name myagent \ --value '{"customInstructions": "Always cite the runbook section you used."}'`
+- Allow, ask for approval, or deny specific tools
+
+  `--value '{"toolPermissions": {"allow": ["kusto-query"], "ask": [], "deny": ["run-shell"]}}'`
 
 ## `az sre automation http-trigger`
 
-Manage HTTP triggers: run the agent against a prompt from an inbound
+Manage HTTP triggers that run the agent on a webhook call.
 
-webhook call instead of a schedule.
+Runs the agent against a prompt when an inbound webhook call arrives, instead of on a schedule.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -1750,7 +1772,7 @@ Create or update an HTTP trigger.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | HTTP trigger configuration as a JSON document. Fields: "agentPrompt" (what to ask the agent when the webhook fires), "description", "agent" (name of a connected sub-agent to target instead of the primary agent), "threadId" (continue an existing conversation thread instead of starting a new one each call -- same unset-vs-pinned behavior as scheduled-task's threadId above), "modelTier", "agentMode". Example: {"agentPrompt": "Investigate the attached alert payload", "description": "Webhook from external monitor"}. |
+| `--value` | String | Yes |  |  | Trigger configuration as JSON. Fields: agentPrompt, description, agent, threadId. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**
@@ -1821,9 +1843,9 @@ Show an HTTP trigger.
 
 ## `az sre automation scheduled-task`
 
-Manage scheduled tasks: run the agent on a timer (cron) against a
+Manage scheduled tasks that run the agent on a cron timer.
 
-prompt, optionally bounded to a time window or a maximum run count.
+Runs the agent against a prompt, optionally bounded to a time window or a maximum run count.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -1845,7 +1867,7 @@ Create or update a scheduled task.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Scheduled task configuration as a JSON document. Fields: "cronExpression" (standard 5-field cron, e.g. "0 */6 * * *" for every 6 hours), "agentPrompt" (what to ask the agent each run), "description", "agent" (name of a connected sub-agent to target instead of the primary agent), "threadId" (continue an existing conversation thread instead of starting a new one each run -- confirmed via sreagent-runtime: leaving this unset lets each run get its own thread, pinning it to a fixed value reuses that one thread across every run (the portal's "Message grouping for updates" dropdown is UI sugar over this same field)), "startTime"/"endTime" (ISO 8601, bound the schedule's active window), "maxExecutions" (stop after N runs), "notificationChannel", "modelTier", "agentMode". Example: {"cronExpression": "0 9 * * 1-5", "agentPrompt": "Summarize overnight alerts", "description": "Daily alert digest"}. |
+| `--value` | String | Yes |  |  | Task configuration as JSON. Fields: cronExpression, agentPrompt, description, agent, threadId, startTime, endTime, maxExecutions. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**
@@ -1942,7 +1964,7 @@ Unlike other extension types, 'marketplaceName'/'pluginName' alone are not enoug
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Plugin install configuration as a JSON document, e.g. {"marketplaceName": "<name from 'sre plugin marketplace list'>", "pluginName": "<plugin>", "source": {"type": "relative", "repo": "<marketplace sourceUrl>", "url": "<plugin's path in the repo>"}}. The 'source' block is required on create -- the service does not auto-resolve it from marketplaceName/pluginName alone. |
+| `--value` | String | Yes |  |  | Plugin install configuration as JSON. Requires marketplaceName, pluginName and a "source" block. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**
@@ -2037,7 +2059,7 @@ Connect a plugin marketplace.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Marketplace configuration as a JSON document. Fields: sourceType ("github"), sourceUrl ("owner/repo" short form, NOT a full https:// URL -- a full URL is rejected server-side as an invalid extension configuration), owner ({"name": "..."}), description. Example: {"sourceType": "github", "sourceUrl": "owner/repo", "owner": {"name": "owner"}, "description": "..."}. |
+| `--value` | String | Yes |  |  | Marketplace configuration as JSON. Fields: sourceType ("github"), sourceUrl ("owner/repo", not a full URL), owner, description. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**
