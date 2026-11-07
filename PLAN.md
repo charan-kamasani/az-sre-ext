@@ -66,7 +66,7 @@ hard part, creating a useful agent is.
   deleted). `incident-filter enable`/`disable` (PATCH of `isEnabled` only)
   also passed live on a second disposable agent: other fields preserved,
   missing filter reported as not found. Duplicate-handler error now names the
-  ID. Portal-vs-CLI table for tutorial Step 4 added to `docs\quickstart.md`.
+  ID. Portal-vs-CLI table for tutorial Step 4 added to `docs\portal-walkthrough-benchmark.md`.
   Preview of matching incidents is not implemented. Earlier scope/status rows above
   predate this correction. Real incident ingestion/investigation is not yet
   qualified by these configuration checks.

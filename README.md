@@ -172,7 +172,8 @@ every architecture decision and its evidence.
 | Guide | Use it for |
 |---|---|
 | [CLI ergonomics reference](docs/cli-reference.md) | Every group, command, exact syntax, option, and default — generated, never drifts |
-| [Quickstart](docs/quickstart.md) | The portal's "Get started" walkthrough (deploy, connect sources, automate, govern), done entirely from the CLI |
+| [Quickstart](docs/quickstart.md) | Create an agent, connect sources and route incidents, from the CLI |
+| [Connector types](docs/connector-types.md) | Values for `--data-connector-type` and their portal names |
 | [CLI shape design](docs/shape-design.md) | Why the command surface is flat top-level nouns instead of everything nested under `agent`, and why each runbook-extension type gets its own noun instead of one generic `extension --type` |
 | [Operations](docs/operations.md) | Agent lifecycle, RBAC, connectors, and confirmed/unconfirmed runbook extension payload shapes |
 | [Networking](docs/networking.md) | VNet injection, sandbox egress, and safe sequencing for `network update` |
