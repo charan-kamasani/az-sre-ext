@@ -18,6 +18,21 @@ az extension add --source <path-or-url-to-sre-wheel>
 az sre --help
 ```
 
+To uninstall, run `az extension remove --name sre`.
+
+## At a glance
+
+```bash
+az sre agent create -g <rg> -n <agent> -l eastus2   # create an agent
+az sre agent list -g <rg> --output table            # list agents
+az sre repo connect -g <rg> --agent-name <agent> --repo-url <url>   # connect code
+az sre connector list -g <rg> --agent-name <agent> --output table   # list data sources
+az sre access grant -g <rg> --agent-name <agent> --role user --assignee <user>   # share the agent
+az sre agent delete -g <rg> -n <agent> --yes        # clean up
+```
+
+Run `az sre <command> --help` for required arguments and examples.
+
 The examples use bash. In PowerShell, set variables as `$RG = "rg-sre-quickstart"` and
 see [JSON quoting on Windows](operations.md#windows-powershell-json-quoting) for flags that take JSON.
 
