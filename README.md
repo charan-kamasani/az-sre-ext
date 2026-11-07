@@ -27,7 +27,7 @@ intentionally out of scope and why.
 
 ## Quick start
 
-Sign in, create an agent, connect a repository, and list what it can reach. Replace
+Sign in, create an agent, connect a repository and a data source, and check the agent. Replace
 the placeholders with your own resource group and names:
 
 ```bash
@@ -35,8 +35,12 @@ az login
 az group create --name <rg> --location eastus2
 az sre agent create -g <rg> --name <agent> --location eastus2
 az sre repo connect -g <rg> --agent-name <agent> --repo-url https://github.com/<org>/<repo>
-az sre connector list -g <rg> --agent-name <agent> --output table
+az sre connector create -g <rg> --agent-name <agent> --name adx --data-connector-type KustoClient
+az sre agent show -g <rg> --name <agent> --output table
 ```
+
+A new connector links the data source but doesn't give the agent access to it. Grant
+the agent's identity a reader role on the data source next (see the quickstart).
 
 Clean up:
 
