@@ -18,11 +18,10 @@ extensions (tools, skills, scheduled tasks, and similar) under `az sre`.
 
 ## Quick start
 
-You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or later with the
-`sre` extension installed, and an Azure subscription where you can create resources.
+You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or later
+with the `sre` extension installed, and an Azure subscription where you can create resources.
 
-Sign in, create an agent, connect a repository and a data source, and check the agent.
-Set your own values first:
+Sign in and create an agent. Use your own values:
 
 ```bash
 SUBSCRIPTION_ID="<subscription-id>"
@@ -34,35 +33,17 @@ LOCATION="eastus2"
 ```bash
 az login
 
-# Create a resource group
 az group create \
   --subscription "$SUBSCRIPTION_ID" \
   --name "$RG" \
   --location "$LOCATION"
 
-# Create the agent
 az sre agent create \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
   --name "$AGENT" \
   --location "$LOCATION"
 
-# Connect a repository (signs you in to GitHub in the browser unless GITHUB_TOKEN is set)
-az sre repo connect \
-  --subscription "$SUBSCRIPTION_ID" \
-  --resource-group "$RG" \
-  --agent-name "$AGENT" \
-  --repo-url "https://github.com/<org>/<repo>"
-
-# Connect Azure Data Explorer as a data source
-az sre connector create \
-  --subscription "$SUBSCRIPTION_ID" \
-  --resource-group "$RG" \
-  --agent-name "$AGENT" \
-  --name adx \
-  --data-connector-type KustoClient
-
-# Check the agent
 az sre agent show \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
@@ -70,18 +51,30 @@ az sre agent show \
   --output table
 ```
 
-A new connector links the data source but doesn't give the agent access to it. Grant
-the agent's identity a reader role on the data source next (see the quickstart).
-
-Clean up:
+Connect a repository and a data source:
 
 ```bash
-az sre agent delete \
+az sre repo connect \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
-  --name "$AGENT" \
-  --yes
+  --agent-name "$AGENT" \
+  --repo-url "https://github.com/<org>/<repo>"
 
+az sre connector create \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --agent-name "$AGENT" \
+  --name adx \
+  --data-connector-type KustoClient
+```
+
+`repo connect` opens a GitHub sign-in in the browser. In CI, pass `--github-token` or set
+`GITHUB_TOKEN`. A new connector links the data source but doesn't give the agent access
+to it, so grant the agent's identity a reader role on the data source next.
+
+To clean up, delete the resource group, which removes the agent with it:
+
+```bash
 az group delete \
   --subscription "$SUBSCRIPTION_ID" \
   --name "$RG" \
