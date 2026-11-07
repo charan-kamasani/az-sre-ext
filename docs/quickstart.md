@@ -137,7 +137,8 @@ az sre agent delete \
 az group delete \
   --subscription "$SUBSCRIPTION_ID" \
   --name "$RG" \
-  --yes --no-wait
+  --yes \
+  --no-wait
 ```
 
 ## Next steps

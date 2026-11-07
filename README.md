@@ -71,7 +71,8 @@ To clean up, delete the resource group, which removes the agent with it:
 az group delete \
   --subscription "$SUBSCRIPTION_ID" \
   --name "$RG" \
-  --yes --no-wait
+  --yes \
+  --no-wait
 ```
 
 Run `az sre <command> --help` for required arguments and examples. The
