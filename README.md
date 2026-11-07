@@ -16,8 +16,8 @@ response plans under `az sre`.
 
 ## Quick start
 
-The shortest useful test creates a disposable agent, connects a repository and an
-Azure Data Explorer data source, then removes the disposable Azure resources. You need
+Create an agent, connect a repository and an Azure Data Explorer data source, then clean
+up. You need
 [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or later with
 the `sre` extension installed, and a subscription where you can create resources.
 

@@ -1,86 +1,45 @@
-# Quickstart: create and connect an SRE Agent
+# Quickstart: set up your SRE agent
 
-In about 10 minutes you will create an Azure SRE Agent from the command line,
-give it access to a repository and a data source, route incidents to it, and
-clean up. It uses the `az sre` extension, so you don't need the portal.
+The [README quick start](../README.md#quick-start) creates an agent and connects a
+repository and a data source. This guide picks up from there: share the agent, let it
+monitor your Azure resources, add a custom skill and route incidents to it.
 
 ## Before you start
 
-- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or later
-- An Azure subscription where you can create resources
-- A supported region. If you pick one that isn't supported, the error lists the ones that are. `eastus2` works.
-
-Sign in and install the extension:
-
-```bash
-az login
-az extension add --source <path-or-url-to-sre-wheel>
-az sre --help
-```
-
-To uninstall, run `az extension remove --name sre`.
-
-## At a glance
-
-```bash
-az sre agent create -g <rg> -n <agent> -l eastus2   # create an agent
-az sre agent list -g <rg> --output table            # list agents
-az sre repo connect -g <rg> --agent-name <agent> --repo-url <url>   # connect code
-az sre connector list -g <rg> --agent-name <agent> --output table   # list data sources
-az sre access grant -g <rg> --agent-name <agent> --role user --assignee <user>   # share the agent
-az sre agent delete -g <rg> -n <agent> --yes        # clean up
-```
-
-Run `az sre <command> --help` for required arguments and examples.
-
-The examples use bash. In PowerShell, set variables as `$RG = "rg-sre-quickstart"` and
-see [JSON quoting on Windows](operations.md#windows-powershell-json-quoting) for flags that take JSON.
+Finish the [README quick start](../README.md#quick-start) first, and keep the same shell
+open so these variables are still set:
 
 ```bash
 SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
-LOCATION="eastus2"
-RG="rg-sre-quickstart"
-AGENT="quickstart-agent"
+RG="<resource-group>"
+AGENT="<agent-name>"
 ```
 
-## 1. Create an agent
+The examples use bash. In PowerShell, set variables as `$RG = "my-rg"` and end continued
+lines with a backtick (`` ` ``). Flags that take JSON need extra care on Windows; see
+[JSON quoting on Windows](operations.md#windows-powershell-json-quoting).
+
+## 1. Share the agent
+
+Give yourself, a teammate or a group a built-in role on the agent: `admin`, `author`,
+`user` or `reader`.
 
 ```bash
-az group create \
-  --subscription "$SUBSCRIPTION_ID" \
-  --name "$RG" \
-  --location "$LOCATION"
-
-az sre agent create \
-  --subscription "$SUBSCRIPTION_ID" \
-  --resource-group "$RG" \
-  --name "$AGENT" \
-  --location "$LOCATION" \
-  --default-model "{provider:anthropic,name:automatic}"
-
-az sre agent show \
-  --subscription "$SUBSCRIPTION_ID" \
-  --resource-group "$RG" \
-  --name "$AGENT" \
-  --output table
-```
-
-To see the models available in a region first, run `az sre agent list-models --location "$LOCATION"`.
-
-## 2. Connect your sources
-
-Connect the repository that holds your service's code. GitHub asks you to sign in
-in the browser the first time:
-
-```bash
-az sre repo connect \
+az sre access grant \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
   --agent-name "$AGENT" \
-  --repo-url "https://github.com/<org>/<repo>"
+  --role user \
+  --assignee "<user-or-group-object-id>"
 ```
 
-Let the agent read the Azure resources it will investigate:
+To grant the role to the signed-in user, pass `--assignee-me true` instead of `--assignee`.
+List who has access with `az sre access list`.
+
+## 2. Let the agent monitor your Azure resources
+
+An agent can only investigate resources its identity can read. Grant it Reader and
+Monitoring Contributor on the resource group to monitor:
 
 ```bash
 az sre managed-resource grant \
@@ -91,25 +50,41 @@ az sre managed-resource grant \
   --target-resource-group "<resource-group-to-monitor>"
 ```
 
-Connect a data source, for example an Azure Data Explorer cluster the agent can query:
+To cover a whole subscription, omit `--target-resource-group`. Check the result with
+`az sre managed-resource list` and undo it with `az sre managed-resource revoke`.
+
+## 3. Add a custom skill
+
+A skill teaches the agent a procedure. Write it as a `SKILL.md` file with a description
+and the steps to follow:
+
+```markdown
+---
+description: Check a service's health before escalating
+---
+
+# Service health check
+
+1. Query the last hour of error rates for the service.
+2. Compare them with the previous day.
+3. Report whether the change is within normal range.
+```
+
+Then create the skill from the file:
 
 ```bash
-az sre connector create \
+az sre skill create \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
   --agent-name "$AGENT" \
-  --name adx \
-  --data-connector-type "Azure Data Explorer"
+  --name service-health-check \
+  --file-path ./SKILL.md
 ```
 
-Creating a connector links it to the agent. It does not give the agent permission
-to read the data. Grant the agent's managed identity a reader role on the data source
-next. Check the connector with `az sre connector show -g "$RG" --agent-name "$AGENT" -n adx`.
+## 4. Route incidents to the agent
 
-## 3. Route incidents to the agent
-
-Send high-severity Azure Monitor incidents to a subagent. Start in review mode so
-you approve each action:
+Send high-severity Azure Monitor incidents to a subagent. Start in review mode, so the
+agent proposes actions and you approve each one. The subagent must already exist.
 
 ```bash
 az sre response-plan create \
@@ -125,21 +100,10 @@ az sre response-plan create \
 
 Pause the plan without deleting it with `az sre response-plan disable`.
 
-## 4. Clean up
+## Clean up
 
-```bash
-az sre agent delete \
-  --subscription "$SUBSCRIPTION_ID" \
-  --resource-group "$RG" \
-  --name "$AGENT" \
-  --yes
-
-az group delete \
-  --subscription "$SUBSCRIPTION_ID" \
-  --name "$RG" \
-  --yes \
-  --no-wait
-```
+Delete the resource group from the README quick start. This removes the agent with it.
+See [Clean up](../README.md#clean-up) for the command.
 
 ## Next steps
 
