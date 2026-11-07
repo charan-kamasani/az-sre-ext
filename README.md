@@ -18,6 +18,9 @@ extensions (tools, skills, scheduled tasks, and similar) under `az sre`.
 
 ## Quick start
 
+You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or later with the
+`sre` extension installed, and an Azure subscription where you can create resources.
+
 Sign in, create an agent, connect a repository and a data source, and check the agent.
 Set your own values first:
 
@@ -31,23 +34,27 @@ LOCATION="eastus2"
 ```bash
 az login
 
+# Create a resource group
 az group create \
   --subscription "$SUBSCRIPTION_ID" \
   --name "$RG" \
   --location "$LOCATION"
 
+# Create the agent
 az sre agent create \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
   --name "$AGENT" \
   --location "$LOCATION"
 
+# Connect a repository (signs you in to GitHub in the browser unless GITHUB_TOKEN is set)
 az sre repo connect \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
   --agent-name "$AGENT" \
   --repo-url "https://github.com/<org>/<repo>"
 
+# Connect Azure Data Explorer as a data source
 az sre connector create \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
@@ -55,6 +62,7 @@ az sre connector create \
   --name adx \
   --data-connector-type KustoClient
 
+# Check the agent
 az sre agent show \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
@@ -79,6 +87,7 @@ az group delete \
   --name "$RG" \
   --yes --no-wait
 ```
+
 Run `az sre <command> --help` for required arguments and examples. The
 [quickstart](docs/quickstart.md) covers data sources, access and incident routing, and the
 [CLI reference](docs/cli-reference.md) lists every command.
