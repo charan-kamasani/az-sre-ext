@@ -3891,7 +3891,99 @@ def _arm_extension_delete(cli_ctx, agent_name, resource_group, extension_type, e
     return _extension_arm_request(cli_ctx, extension_type, "DELETE", resource_id, EXTENSION_API_VERSION, missing_ok=True)
 
 
+FEATURE_STATUS_PATH = "/api/v1/feature/status"
+FEATURE_CACHE_TTL_SECONDS = 24 * 60 * 60
+FEATURE_CACHE_FILE = "sre_agent_features.json"
+EXTENSION_FEATURE_FLAGS = {
+    "scheduledTasks": ("scheduledTasks", "scheduled tasks"),
+    "httpTriggers": ("httpTriggers", "HTTP triggers"),
+}
+_FEATURES_MEMORY = {}
+
+
+def _feature_cache_path():
+    from azure.cli.core._environment import get_config_dir
+
+    return os.path.join(get_config_dir(), FEATURE_CACHE_FILE)
+
+
+def _feature_cache_key(cli_ctx, agent_name, resource_group):
+    subscription = (getattr(cli_ctx, "data", None) or {}).get("subscription_id") or ""
+    return f"{subscription}/{resource_group}/{agent_name}".lower()
+
+
+def _feature_cache_read(key):
+    import time
+
+    try:
+        with open(_feature_cache_path(), encoding="utf-8") as handle:
+            entry = json.load(handle).get(key)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(entry, dict) or time.time() - entry.get("cachedAt", 0) > FEATURE_CACHE_TTL_SECONDS:
+        return None
+    return entry.get("features") if isinstance(entry.get("features"), dict) else None
+
+
+def _feature_cache_write(key, features):
+    import time
+
+    try:
+        try:
+            with open(_feature_cache_path(), encoding="utf-8") as handle:
+                cache = json.load(handle)
+        except (OSError, ValueError):
+            cache = {}
+        cache[key] = {"cachedAt": time.time(), "features": features}
+        with open(_feature_cache_path(), "w", encoding="utf-8") as handle:
+            json.dump(cache, handle)
+    except OSError:
+        logger.debug("Could not write the agent feature cache.")
+
+
+def _agent_features(cli_ctx, agent_name, resource_group):
+    """The agent's own feature flags, which say whether it is a first-party agent.
+
+    Cached per agent. An empty dict means unknown, so callers keep the ARM-first path.
+    """
+    override = os.environ.get("AZSRE_EXTENSION_ROUTE", "").strip().lower()
+    if override == "direct":
+        return {"isFirstParty": False}
+    if override == "arm":
+        return {}
+    key = _feature_cache_key(cli_ctx, agent_name, resource_group)
+    if key in _FEATURES_MEMORY:
+        return _FEATURES_MEMORY[key]
+    features = _feature_cache_read(key)
+    if features is None:
+        try:
+            response = _data_plane_request(cli_ctx, agent_name, resource_group, "GET", FEATURE_STATUS_PATH)
+            raw = response.get("features") if isinstance(response, dict) else None
+            features = raw if isinstance(raw, dict) else {}
+        except Exception as ex:  # pylint: disable=broad-except
+            logger.debug("Could not read agent feature status: %s", ex)
+            features = {}
+        if features:
+            _feature_cache_write(key, features)
+    _FEATURES_MEMORY[key] = features
+    return features
+
+
+def _require_feature(features, extension_type):
+    flag = EXTENSION_FEATURE_FLAGS.get(extension_type)
+    if flag and features.get(flag[0]) is False:
+        raise CLIError(f"This agent doesn't have {flag[1]} enabled, so it can't be configured here.")
+
+
 def _with_direct_fallback(arm_func, direct_func, cli_ctx, agent_name, resource_group, extension_type, *args, **kwargs):
+    features = _agent_features(cli_ctx, agent_name, resource_group)
+    if extension_type in DIRECT_EXTENSION_ROUTES and features.get("isFirstParty") is False and not (
+            extension_type in DIRECT_NO_LIST_OR_DELETE
+            and direct_func in (_direct_extension_list, _direct_extension_delete)):
+        if direct_func is _direct_extension_create:
+            _require_feature(features, extension_type)
+        direct_kwargs = {k: v for k, v in kwargs.items() if k == "overwrite"} if direct_func is _direct_extension_create else {}
+        return direct_func(cli_ctx, agent_name, resource_group, extension_type, *args, **direct_kwargs)
     try:
         return arm_func(cli_ctx, agent_name, resource_group, extension_type, *args, **kwargs)
     except InternalTenantOnlyError:
