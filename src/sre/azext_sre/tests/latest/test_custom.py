@@ -2310,6 +2310,15 @@ class ExtensionTenantGateTests(unittest.TestCase):
         self.assertEqual(dp.call_args[0][3:5], ("GET", "/api/v2/extendedAgent/tools"))
         self.assertEqual(result["value"][0]["properties"]["value"], {"type": "LinkTool"})
 
+    def test_instructions_and_scheduled_tasks_use_their_own_routes(self):
+        for extension_type, path in (("commonPrompts", "/api/v2/extendedAgent/commonprompts"),
+                                     ("scheduledTasks", "/api/v2/extendedAgent/scheduledtasks")):
+            with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+                 patch("azext_sre.custom._data_plane_request", return_value={"value": []}) as dp:
+                _extension_resource_list(None, "myagent", "rg", extension_type)
+            self.assertEqual(dp.call_args[0][4], path)
+
     def test_direct_create_sends_portal_envelope(self):
         spec = '{"type": "LinkTool", "description": "d"}'
         with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \

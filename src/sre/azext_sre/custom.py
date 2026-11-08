@@ -3697,6 +3697,8 @@ DIRECT_EXTENSION_ROUTES = {
     "tools": ("tools", "ExtendedAgentTool"),
     "skills": ("skills", "Skill"),
     "hooks": ("hooks", "GlobalHook"),
+    "commonPrompts": ("commonprompts", "CommonPrompt"),
+    "scheduledTasks": ("scheduledtasks", "ScheduledTask"),
 }
 
 
