@@ -3694,12 +3694,16 @@ def _resolve_agent_resource_id(cli_ctx, agent_name, resource_group):
 
 INTERNAL_TENANT_ONLY_MARKER = "restricted to internal tenants only"
 DIRECT_EXTENSION_ROUTES = {
-    "tools": ("tools", "ExtendedAgentTool"),
-    "skills": ("skills", "Skill"),
-    "hooks": ("hooks", "GlobalHook"),
-    "commonPrompts": ("commonprompts", "CommonPrompt"),
-    "scheduledTasks": ("scheduledtasks", "ScheduledTask"),
+    "tools": ("/api/v2/extendedAgent/tools", "ExtendedAgentTool"),
+    "skills": ("/api/v2/extendedAgent/skills", "Skill"),
+    "hooks": ("/api/v2/extendedAgent/hooks", "GlobalHook"),
+    "commonPrompts": ("/api/v2/extendedAgent/commonprompts", "CommonPrompt"),
+    "scheduledTasks": ("/api/v2/extendedAgent/scheduledtasks", "ScheduledTask"),
+    "repositories": ("/api/v2/repos", "CodeRepo"),
+    "githubAuths": ("/api/v2/github/domains", None),
+    "azureDevOpsAuths": ("/api/v2/azuredevops/orgs", None),
 }
+DIRECT_CREATE_ONLY = {"repositories", "githubAuths", "azureDevOpsAuths"}
 
 
 class InternalTenantOnlyError(CLIError):
@@ -3724,7 +3728,7 @@ def _extension_arm_request(cli_ctx, extension_type, *args, **kwargs):
 
 
 def _direct_extension_path(extension_type, extension_name=None):
-    base = f"/api/v2/extendedAgent/{DIRECT_EXTENSION_ROUTES[extension_type][0]}"
+    base = DIRECT_EXTENSION_ROUTES[extension_type][0]
     return f"{base}/{quote(extension_name, safe='')}" if extension_name else base
 
 
@@ -3755,14 +3759,18 @@ def _direct_extension_create(cli_ctx, agent_name, resource_group, extension_type
     properties = json.loads(raw_value)
     properties.pop("name", None)
     path = _direct_extension_path(extension_type, name)
-    if not overwrite and _direct_extension_request(
+    envelope_type = DIRECT_EXTENSION_ROUTES[extension_type][1]
+    if envelope_type is None:
+        result = _direct_extension_request(cli_ctx, agent_name, resource_group, "PUT", path, body=properties)
+        return _direct_extension_to_arm_shape(extension_type, {"name": name, "properties": result})
+    if not overwrite and extension_type not in DIRECT_CREATE_ONLY and _direct_extension_request(
             cli_ctx, agent_name, resource_group, "GET", path, missing_ok=True) is not None:
         raise ResourceExistsError(
             f"An extension named '{name}' of type '{extension_type}' already exists on "
             f"agent '{agent_name}'. Pass --overwrite to replace it intentionally, or "
             "choose another name."
         )
-    envelope = {"name": name, "type": DIRECT_EXTENSION_ROUTES[extension_type][1], "properties": properties}
+    envelope = {"name": name, "type": envelope_type, "properties": properties}
     result = _direct_extension_request(cli_ctx, agent_name, resource_group, "PUT", path, body=envelope)
     return _direct_extension_to_arm_shape(
         extension_type, result if isinstance(result, dict) and result.get("properties") else envelope)
@@ -3858,7 +3866,8 @@ def _with_direct_fallback(arm_func, direct_func, cli_ctx, agent_name, resource_g
     try:
         return arm_func(cli_ctx, agent_name, resource_group, extension_type, *args, **kwargs)
     except InternalTenantOnlyError:
-        if extension_type not in DIRECT_EXTENSION_ROUTES:
+        if extension_type not in DIRECT_EXTENSION_ROUTES or (
+                extension_type in DIRECT_CREATE_ONLY and direct_func is not _direct_extension_create):
             raise
         logger.info("ARM route refused this tenant; using the agent's own API for '%s'.", extension_type)
         direct_kwargs = {k: v for k, v in kwargs.items() if k == "overwrite"} if direct_func is _direct_extension_create else {}
