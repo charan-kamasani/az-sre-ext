@@ -2382,6 +2382,21 @@ class ExtensionTenantGateTests(unittest.TestCase):
             _extension_resource_delete(None, "myagent", "rg", "repositories", "r")
             self.assertEqual(dp.call_args[0][3:5], ("DELETE", "/api/v2/repos/r"))
 
+    def test_response_plan_filters_and_handlers_use_the_portal_routes(self):
+        with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+             patch("azext_sre.custom._data_plane_request", return_value={}) as dp:
+            _extension_resource_create(None, "myagent", "rg", "incidentFilters", "p", '{"incidentPlatform": "PagerDuty"}', overwrite=True)
+            self.assertEqual(dp.call_args[0][3:5], ("PUT", "/api/v2/incidentManagement/incidentFilters/p"))
+            self.assertEqual(dp.call_args.kwargs["body"]["type"], "IncidentFilter")
+        handler = {"id": "p", "incidentFilterId": "p", "prompt": "x"}
+        with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+             patch("azext_sre.custom._data_plane_request", return_value=[handler]) as dp:
+            listed = _extension_resource_list(None, "myagent", "rg", "incidentHandlers")
+            self.assertEqual(listed["value"][0]["properties"]["value"]["id"], "p")
+            self.assertEqual(dp.call_args[0][3:5], ("GET", "/api/v2/extendedAgent/incidentHandlers"))
+
     def test_direct_create_sends_portal_envelope(self):
         spec = '{"type": "LinkTool", "description": "d"}'
         with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
