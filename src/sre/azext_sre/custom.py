@@ -3225,7 +3225,7 @@ def _validate_tools_shape(parsed):
             "--value for --extension-type tools must be a JSON object "
             "(confirmed via sreagent-runtime's ToolSpecV2 model)."
         )
-    valid_types = ("KustoTool", "LinkTool", "PythonTool", "HttpClientTool")
+    valid_types = ("KustoTool", "LinkTool", "PythonFunctionTool", "PythonTool", "HttpClientTool")
     if "type" in parsed:
         if not isinstance(parsed["type"], str) or parsed["type"] not in valid_types:
             raise CLIError(f"--value.type must be one of: {', '.join(valid_types)}.")
@@ -3249,7 +3249,7 @@ def _validate_tools_shape(parsed):
         _require_str(parsed, "query", "--value")
     elif tool_type == "LinkTool":
         _require_str(parsed, "template", "--value")
-    elif tool_type == "PythonTool":
+    elif tool_type in ("PythonFunctionTool", "PythonTool"):
         _require_str(parsed, "functionCode", "--value")
         if "timeoutSeconds" in parsed and not isinstance(parsed["timeoutSeconds"], (int, float)):
             raise CLIError("--value.timeoutSeconds must be a number.")
@@ -3594,7 +3594,8 @@ def _encode_extension_value(raw_value, extension_type=None):
     but the data plane can't parse. Additionally applies a per-type shape
     check for any extension_type we have a confirmed real shape for (see
     EXTENSION_VALUE_VALIDATORS) -- unconfirmed types are passed through
-    with only the baseline JSON-syntax check.
+    with only the baseline JSON-syntax check. The legacy PythonTool name is
+    normalized to the runtime's PythonFunctionTool discriminator.
     """
     import base64
 
@@ -3605,6 +3606,9 @@ def _encode_extension_value(raw_value, extension_type=None):
             f"--value must be a JSON document (it is base64-encoded and sent "
             f"as-is to the agent's data plane): {ex}"
         ) from ex
+    if extension_type == "tools" and isinstance(parsed, dict) and parsed.get("type") == "PythonTool":
+        parsed["type"] = "PythonFunctionTool"
+        raw_value = json.dumps(parsed)
     validator = EXTENSION_VALUE_VALIDATORS.get(extension_type)
     if validator is not None:
         validator(parsed)
@@ -3984,7 +3988,8 @@ class ToolCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "tools"
     _args_schema = None
     _VALUE_HELP = (
-        "Tool configuration as JSON. \"type\" is one of KustoTool, LinkTool, PythonTool or HttpClientTool."
+        "Tool configuration as JSON. \"type\" is KustoTool, LinkTool, PythonFunctionTool or "
+        "HttpClientTool. PythonTool is a legacy alias for PythonFunctionTool."
     )
 
 
@@ -4183,6 +4188,14 @@ def _incident_handler_path(extension_name=None):
     return f"{base}/{quote(extension_name, safe='')}" if extension_name else base
 
 
+def _incident_handlers_list(cli_ctx, agent_name, resource_group, agent_url=None):
+    handlers = _data_plane_request(
+        cli_ctx, agent_name, resource_group, "GET", _incident_handler_path(), agent_url=agent_url)
+    if not isinstance(handlers, list) or any(not isinstance(handler, dict) for handler in handlers):
+        raise CLIError("The agent returned an unexpected incident-handler collection.")
+    return handlers
+
+
 GENERIC_ARM_EXTENSION_ERROR = "extension configuration is invalid"
 
 
@@ -4229,9 +4242,19 @@ def _http_error_text(ex):
 
 def _incident_resource_create(cli_ctx, agent_name, resource_group, extension_type, name,
                               arm_value, data_plane_path, data_plane_body, overwrite):
-    """Create through ARM; if ARM returns its generic validation error, replay the
-    request on the data plane, which reports the real reason."""
+    """Save handlers through the agent API and filters through ARM."""
     kind = "filter" if extension_type == "incidentFilters" else "handler"
+    # The deployed ARM incidentHandlers proxy returns 404, including for list.
+    # The agent's v2 API supports the linked instructions directly.
+    if extension_type == "incidentHandlers":
+        if not overwrite and any(
+                handler.get("id") == name
+                for handler in _incident_handlers_list(cli_ctx, agent_name, resource_group)):
+            raise ResourceExistsError(
+                f"Incident handler '{name}' already exists on agent '{agent_name}'. "
+                "Pass --overwrite to replace it intentionally.")
+        return _data_plane_request(
+            cli_ctx, agent_name, resource_group, "PUT", data_plane_path, body=data_plane_body)
     try:
         result = _extension_resource_create(
             cli_ctx, agent_name, resource_group, extension_type, name,
@@ -4308,7 +4331,10 @@ def _incident_filter_toggle_schema(cls, schema):
 # the filter through incidentFilterId. The portal grid lists the filter.
 @register_command_group("sre response-plan")
 class _ResponsePlanGroup(AAZCommandGroup):
-    """Route incidents to a subagent (portal: Triggers & response plans)."""
+    """Route incidents to a subagent (portal: Triggers & response plans).
+
+    Match criteria use ARM; linked instructions use the agent API.
+    """
 
 
 RESPONSE_PLAN_PLATFORMS = ("AzMonitor", "PagerDuty", "ServiceNow", "Icm")
@@ -4328,10 +4354,9 @@ def _response_plan_target_schema(schema, with_name=True):
         )
 
 
-def _response_plan_handlers_for(cli_ctx, agent_name, resource_group, plan_name):
-    handlers = _incident_unwrap_list("handler", _extension_resource_list(
-        cli_ctx, agent_name, resource_group, "incidentHandlers"))
-    return [h for h in handlers if isinstance(h, dict) and h.get("incidentFilterId") == plan_name]
+def _response_plan_handlers_for(cli_ctx, agent_name, resource_group, plan_name, agent_url=None):
+    handlers = _incident_handlers_list(cli_ctx, agent_name, resource_group, agent_url=agent_url)
+    return [handler for handler in handlers if handler.get("incidentFilterId") == plan_name]
 
 
 def _add_response_plan_criteria_args(schema):
@@ -4636,14 +4661,11 @@ class ResponsePlanShow(AAZCommand):
                 _incident_filter_path(name), missing_ok=True, agent_url=agent_url)
             if flt is None:
                 raise ResourceNotFoundError(f"Response plan '{name}' not found on agent '{agent_url}'.")
-            handlers = _data_plane_request(
-                self.cli_ctx, agent_name, resource_group, "GET",
-                _incident_handler_path(), agent_url=agent_url) or []
-            handlers = [h for h in handlers if h.get("incidentFilterId") == name]
         else:
             flt = _incident_unwrap("filter", _extension_resource_show(
                 self.cli_ctx, agent_name, resource_group, "incidentFilters", name))
-            handlers = _response_plan_handlers_for(self.cli_ctx, agent_name, resource_group, name)
+        handlers = _response_plan_handlers_for(
+            self.cli_ctx, agent_name, resource_group, name, agent_url=agent_url)
         return {"filter": flt, "handlers": handlers}
 
 
@@ -4714,8 +4736,9 @@ class ResponsePlanDelete(AAZCommand):
         name = _arg_value(self.ctx.args.extension_name)
         for handler in _response_plan_handlers_for(self.cli_ctx, agent_name, resource_group, name):
             handler_id = handler.get("id") or name
-            _extension_resource_delete(
-                self.cli_ctx, agent_name, resource_group, "incidentHandlers", handler_id)
+            _data_plane_request(
+                self.cli_ctx, agent_name, resource_group, "DELETE",
+                _incident_handler_path(handler_id), missing_ok=True)
         return _extension_resource_delete(
             self.cli_ctx, agent_name, resource_group, "incidentFilters", name)
 

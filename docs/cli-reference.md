@@ -1171,6 +1171,8 @@ Connect a GitHub or Azure DevOps repo to an agent.
 
 Route incidents to a subagent (portal: Triggers & response plans).
 
+Match criteria use ARM; linked instructions use the agent API.
+
 | Verb | Exact syntax |
 | --- | --- |
 | `create` | `az sre response-plan create --agent-name <value> --resource-group <value> --name <value> --platform <value> --subagent <value> [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--incident-type <json-or-@file>] [--impacted-service <value>] [--owning-team <json-or-@file>] [--merge-enabled {false,true}] [--merge-window-hours <integer>] [--instructions <value>] [--processing-guide <json-or-@file>] [--mode <value>] [--disabled {false,true}] [--overwrite {false,true}]` |
@@ -1590,7 +1592,7 @@ Create or update a custom tool.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Tool configuration as JSON. "type" is one of KustoTool, LinkTool, PythonTool or HttpClientTool. |
+| `--value` | String | Yes |  |  | Tool configuration as JSON. "type" is KustoTool, LinkTool, PythonFunctionTool or HttpClientTool. PythonTool is a legacy alias for PythonFunctionTool. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**
