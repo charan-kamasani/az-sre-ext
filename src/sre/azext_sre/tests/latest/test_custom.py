@@ -2272,6 +2272,65 @@ class ExtensionTypeEnumTests(unittest.TestCase):
         )
 
 
+class ExtensionTenantGateTests(unittest.TestCase):
+    """The service rejects every agent extension call from a non-internal
+    tenant. The CLI should say that plainly."""
+
+    _AGENT = {"id": "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"}
+
+    def _gate_error(self):
+        response = Response()
+        response.status_code = 400
+        response._content = (
+            b'{"error":{"message":"Agent Extensions are not available for this tenant. '
+            b'This feature is restricted to internal tenants only."}}'
+        )
+        return HTTPError("400 Client Error", response=response)
+
+    def test_each_extension_operation_explains_the_tenant_gate(self):
+        calls = (
+            (_extension_resource_create, ("repositories", "t", '{"url": "https://github.com/a/b"}'), {"overwrite": True}),
+            (_extension_resource_show, ("repositories", "t"), {}),
+            (_extension_resource_list, ("repositories",), {}),
+            (_extension_resource_delete, ("repositories", "t"), {}),
+        )
+        for func, args, kwargs in calls:
+            with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()):
+                with self.assertRaises(CLIError) as ctx:
+                    func(None, "myagent", "rg", *args, **kwargs)
+            self.assertIn("This tenant can't use 'repositories' yet", str(ctx.exception))
+
+    def test_tools_fall_back_to_the_agent_api(self):
+        envelope = {"name": "t", "type": "ExtendedAgentTool", "properties": {"type": "LinkTool"}}
+        with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+             patch("azext_sre.custom._data_plane_request", return_value={"value": [envelope]}) as dp:
+            result = _extension_resource_list(None, "myagent", "rg", "tools")
+        self.assertEqual(dp.call_args[0][3:5], ("GET", "/api/v2/extendedAgent/tools"))
+        self.assertEqual(result["value"][0]["properties"]["value"], {"type": "LinkTool"})
+
+    def test_direct_create_sends_portal_envelope(self):
+        spec = '{"type": "LinkTool", "description": "d"}'
+        with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+             patch("azext_sre.custom._data_plane_request", side_effect=[None, {}]) as dp:
+            _extension_resource_create(None, "myagent", "rg", "tools", "t", spec)
+        body = dp.call_args_list[1].kwargs["body"]
+        self.assertEqual(body, {"name": "t", "type": "ExtendedAgentTool",
+                                "properties": {"type": "LinkTool", "description": "d"}})
+
+    def test_other_errors_pass_through(self):
+        response = Response()
+        response.status_code = 500
+        response._content = b'{"error":{"message":"boom"}}'
+        error = HTTPError("500 Server Error", response=response)
+        with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=error):
+            with self.assertRaises(HTTPError):
+                _extension_resource_list(None, "myagent", "rg", "tools")
+
+
 class ExtensionCommandResourceIdTests(unittest.TestCase):
     """Proves each shared _extension_resource_*() helper builds the exact
     .../agents/{name}/{extensionType}[/{name}] resource ID and wire envelope
