@@ -3705,7 +3705,6 @@ DIRECT_EXTENSION_ROUTES = {
     "pluginInstallations": ("/api/v2/extendedAgent/pluginInstallations", "PluginInstallation"),
     "globalSettings": ("/api/v2/extendedAgent/globalSettings", "GlobalSettings"),
     "incidentFilters": ("/api/v2/incidentManagement/incidentFilters", "IncidentFilter"),
-    "incidentHandlers": ("/api/v2/extendedAgent/incidentHandlers", "flat"),
     "githubAuths": ("/api/v2/github/domains", None),
     "azureDevOpsAuths": ("/api/v2/azuredevops/orgs", None),
 }
@@ -3767,7 +3766,7 @@ def _direct_extension_create(cli_ctx, agent_name, resource_group, extension_type
     properties.pop("name", None)
     path = _direct_extension_path(extension_type, name)
     envelope_type = DIRECT_EXTENSION_ROUTES[extension_type][1]
-    if envelope_type in (None, "flat"):
+    if envelope_type is None:
         result = _direct_extension_request(cli_ctx, agent_name, resource_group, "PUT", path, body=properties)
         return _direct_extension_to_arm_shape(extension_type, {"name": name, "properties": result})
     if not overwrite and extension_type not in DIRECT_SKIP_EXISTS_CHECK and _direct_extension_request(
@@ -3807,8 +3806,6 @@ def _direct_extension_show(cli_ctx, agent_name, resource_group, extension_type, 
     if result is None:
         raise ResourceNotFoundError(
             f"Extension '{name}' of type '{extension_type}' not found on agent '{agent_name}'.")
-    if DIRECT_EXTENSION_ROUTES[extension_type][1] == "flat":
-        return _direct_auth_to_arm_shape(extension_type, {**result, "name": result.get("id") or name})
     return _direct_extension_to_arm_shape(extension_type, result)
 
 
@@ -3819,8 +3816,6 @@ def _direct_extension_list(cli_ctx, agent_name, resource_group, extension_type):
     result = _direct_extension_request(
         cli_ctx, agent_name, resource_group, "GET", _direct_extension_path(extension_type))
     items = result.get("value") if isinstance(result, dict) else result
-    if DIRECT_EXTENSION_ROUTES[extension_type][1] == "flat":
-        return {"value": [_direct_auth_to_arm_shape(extension_type, {**i, "name": i.get("id")}) for i in items or []]}
     return {"value": [_direct_extension_to_arm_shape(extension_type, item) for item in items or []]}
 
 
