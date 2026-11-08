@@ -2300,7 +2300,8 @@ class ExtensionTenantGateTests(unittest.TestCase):
         from azext_sre import custom
 
         with patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": ""}), \
-             patch.dict(custom._FEATURES_MEMORY, {"/rg/myagent": {"isFirstParty": True}}, clear=True), \
+             patch("azext_sre.custom._feature_cache_key", return_value="k"), \
+             patch.dict(custom._FEATURES_MEMORY, {"k": {"isFirstParty": True}}, clear=True), \
              patch("azext_sre.custom._arm_request", return_value={"value": []}) as arm, \
              patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
              patch("azext_sre.custom._data_plane_request") as dp:
@@ -2312,7 +2313,8 @@ class ExtensionTenantGateTests(unittest.TestCase):
         from azext_sre import custom
 
         with patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": ""}), \
-             patch.dict(custom._FEATURES_MEMORY, {"/rg/myagent": {}}, clear=True), \
+             patch("azext_sre.custom._feature_cache_key", return_value="k"), \
+             patch.dict(custom._FEATURES_MEMORY, {"k": {}}, clear=True), \
              patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
              patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
              patch("azext_sre.custom._data_plane_request", return_value={"value": []}) as dp:
@@ -2323,7 +2325,8 @@ class ExtensionTenantGateTests(unittest.TestCase):
         from azext_sre import custom
 
         with patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": ""}), \
-             patch.dict(custom._FEATURES_MEMORY, {"/rg/myagent": {"isFirstParty": False, "httpTriggers": False}}, clear=True), \
+             patch("azext_sre.custom._feature_cache_key", return_value="k"), \
+             patch.dict(custom._FEATURES_MEMORY, {"k": {"isFirstParty": False, "httpTriggers": False}}, clear=True), \
              patch("azext_sre.custom._data_plane_request") as dp:
             with self.assertRaises(CLIError) as ctx:
                 _extension_resource_create(None, "myagent", "rg", "httpTriggers", "t", "{}")

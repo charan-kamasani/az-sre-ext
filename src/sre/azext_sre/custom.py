@@ -3909,6 +3909,13 @@ def _feature_cache_path():
 
 def _feature_cache_key(cli_ctx, agent_name, resource_group):
     subscription = (getattr(cli_ctx, "data", None) or {}).get("subscription_id") or ""
+    if not subscription:
+        try:
+            from azure.cli.core._profile import Profile
+
+            subscription = Profile(cli_ctx=cli_ctx).get_subscription_id()
+        except Exception:  # pylint: disable=broad-except
+            subscription = ""
     return f"{subscription}/{resource_group}/{agent_name}".lower()
 
 
