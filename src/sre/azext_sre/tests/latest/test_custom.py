@@ -2289,17 +2289,17 @@ class ExtensionTenantGateTests(unittest.TestCase):
 
     def test_each_extension_operation_explains_the_tenant_gate(self):
         calls = (
-            (_extension_resource_create, ("pluginMarketplaces", "t", '{"url": "https://github.com/a/b"}'), {"overwrite": True}),
-            (_extension_resource_show, ("pluginMarketplaces", "t"), {}),
-            (_extension_resource_list, ("pluginMarketplaces",), {}),
-            (_extension_resource_delete, ("pluginMarketplaces", "t"), {}),
+            (_extension_resource_create, ("subagents", "t", '{"url": "https://github.com/a/b"}'), {"overwrite": True}),
+            (_extension_resource_show, ("subagents", "t"), {}),
+            (_extension_resource_list, ("subagents",), {}),
+            (_extension_resource_delete, ("subagents", "t"), {}),
         )
         for func, args, kwargs in calls:
             with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
                  patch("azext_sre.custom._arm_request", side_effect=self._gate_error()):
                 with self.assertRaises(CLIError) as ctx:
                     func(None, "myagent", "rg", *args, **kwargs)
-            self.assertIn("This tenant can't use 'pluginMarketplaces' yet", str(ctx.exception))
+            self.assertIn("This tenant can't use 'subagents' yet", str(ctx.exception))
 
     def test_tools_fall_back_to_the_agent_api(self):
         envelope = {"name": "t", "type": "ExtendedAgentTool", "properties": {"type": "LinkTool"}}
@@ -2345,6 +2345,29 @@ class ExtensionTenantGateTests(unittest.TestCase):
                 None, "myagent", "rg", "githubAuths", "github_com",
                 '{"authType": "Pat", "pat": "secret"}', overwrite=True)
         self.assertNotIn("secret", json.dumps(result))
+
+    def test_triggers_plugins_and_settings_use_their_own_routes(self):
+        cases = (
+            ("httpTriggers", "/api/v2/extendedAgent/httpTriggers/t", "HttpTrigger"),
+            ("pluginMarketplaces", "/api/v2/extendedAgent/pluginMarketplaces/t", "Marketplace"),
+            ("pluginInstallations", "/api/v2/extendedAgent/pluginInstallations/t", "PluginInstallation"),
+            ("globalSettings", "/api/v2/extendedAgent/globalSettings/t", "GlobalSettings"),
+        )
+        for extension_type, path, envelope_type in cases:
+            with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+                 patch("azext_sre.custom._encode_extension_value"), \
+                 patch("azext_sre.custom._data_plane_request", return_value={}) as dp:
+                _extension_resource_create(None, "myagent", "rg", extension_type, "t", "{}", overwrite=True)
+            self.assertEqual(dp.call_args[0][3:5], ("PUT", path))
+            self.assertEqual(dp.call_args.kwargs["body"]["type"], envelope_type)
+
+    def test_global_settings_cannot_be_listed_or_deleted_directly(self):
+        for func, args in ((_extension_resource_list, ()), (_extension_resource_delete, ("default",))):
+            with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()):
+                with self.assertRaises(CLIError):
+                    func(None, "myagent", "rg", "globalSettings", *args)
 
     def test_direct_create_sends_portal_envelope(self):
         spec = '{"type": "LinkTool", "description": "d"}'

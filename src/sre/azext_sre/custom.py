@@ -3700,10 +3700,15 @@ DIRECT_EXTENSION_ROUTES = {
     "commonPrompts": ("/api/v2/extendedAgent/commonprompts", "CommonPrompt"),
     "scheduledTasks": ("/api/v2/extendedAgent/scheduledtasks", "ScheduledTask"),
     "repositories": ("/api/v2/repos", "CodeRepo"),
+    "httpTriggers": ("/api/v2/extendedAgent/httpTriggers", "HttpTrigger"),
+    "pluginMarketplaces": ("/api/v2/extendedAgent/pluginMarketplaces", "Marketplace"),
+    "pluginInstallations": ("/api/v2/extendedAgent/pluginInstallations", "PluginInstallation"),
+    "globalSettings": ("/api/v2/extendedAgent/globalSettings", "GlobalSettings"),
     "githubAuths": ("/api/v2/github/domains", None),
     "azureDevOpsAuths": ("/api/v2/azuredevops/orgs", None),
 }
 DIRECT_CREATE_ONLY = {"repositories", "githubAuths", "azureDevOpsAuths"}
+DIRECT_NO_LIST_OR_DELETE = {"globalSettings"}
 
 
 class InternalTenantOnlyError(CLIError):
@@ -3867,7 +3872,9 @@ def _with_direct_fallback(arm_func, direct_func, cli_ctx, agent_name, resource_g
         return arm_func(cli_ctx, agent_name, resource_group, extension_type, *args, **kwargs)
     except InternalTenantOnlyError:
         if extension_type not in DIRECT_EXTENSION_ROUTES or (
-                extension_type in DIRECT_CREATE_ONLY and direct_func is not _direct_extension_create):
+                extension_type in DIRECT_CREATE_ONLY and direct_func is not _direct_extension_create) or (
+                extension_type in DIRECT_NO_LIST_OR_DELETE
+                and direct_func in (_direct_extension_list, _direct_extension_delete)):
             raise
         logger.info("ARM route refused this tenant; using the agent's own API for '%s'.", extension_type)
         direct_kwargs = {k: v for k, v in kwargs.items() if k == "overwrite"} if direct_func is _direct_extension_create else {}
