@@ -2369,6 +2369,19 @@ class ExtensionTenantGateTests(unittest.TestCase):
                 with self.assertRaises(CLIError):
                     func(None, "myagent", "rg", "globalSettings", *args)
 
+    def test_auth_and_repo_read_and_delete_use_the_portal_routes(self):
+        listing = {"values": [{"name": "github_com", "authType": "Pat"}]}
+        with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+             patch("azext_sre.custom._data_plane_request", return_value=listing) as dp:
+            shown = _extension_resource_show(None, "myagent", "rg", "githubAuths", "github_com")
+            self.assertEqual(shown["properties"]["value"]["authType"], "Pat")
+            self.assertEqual(dp.call_args[0][3:5], ("GET", "/api/v2/github/domains"))
+            _extension_resource_delete(None, "myagent", "rg", "azureDevOpsAuths", "my org")
+            self.assertEqual(dp.call_args[0][3:5], ("DELETE", "/api/v2/azuredevops/orgs?org=my%20org"))
+            _extension_resource_delete(None, "myagent", "rg", "repositories", "r")
+            self.assertEqual(dp.call_args[0][3:5], ("DELETE", "/api/v2/repos/r"))
+
     def test_direct_create_sends_portal_envelope(self):
         spec = '{"type": "LinkTool", "description": "d"}'
         with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \

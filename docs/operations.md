@@ -610,6 +610,23 @@ A universal constraint applies to every extension type: the decoded
 always rejected with `"request body contains an invalid or unrecognized
 property"`.
 
+### Non-Microsoft tenants
+
+The service currently rejects agent extension calls through ARM from
+non-Microsoft tenants with "This feature is restricted to internal tenants
+only". When that happens, these commands retry on the agent's own API, the
+same one the Azure SRE portal uses:
+
+`tool`, `skill`, `hook`, `instructions`, `automation scheduled-task`,
+`automation http-trigger`, `plugin marketplace`, `plugin install`,
+`agent settings`, `repo connect` and its GitHub / Azure DevOps credentials.
+
+Changing anything through the agent's API needs the **SRE Agent Author** or
+**SRE Agent Administrator** role on the agent. `agent settings` can be shown and
+updated but not listed or deleted this way. Other types (for example
+`response-plan` filters and `subagents`) still show a plain "not available for
+this tenant" message.
+
 ### `hook` eventType has 4 values, not 2
 
 The official docs (`sre.azure.com/docs/capabilities/agent-hooks`) confirm

@@ -3707,7 +3707,7 @@ DIRECT_EXTENSION_ROUTES = {
     "githubAuths": ("/api/v2/github/domains", None),
     "azureDevOpsAuths": ("/api/v2/azuredevops/orgs", None),
 }
-DIRECT_CREATE_ONLY = {"repositories", "githubAuths", "azureDevOpsAuths"}
+DIRECT_SKIP_EXISTS_CHECK = {"repositories"}
 DIRECT_NO_LIST_OR_DELETE = {"globalSettings"}
 
 
@@ -3768,7 +3768,7 @@ def _direct_extension_create(cli_ctx, agent_name, resource_group, extension_type
     if envelope_type is None:
         result = _direct_extension_request(cli_ctx, agent_name, resource_group, "PUT", path, body=properties)
         return _direct_extension_to_arm_shape(extension_type, {"name": name, "properties": result})
-    if not overwrite and extension_type not in DIRECT_CREATE_ONLY and _direct_extension_request(
+    if not overwrite and extension_type not in DIRECT_SKIP_EXISTS_CHECK and _direct_extension_request(
             cli_ctx, agent_name, resource_group, "GET", path, missing_ok=True) is not None:
         raise ResourceExistsError(
             f"An extension named '{name}' of type '{extension_type}' already exists on "
@@ -3781,7 +3781,25 @@ def _direct_extension_create(cli_ctx, agent_name, resource_group, extension_type
         extension_type, result if isinstance(result, dict) and result.get("properties") else envelope)
 
 
+def _direct_auth_items(cli_ctx, agent_name, resource_group, extension_type):
+    result = _direct_extension_request(
+        cli_ctx, agent_name, resource_group, "GET", _direct_extension_path(extension_type))
+    items = result.get("values") if isinstance(result, dict) else None
+    return items or []
+
+
+def _direct_auth_to_arm_shape(extension_type, item):
+    return _direct_extension_to_arm_shape(extension_type, {"name": item.get("name"), "properties": item})
+
+
 def _direct_extension_show(cli_ctx, agent_name, resource_group, extension_type, name):
+    if DIRECT_EXTENSION_ROUTES[extension_type][1] is None:
+        match = next((i for i in _direct_auth_items(cli_ctx, agent_name, resource_group, extension_type)
+                      if i.get("name") == name), None)
+        if match is None:
+            raise ResourceNotFoundError(
+                f"Extension '{name}' of type '{extension_type}' not found on agent '{agent_name}'.")
+        return _direct_auth_to_arm_shape(extension_type, match)
     result = _direct_extension_request(
         cli_ctx, agent_name, resource_group, "GET", _direct_extension_path(extension_type, name), missing_ok=True)
     if result is None:
@@ -3791,6 +3809,9 @@ def _direct_extension_show(cli_ctx, agent_name, resource_group, extension_type, 
 
 
 def _direct_extension_list(cli_ctx, agent_name, resource_group, extension_type):
+    if DIRECT_EXTENSION_ROUTES[extension_type][1] is None:
+        items = _direct_auth_items(cli_ctx, agent_name, resource_group, extension_type)
+        return {"value": [_direct_auth_to_arm_shape(extension_type, i) for i in items]}
     result = _direct_extension_request(
         cli_ctx, agent_name, resource_group, "GET", _direct_extension_path(extension_type))
     items = result.get("value") if isinstance(result, dict) else result
@@ -3798,10 +3819,11 @@ def _direct_extension_list(cli_ctx, agent_name, resource_group, extension_type):
 
 
 def _direct_extension_delete(cli_ctx, agent_name, resource_group, extension_type, name):
-    return _direct_extension_request(
-        cli_ctx, agent_name, resource_group, "DELETE", _direct_extension_path(extension_type, name),
-        missing_ok=True)
-
+    if extension_type == "azureDevOpsAuths":
+        path = f"{_direct_extension_path(extension_type)}?org={quote(name, safe='')}"
+    else:
+        path = _direct_extension_path(extension_type, name)
+    return _direct_extension_request(cli_ctx, agent_name, resource_group, "DELETE", path, missing_ok=True)
 
 def _arm_extension_create(
     cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False
@@ -3872,7 +3894,6 @@ def _with_direct_fallback(arm_func, direct_func, cli_ctx, agent_name, resource_g
         return arm_func(cli_ctx, agent_name, resource_group, extension_type, *args, **kwargs)
     except InternalTenantOnlyError:
         if extension_type not in DIRECT_EXTENSION_ROUTES or (
-                extension_type in DIRECT_CREATE_ONLY and direct_func is not _direct_extension_create) or (
                 extension_type in DIRECT_NO_LIST_OR_DELETE
                 and direct_func in (_direct_extension_list, _direct_extension_delete)):
             raise
