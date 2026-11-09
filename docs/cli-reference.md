@@ -418,7 +418,7 @@ Create an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only. |
+| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Ev2Mcp, Documentation, AppInsights. For knowledge sources use 'az sre knowledge create'. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
@@ -559,7 +559,7 @@ Update an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only. |
+| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Ev2Mcp, Documentation, AppInsights. For knowledge sources use 'az sre knowledge create'. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
@@ -1198,14 +1198,14 @@ Routes matching incidents to a subagent. Connect the incident platform and creat
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of the response plan. |
-| `--platform` | String | Yes |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. Icm is Microsoft-internal only. |
+| `--platform` | String | Yes |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow. |
 | `--subagent` | String | Yes |  |  | Name of the existing subagent that handles matched incidents. |
 | `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all. |
 | `--title-contains` | String | No |  |  | Only match incidents whose title contains this text. |
 | `--title-not-contains` | List | No |  |  | Space-separated texts; skip incidents whose title contains any of them. |
 | `--incident-type` | List | No |  |  | Space-separated incident types to match (for example LiveSite). Portal: Incident type. |
 | `--impacted-service` | String | No |  |  | Only match incidents for this service. Portal: Owning service. |
-| `--owning-team` | List | No |  |  | Space-separated owning team IDs (IcM team IDs are numeric). Portal: Owning team. |
+| `--owning-team` | List | No |  |  | Space-separated owning team IDs. Portal: Owning team. |
 | `--merge-enabled` | Boolean | No |  | `false`, `true` | Merge related incidents into one investigation thread. Service default: true. |
 | `--merge-window-hours` | Integer | No |  |  | Hours within which related incidents are merged. Service default: 3. |
 | `--instructions` | String | No |  |  | Custom instructions the subagent follows for matched incidents. |
@@ -1343,7 +1343,7 @@ Passing a list flag (for example --priority) replaces that whole list. Use 'enab
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of the response plan. |
-| `--platform` | String | No |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. |
+| `--platform` | String | No |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow. |
 | `--subagent` | String | No |  |  | Name of the existing subagent that handles matched incidents. |
 | `--mode` | String | No |  |  | Agent autonomy: autonomous or review. |
 | `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all. |
@@ -1351,7 +1351,7 @@ Passing a list flag (for example --priority) replaces that whole list. Use 'enab
 | `--title-not-contains` | List | No |  |  | Space-separated texts; skip incidents whose title contains any of them. |
 | `--incident-type` | List | No |  |  | Space-separated incident types to match (for example LiveSite). Portal: Incident type. |
 | `--impacted-service` | String | No |  |  | Only match incidents for this service. Portal: Owning service. |
-| `--owning-team` | List | No |  |  | Space-separated owning team IDs (IcM team IDs are numeric). Portal: Owning team. |
+| `--owning-team` | List | No |  |  | Space-separated owning team IDs. Portal: Owning team. |
 | `--merge-enabled` | Boolean | No |  | `false`, `true` | Merge related incidents into one investigation thread. Service default: true. |
 | `--merge-window-hours` | Integer | No |  |  | Hours within which related incidents are merged. Service default: 3. |
 | `--instructions` | String | No |  |  | Custom instructions the subagent follows for matched incidents. |

@@ -1066,10 +1066,9 @@ class _DataConnectorTypeArgMixin:
                 "Connector type (case-insensitive; portal names also accepted). "
                 "Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, "
                 "LogAnalytics, " + ("Icm, Dgrep, " if internal else "") + "Ev2Mcp, "
-                + ("GenevaMetrics, S360, " if internal else "") + "Documentation, "
-                "AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, "
-                "KnowledgeRepository."
+                + ("GenevaMetrics, S360, " if internal else "") +                 "Documentation, AppInsights."
                 + (" Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only." if internal else "")
+                + " For knowledge sources use 'az sre knowledge create'."
             )
         data_source = getattr(schema, "data_source", None)
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
