@@ -408,8 +408,12 @@ def render_reference(reference=None) -> str:
             if examples:
                 lines.extend(["", "**Examples**", ""])
                 for example in examples:
+                    name = _cell(example.get("name"))
+                    language = "powershell" if "powershell" in name.lower() else "bash"
                     lines.extend(
-                        [f"- {_cell(example.get('name'))}", "", f"  `{_cell(example.get('text'))}`"]
+                        [f"- {name}", "", f"  ```{language}",
+                         *("  " + line for line in (example.get("text") or "").splitlines()),
+                         "  ```"]
                     )
 
     return "\n".join(lines) + "\n"

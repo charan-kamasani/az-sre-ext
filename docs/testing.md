@@ -24,6 +24,15 @@
    unreliable at least once (the original `commonPrompts` shape looked
    confirmed from a DebugApp `.tsx` prop type, but was wrong on the wire).
 
+The reference-generator checks execute copied shell examples offline, with
+an `az` stand-in that records arguments instead of calling Azure. Run them
+from the repository root with Bash available:
+
+```bash
+python -m unittest discover -s scripts/tests -v
+python scripts/generate_cli_reference.py --check
+```
+
 ## Live-verification workflow
 
 **Rebuild and reinstall before every live test.** The installed extension
@@ -38,7 +47,7 @@ az extension add --source dist/sre-1.0.0b1-py3-none-any.whl -y
 
 **For read-only / idempotent checks**, use your long-lived test agent
 directly (`show`, `list`, `connection show`, `usage list`, connector/
-extension `show`/`list`).
+tool/skill/instructions `show`/`list`).
 
 **For anything destructive or state-changing** (`create`, `delete`,
 `start`, `stop`, `identity assign`/`remove`, `network update`, a new
@@ -66,16 +75,16 @@ required at create time — the server rejects creation without one.
 
 **When confirming an extension payload shape**, a 200 response alone is
 not proof — the data plane silently sanitizes/drops unrecognized fields
-instead of rejecting them. Always GET back what you just PUT and diff it
-byte-for-byte against what you sent:
+instead of rejecting them. Always read back what you just created and
+compare the relevant user-supplied fields, allowing for documented server
+defaults and redacted secrets. Use the noun-specific commands; the old
+`az sre extension` group is no longer available:
 
 ```bash
-az sre extension create -g "$RG" --agent-name "$AGENT" \
-  --extension-type commonPrompts --extension-name default \
-  --value '{""prompt"": ""test prompt""}'
+az sre instructions create -g "$RG" --agent-name "$AGENT" \
+  --name test-prompt --value '{"prompt": "test prompt"}'
 
-az sre extension show -g "$RG" --agent-name "$AGENT" \
-  --extension-type commonPrompts --extension-name default
+az sre instructions show -g "$RG" --agent-name "$AGENT" --name test-prompt
 ```
 
 For raw-request probing when the CLI's own client-side validator is in the

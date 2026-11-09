@@ -729,7 +729,7 @@ real `LinkTool` on `mytestagent`:
 
 ```bash
 az sre tool create -g myrg --agent-name myagent -n my-link-tool --value \
-  '{"type": "LinkTool", "name": "my-link-tool", "description": "Opens the docs", \
+  '{"type": "LinkTool", "name": "my-link-tool", "description": "Opens the docs",
     "template": "https://example.com/docs"}'
 ```
 
