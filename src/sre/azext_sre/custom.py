@@ -3309,6 +3309,12 @@ def _validate_subagents_shape(parsed):
             "(live-confirmed shape)."
         )
     _require_str(parsed, "instructions", "--value")
+    instructions = parsed.get("instructions")
+    if instructions and instructions.strip() and len(instructions) <= 50:
+        raise CLIError(
+            "--value.instructions must be longer than 50 characters (at least 51). "
+            "Expand the sub-agent instructions with meaningful guidance and retry."
+        )
     _require_str(parsed, "handoffDescription", "--value")
     _require_str_list(parsed, "tools", "--value")
     _require_str_list(parsed, "mcpTools", "--value")
@@ -4960,7 +4966,9 @@ class SubagentCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "subagents"
     _args_schema = None
     _VALUE_HELP = (
-        "Sub-agent configuration as JSON. Required: instructions, handoffDescription, tools, mcpTools, commonTools, allowedSkills, allowParallelToolCalls."
+        "Sub-agent configuration as JSON. Nonblank instructions must be longer "
+        "than 50 characters (at least 51). Fields: instructions, handoffDescription, "
+        "tools, mcpTools, commonTools, allowedSkills, allowParallelToolCalls."
     )
 
     @classmethod

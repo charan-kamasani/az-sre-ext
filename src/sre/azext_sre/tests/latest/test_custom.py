@@ -1632,9 +1632,14 @@ class SubagentsShapeValidationTests(unittest.TestCase):
     were architecturally uncreatable via ARM was wrong -- see the comment
     above EXTENSION_API_VERSION for the full correction)."""
 
+    _INSTRUCTIONS = (
+        "You are the application evidence specialist. Read supplied reference "
+        "files with ReadFile and return source-backed observations."
+    )
+
     def test_accepts_the_real_confirmed_example_payload(self):
         raw = json.dumps({
-            "instructions": "You are the application evidence specialist.",
+            "instructions": self._INSTRUCTIONS,
             "handoffDescription": "Use for read-only application evidence.",
             "tools": ["ReadFile"],
             "mcpTools": [],
@@ -1647,7 +1652,7 @@ class SubagentsShapeValidationTests(unittest.TestCase):
 
     def test_accepts_embedded_pretooluse_hook(self):
         raw = json.dumps({
-            "instructions": "x", "handoffDescription": "y",
+            "instructions": self._INSTRUCTIONS, "handoffDescription": "y",
             "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
             "allowParallelToolCalls": False,
             "hooks": {
@@ -1683,7 +1688,7 @@ class SubagentsShapeValidationTests(unittest.TestCase):
 
     def test_rejects_non_list_tools(self):
         raw = json.dumps({
-            "instructions": "x", "handoffDescription": "y",
+            "instructions": self._INSTRUCTIONS, "handoffDescription": "y",
             "tools": "ReadFile", "mcpTools": [], "commonTools": [],
             "allowedSkills": [], "allowParallelToolCalls": True,
         })
@@ -1693,7 +1698,7 @@ class SubagentsShapeValidationTests(unittest.TestCase):
 
     def test_rejects_non_bool_allow_parallel_tool_calls(self):
         raw = json.dumps({
-            "instructions": "x", "handoffDescription": "y",
+            "instructions": self._INSTRUCTIONS, "handoffDescription": "y",
             "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
             "allowParallelToolCalls": "true",
         })
@@ -1703,7 +1708,7 @@ class SubagentsShapeValidationTests(unittest.TestCase):
 
     def test_rejects_hooks_not_object(self):
         raw = json.dumps({
-            "instructions": "x", "handoffDescription": "y",
+            "instructions": self._INSTRUCTIONS, "handoffDescription": "y",
             "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
             "allowParallelToolCalls": True, "hooks": ["not", "an", "object"],
         })
@@ -1713,7 +1718,7 @@ class SubagentsShapeValidationTests(unittest.TestCase):
 
     def test_hook_entry_script_is_type_checked_but_not_presence_required(self):
         raw = json.dumps({
-            "instructions": "x", "handoffDescription": "y",
+            "instructions": self._INSTRUCTIONS, "handoffDescription": "y",
             "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
             "allowParallelToolCalls": True,
             "hooks": {"PreToolUse": [{"type": "command", "matcher": "(?s:.*)", "failMode": "block"}]},
@@ -1725,6 +1730,112 @@ class SubagentsShapeValidationTests(unittest.TestCase):
         with self.assertRaises(CLIError) as raised:
             _encode_extension_value(bad, "subagents")
         self.assertIn("script", str(raised.exception))
+
+
+class SubagentCreateValidationTests(unittest.TestCase):
+    _AGENT_ID = "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/agent"
+    _RESOURCE_ID = _AGENT_ID + "/subagents/specialist"
+    _VALID_VALUE = json.dumps({
+        "instructions": "Investigate the supplied evidence and return concise, source-backed observations.",
+        "oldOnly": True,
+    })
+
+    def setUp(self):
+        self.resources = {}
+        for replacement in (
+            patch.object(AAZCommand, "_handler", lambda command, command_args: None),
+            patch("azext_sre.custom._cli_invoke", return_value={"id": self._AGENT_ID}),
+            patch("azext_sre.custom._arm_request", side_effect=self._arm_request),
+        ):
+            replacement.start()
+            self.addCleanup(replacement.stop)
+
+    def _arm_request(self, cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+        if method == "PUT":
+            self.resources[resource_id] = copy.deepcopy(body)
+        elif method != "GET":
+            raise AssertionError(f"Unexpected ARM method: {method}")
+        return copy.deepcopy(self.resources.get(resource_id))
+
+    def _create(self, raw_value, overwrite=False):
+        return _bare_command(
+            SubagentCreate, agent_name="agent", resource_group="rg", extension_name="specialist",
+            value=raw_value, overwrite=overwrite, pre_tool_use_script_file=None,
+        )._handler(None)
+
+    def test_short_instructions_report_the_limit_without_mutating_resources(self):
+        for instructions in ("You are a helpful assistant. Be concise.", "private-prompt-" + "x" * 35):
+            for overwrite in (False, True):
+                with self.subTest(length=len(instructions), overwrite=overwrite):
+                    self.resources.clear()
+                    if overwrite:
+                        self._create(self._VALID_VALUE)
+                    before = copy.deepcopy(self.resources)
+                    with self.assertRaises(CLIError) as raised:
+                        self._create(json.dumps({"instructions": instructions}), overwrite=overwrite)
+                    message = str(raised.exception)
+                    self.assertIn("--value.instructions", message)
+                    self.assertRegex(message, r"longer than 50|at least 51")
+                    self.assertNotIn(instructions, message)
+                    self.assertEqual(self.resources, before)
+
+    def test_valid_instructions_and_stop_hooks_are_sent_without_rewriting(self):
+        for instructions in ("x" * 51, " " + "x" * 49 + " ", json.loads(self._VALID_VALUE)["instructions"]):
+            for overwrite in (False, True):
+                with self.subTest(length=len(instructions), overwrite=overwrite):
+                    self.resources.clear()
+                    if overwrite:
+                        self._create(self._VALID_VALUE)
+                    raw = json.dumps({
+                        "instructions": instructions,
+                        "handoffDescription": "Use for read-only evidence.",
+                        "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
+                        "allowParallelToolCalls": False,
+                        "hooks": {"Stop": [{
+                            "type": "prompt", "prompt": "Require the final response marker DONE.",
+                            "timeout": 30, "failMode": "block",
+                        }]},
+                    }, indent=2)
+                    self._create(raw, overwrite=overwrite)
+                    stored = self.resources[self._RESOURCE_ID]["properties"]["value"]
+                    self.assertEqual(base64.b64decode(stored).decode("utf-8"), raw)
+
+    def test_omitted_and_blank_instructions_keep_existing_default_handling(self):
+        for value in ({}, {"instructions": ""}, {"instructions": " \t\r\n"}):
+            with self.subTest(value=value):
+                raw = json.dumps(value)
+                self._create(self._VALID_VALUE, overwrite=True)
+                self._create(raw, overwrite=True)
+                stored = self.resources[self._RESOURCE_ID]["properties"]["value"]
+                self.assertEqual(base64.b64decode(stored).decode("utf-8"), raw)
+
+    def test_malformed_input_still_fails_without_overwriting(self):
+        self._create(self._VALID_VALUE)
+        before = copy.deepcopy(self.resources)
+        for raw, error in (
+            ("not json {{{", r"--value.*JSON"),
+            ("[]", "must be a JSON object"),
+            ('{"instructions": null}', r"--value.instructions.*string"),
+            ('{"instructions": 123}', r"--value.instructions.*string"),
+        ):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(CLIError, error):
+                    self._create(raw, overwrite=True)
+                self.assertEqual(self.resources, before)
+
+    def test_existing_name_still_requires_explicit_overwrite(self):
+        self._create(self._VALID_VALUE)
+        before = copy.deepcopy(self.resources)
+        with self.assertRaisesRegex(ResourceExistsError, "--overwrite"):
+            self._create('{"instructions": "short"}')
+        self.assertEqual(self.resources, before)
+
+    def test_unrelated_service_errors_are_not_replaced_with_a_prompt_diagnosis(self):
+        error = CLIError("Unrelated service validation failure.")
+        with patch("azext_sre.custom._arm_request", side_effect=error):
+            with self.assertRaises(CLIError) as raised:
+                self._create(self._VALID_VALUE, overwrite=True)
+        self.assertIs(raised.exception, error)
 
 
 class HooksShapeValidationTests(unittest.TestCase):
