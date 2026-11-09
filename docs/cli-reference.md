@@ -418,7 +418,7 @@ Create an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. |
+| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. Dgrep, GenevaMetrics and S360 are Microsoft-internal only. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
@@ -559,7 +559,7 @@ Update an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. |
+| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. Dgrep, GenevaMetrics and S360 are Microsoft-internal only. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
@@ -1142,7 +1142,7 @@ Connect a GitHub or Azure DevOps repo to an agent.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--repo-url` | String | Yes |  |  | HTTPS clone URL of the repo. |
-| `--provider` | String | No |  | `GitHub`, `AzureDevOps` | Repo provider. Auto-detected from --repo-url's host when omitted. |
+| `--provider` | String | No |  | `GitHub`, `AzureDevOps` | Repo provider. Auto-detected from --repo-url's host when omitted. AzureDevOps is Microsoft-internal only. |
 | `--display-name`, `--name`, `-n` | String | No |  |  | Display name for the repo. Defaults to the last path segment of --repo-url. |
 | `--branch` | String | No |  |  | Branch to check out. Defaults to the repo's default branch. |
 | `--github-token` | String | No |  |  | GitHub token. Default: GITHUB_TOKEN/GH_TOKEN, else browser sign-in. |

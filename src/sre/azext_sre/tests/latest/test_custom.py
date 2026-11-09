@@ -3220,6 +3220,38 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
             command.pre_operations()
         self.assertEqual(command.ctx.args.data_connector_type, "Kusto")
 
+    def _create_with_features(self, connector_type, features):
+        command = _bare_command(
+            self._TestDataConnectorType, data_connector_type=self._value(connector_type)
+        )
+        with patch("azext_sre.custom._agent_features", return_value=features):
+            command.pre_operations()
+        return command
+
+    def test_internal_only_connectors_blocked_when_the_agent_is_not_first_party(self):
+        for connector_type in ("GenevaMetrics", "S360", "dgrep"):
+            with self.assertRaises(CLIError):
+                self._create_with_features(connector_type, {"isFirstParty": False})
+
+    def test_internal_only_connectors_allowed_when_the_agent_is_first_party(self):
+        command = self._create_with_features("s360", {"isFirstParty": True})
+        self.assertEqual(command.ctx.args.data_connector_type, "S360")
+
+    def test_gateway_connector_blocked_when_the_gateway_is_off(self):
+        with self.assertRaises(CLIError):
+            self._create_with_features("ConnectorGateway", {"connectorGatewayEnabled": False})
+        command = self._create_with_features("ConnectorGateway", {"connectorGatewayEnabled": True})
+        self.assertEqual(command.ctx.args.data_connector_type, "ConnectorGateway")
+
+    def test_devops_repo_blocked_when_the_agent_is_not_first_party(self):
+        from azext_sre.custom import _require_first_party
+
+        with patch("azext_sre.custom._agent_features", return_value={"isFirstParty": False}):
+            with self.assertRaises(CLIError):
+                _require_first_party(None, "a", "rg", "Azure DevOps repositories")
+        with patch("azext_sre.custom._agent_features", return_value={}):
+            _require_first_party(None, "a", "rg", "Azure DevOps repositories")
+
 
 class ConnectorConvenienceArgsTests(unittest.TestCase):
     """--file-path/--mcp-endpoint/--github on 'connector create' build the

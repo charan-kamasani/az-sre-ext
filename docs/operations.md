@@ -636,6 +636,13 @@ can't be asked, it tries ARM first and falls back as described above. Set
 tasks or HTTP triggers on an agent that reports the feature as off fails with a
 clear message.
 
+Some features are Microsoft-internal, as in the portal. On an agent that
+reports it isn't first-party, `connector create` rejects the `Dgrep`,
+`GenevaMetrics` and `S360` types and `repo connect` rejects Azure DevOps. The
+`ConnectorGateway` type is rejected when the agent reports the connector
+gateway as off. `--help` still lists these options, since help can't depend on
+the agent, and marks the internal-only ones.
+
 ### `hook` eventType has 4 values, not 2
 
 The official docs (`sre.azure.com/docs/capabilities/agent-hooks`) confirm

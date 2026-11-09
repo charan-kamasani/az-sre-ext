@@ -1017,7 +1017,7 @@ class _DataConnectorTypeArgMixin:
                 "Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, "
                 "LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, "
                 "AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, "
-                "KnowledgeRepository."
+                "KnowledgeRepository. Dgrep, GenevaMetrics and S360 are Microsoft-internal only."
             )
         data_source = getattr(schema, "data_source", None)
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
@@ -1042,13 +1042,15 @@ class _DataConnectorTypeArgMixin:
             normalized = _normalize_data_connector_type(
                 data_connector_type.to_serialized_data()
             )
-            if normalized == "GenevaMetrics":
-                tenant_id = _resolve_signed_in_tenant_id(self.cli_ctx)
-                if not _is_microsoft_first_party_tenant(tenant_id):
-                    raise CLIError(
-                        "--data-connector-type GenevaMetrics is Microsoft-internal "
-                        "only and is not available in this tenant."
-                    )
+            if normalized in FIRST_PARTY_ONLY_CONNECTOR_TYPES:
+                _require_first_party(
+                    self.cli_ctx, _arg_value(getattr(args, "agent_name", None)), _arg_value(getattr(args, "resource_group", None)),
+                    f"--data-connector-type {normalized}", tenant_fallback=True,
+                )
+            if normalized == "ConnectorGateway" and _agent_features(
+                    self.cli_ctx, _arg_value(getattr(args, "agent_name", None)),
+                    _arg_value(getattr(args, "resource_group", None))).get("connectorGatewayEnabled") is False:
+                raise CLIError("This agent doesn't have the connector gateway enabled, so this connector type isn't available.")
             args.data_connector_type = normalized
         super().pre_operations()
 
@@ -3982,6 +3984,21 @@ def _require_feature(features, extension_type):
         raise CLIError(f"This agent doesn't have {flag[1]} enabled, so it can't be configured here.")
 
 
+FIRST_PARTY_ONLY_CONNECTOR_TYPES = frozenset({"GenevaMetrics", "S360", "Dgrep"})
+
+
+def _require_first_party(cli_ctx, agent_name, resource_group, what, tenant_fallback=False):
+    """Block Microsoft-internal features on agents that report they are not first-party.
+
+    When the agent's status is unknown, tenant_fallback checks the signed-in tenant instead.
+    """
+    first_party = _agent_features(cli_ctx, agent_name, resource_group).get("isFirstParty")
+    if first_party is None and tenant_fallback:
+        first_party = _is_microsoft_first_party_tenant(_resolve_signed_in_tenant_id(cli_ctx))
+    if first_party is False:
+        raise CLIError(f"{what} is Microsoft-internal only and is not available on this agent.")
+
+
 def _with_direct_fallback(arm_func, direct_func, cli_ctx, agent_name, resource_group, extension_type, *args, **kwargs):
     features = _agent_features(cli_ctx, agent_name, resource_group)
     if extension_type in DIRECT_EXTENSION_ROUTES and features.get("isFirstParty") is False and not (
@@ -5866,7 +5883,7 @@ class RepoConnect(AAZCommand):
         )
         schema.provider = AAZStrArg(
             options=["--provider"],
-            help="Repo provider. Auto-detected from --repo-url's host when omitted.",
+            help="Repo provider. Auto-detected from --repo-url's host when omitted. AzureDevOps is Microsoft-internal only.",
             enum={"GitHub": "GitHub", "AzureDevOps": "AzureDevOps"},
         )
         schema.display_name = AAZStrArg(
@@ -5935,6 +5952,7 @@ class RepoConnect(AAZCommand):
         else:
             from urllib.parse import urlparse
 
+            _require_first_party(self.cli_ctx, agent_name, resource_group, "Azure DevOps repositories")
             organization = devops_organization or urlparse(repo_url).path.strip("/").split("/", 1)[0]
             if not organization:
                 raise CLIError(
