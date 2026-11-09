@@ -1025,12 +1025,15 @@ def _normalize_data_connector_type(value):
     key = str(value).strip().lower()
     normalized = DATA_CONNECTOR_TYPES.get(key) or DATA_CONNECTOR_TYPE_ALIASES.get(key)
     if normalized is None:
+        internal = _show_internal_features()
+        hidden = FIRST_PARTY_ONLY_CONNECTOR_TYPES | {"Icm"}
         raise CLIError(
             "--data-connector-type must be one of: "
-            + ", ".join(sorted(DATA_CONNECTOR_TYPES))
+            + ", ".join(sorted(t for t in DATA_CONNECTOR_TYPES if internal or DATA_CONNECTOR_TYPES[t] not in hidden))
             + " (friendly names like 'Azure Data Explorer', 'Custom MCP', "
-            "'Office 365 Outlook', 'Microsoft Teams', 'Microsoft IcM', "
-            "'Microsoft DGrep' also accepted)"
+            "'Office 365 Outlook', 'Microsoft Teams'"
+            + (", 'Microsoft IcM', 'Microsoft DGrep'" if internal else "")
+            + " also accepted)"
             + f" (got '{value}')."
         )
     return normalized
@@ -4844,7 +4847,8 @@ class ResponsePlanCreate(AAZCommand):
         mode = _arg_value(args.mode)
         overwrite = bool(_arg_value(args.overwrite))
         if platform not in RESPONSE_PLAN_PLATFORMS:
-            raise CLIError(f"--platform must be one of: {', '.join(RESPONSE_PLAN_PLATFORMS)}.")
+            visible = [p for p in RESPONSE_PLAN_PLATFORMS if p != "Icm" or _show_internal_features()]
+            raise CLIError(f"--platform must be one of: {', '.join(visible)}.")
         if mode not in RESPONSE_PLAN_MODES:
             raise CLIError(f"--mode must be one of: {', '.join(RESPONSE_PLAN_MODES)}.")
         if platform == "Icm":
