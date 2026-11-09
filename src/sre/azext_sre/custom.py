@@ -2436,11 +2436,11 @@ class GetConnection(AAZCommand):
             try:
                 with open(_CONNECTIONS_FILE, "r", encoding="utf-8") as handle:
                     connections = json.load(handle)
-            except (OSError, json.JSONDecodeError) as ex:
+            except (OSError, ValueError) as ex:
                 raise CLIError(
                     f"Could not read existing {_CONNECTIONS_FILE} ({ex}). "
                     "The file was left unchanged; fix or delete it and retry."
-                )
+                ) from ex
             if not isinstance(connections, dict):
                 raise CLIError(
                     f"{_CONNECTIONS_FILE} does not contain a JSON object. "
@@ -2937,7 +2937,7 @@ class ShowNetwork(AAZCommand):
         name = _arg_value(self.ctx.args.name)
         resource_group = _arg_value(self.ctx.args.resource_group)
         resource_id = _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
-        current = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION)
+        current = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION, missing_ok=True)
         if not isinstance(current, dict):
             raise ResourceNotFoundError(
                 f"Could not find SRE Agent '{name}' in resource group '{resource_group}' at api-version {NETWORK_API_VERSION}."

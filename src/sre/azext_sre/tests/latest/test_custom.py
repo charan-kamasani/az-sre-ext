@@ -2590,11 +2590,20 @@ class ShowNetworkTests(unittest.TestCase):
 
     def test_missing_agent_raises(self):
         command = _bare_command(ShowNetwork, name="myagent", resource_group="rg")
+
+        def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+            if not missing_ok:
+                raise AssertionError("a 404 must be tolerated with missing_ok=True")
+            return None
+
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
-             patch("azext_sre.custom._arm_request", lambda *a, **k: None):
+             patch("azext_sre.custom._arm_request", fake_arm_request):
             with self.assertRaises(ResourceNotFoundError):
                 command._handler({})
+
+
+class CommandRegistrationTests(unittest.TestCase):
     """Every hand-written command in custom.py must actually be reachable
     through the loader's public 'sre ...' surface -- extends the single
     smoke test that existed before this file with explicit per-command
