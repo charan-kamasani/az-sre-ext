@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **24 groups** and **77 commands**.
+Public surface: **24 groups** and **78 commands**.
 
 ## Important caveats
 
@@ -1043,7 +1043,29 @@ Configures VNet injection and outbound egress for the agent's own sandboxed tool
 
 | Verb | Exact syntax |
 | --- | --- |
+| `show` | `az sre network show --name <value> --resource-group <value>` |
 | `update` | `az sre network update --name <value> --resource-group <value> [--vnet-configuration <json-or-@file>] [--sandbox-configuration <json-or-@file>]` |
+
+### `az sre network show`
+
+Show VNet injection and sandbox egress settings (preview).
+
+'az sre agent show' omits these because it uses an older API version.
+
+**Syntax**
+
+`az sre network show --name <value> --resource-group <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent to show networking settings for. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- Show an agent's networking settings
+
+  `az sre network show --name myagent --resource-group myrg`
 
 ### `az sre network update`
 

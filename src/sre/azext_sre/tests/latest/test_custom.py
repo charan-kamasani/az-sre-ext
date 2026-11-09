@@ -44,6 +44,7 @@ from azext_sre.custom import (
     ManagedResourceList,
     AccessList,
     UpdateNetwork,
+    ShowNetwork,
     RepoConnect,
     GetConnection,
     KnowledgeCreate,
@@ -2564,7 +2565,36 @@ class UpdateNetworkMergeTests(unittest.TestCase):
         self.assertNotIn("displayName", result)
 
 
-class CommandRegistrationTests(unittest.TestCase):
+class ShowNetworkTests(unittest.TestCase):
+    _ID = "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"
+
+    def test_reads_at_networking_api_version_and_trims(self):
+        command = _bare_command(ShowNetwork, name="myagent", resource_group="rg")
+        calls = []
+
+        def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+            calls.append((method, resource_id, api_version))
+            return {"id": self._ID, "name": "myagent", "properties": {
+                "displayName": "hide-me", "provisioningState": "Succeeded",
+                "sandboxConfiguration": {"egress": {"mode": "Limited"}}}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
+             patch("azext_sre.custom._arm_request", fake_arm_request):
+            result = command._handler({})
+
+        self.assertEqual(calls, [("GET", self._ID, "2026-11-01-preview")])
+        self.assertEqual(result["sandboxConfiguration"], {"egress": {"mode": "Limited"}})
+        self.assertIsNone(result["vnetConfiguration"])
+        self.assertNotIn("displayName", result)
+
+    def test_missing_agent_raises(self):
+        command = _bare_command(ShowNetwork, name="myagent", resource_group="rg")
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
+             patch("azext_sre.custom._arm_request", lambda *a, **k: None):
+            with self.assertRaises(ResourceNotFoundError):
+                command._handler({})
     """Every hand-written command in custom.py must actually be reachable
     through the loader's public 'sre ...' surface -- extends the single
     smoke test that existed before this file with explicit per-command
@@ -2581,7 +2611,7 @@ class CommandRegistrationTests(unittest.TestCase):
             "sre agent create", "sre agent update", "sre agent show",
             "sre agent list", "sre agent delete", "sre agent start",
             "sre agent stop", "sre endpoint show", "sre usage list",
-            "sre access grant", "sre access revoke", "sre network update",
+            "sre access grant", "sre access revoke", "sre network update", "sre network show",
             "sre connector create", "sre connector show", "sre connector list",
             "sre connector update", "sre connector delete", "sre connector list-secret",
             "sre identity assign", "sre identity remove", "sre identity show",
