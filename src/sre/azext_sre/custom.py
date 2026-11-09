@@ -1047,10 +1047,6 @@ class _DataConnectorTypeArgMixin:
                     self.cli_ctx, _arg_value(getattr(args, "agent_name", None)), _arg_value(getattr(args, "resource_group", None)),
                     f"--data-connector-type {normalized}", tenant_fallback=True,
                 )
-            if normalized == "ConnectorGateway" and _agent_features(
-                    self.cli_ctx, _arg_value(getattr(args, "agent_name", None)),
-                    _arg_value(getattr(args, "resource_group", None))).get("connectorGatewayEnabled") is False:
-                raise CLIError("This agent doesn't have the connector gateway enabled, so this connector type isn't available.")
             args.data_connector_type = normalized
         super().pre_operations()
 

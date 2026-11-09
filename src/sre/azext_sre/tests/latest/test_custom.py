@@ -3237,12 +3237,6 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
         command = self._create_with_features("s360", {"isFirstParty": True})
         self.assertEqual(command.ctx.args.data_connector_type, "S360")
 
-    def test_gateway_connector_blocked_when_the_gateway_is_off(self):
-        with self.assertRaises(CLIError):
-            self._create_with_features("ConnectorGateway", {"connectorGatewayEnabled": False})
-        command = self._create_with_features("ConnectorGateway", {"connectorGatewayEnabled": True})
-        self.assertEqual(command.ctx.args.data_connector_type, "ConnectorGateway")
-
     def test_require_first_party_blocks_only_agents_that_say_they_are_not(self):
         from azext_sre.custom import _require_first_party
 

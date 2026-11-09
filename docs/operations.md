@@ -638,10 +638,8 @@ clear message.
 
 Some features are Microsoft-internal, as in the portal. On an agent that
 reports it isn't first-party, `connector create` rejects the `Dgrep`,
-`GenevaMetrics` and `S360` types. The
-`ConnectorGateway` type is rejected when the agent reports the connector
-gateway as off. `--help` still lists these options, since help can't depend on
-the agent, and marks the internal-only ones.
+`GenevaMetrics` and `S360` types. `--help` still lists them, since help can't
+depend on the agent, and marks the internal-only ones.
 
 ### `hook` eventType has 4 values, not 2
 
