@@ -1,13 +1,39 @@
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
 
 from scripts.generate_cli_reference import render_reference
+
+
+class ReferenceMetadataTests(unittest.TestCase):
+    def test_reference_is_identical_for_different_signed_in_tenants(self):
+        outputs = []
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory)
+            for tenant in ("72f988bf-86f1-41af-91ab-2d7cd011db47",
+                           "11111111-2222-3333-4444-555555555555"):
+                (config / "azureProfile.json").write_text(json.dumps({
+                    "subscriptions": [{"isDefault": True, "tenantId": tenant}],
+                }), encoding="utf-8")
+                result = subprocess.run(
+                    [sys.executable, "-c",
+                     "import pathlib,sys; sys.path.insert(0,str(pathlib.Path.cwd())); "
+                     "from scripts.generate_cli_reference import render_reference; "
+                     "sys.stdout.write(render_reference())"],
+                    cwd=Path(__file__).resolve().parents[2],
+                    env={**os.environ, "AZURE_CONFIG_DIR": str(config), "PYTHONUTF8": "1"},
+                    capture_output=True, text=True, encoding="utf-8", check=True,
+                )
+                outputs.append(result.stdout)
+        self.assertTrue(outputs[0])
+        self.assertEqual(outputs[0], outputs[1])
 
 
 @unittest.skipUnless(shutil.which("bash"), "Bash is required to exercise copied examples.")

@@ -12,6 +12,14 @@
    registration, arg-schema help regressions (`to_cmd_arg()` must not
    crash — see [docs/source-code.md](source-code.md)), and CLI-level
    argument enforcement.
+   `test_managed_resource_identity.py` exercises grant/list/revoke through the
+   real extension loader and Azure CLI parser with isolated identity and RBAC
+   state. It covers SAMI defaults, explicit assigned UAMIs, invalid selections,
+   unchanged runtime settings, and preservation of unrelated role assignments;
+   network requests are blocked.
+   The documented test dependencies include `msrest` and `azure-common`
+   because Azure CLI's real error formatter imports them even for local
+   argument-validation errors.
 2. **`-h` sweep** — run `-h` on every registered command and check for an
    unhandled traceback (`unexpected error`/`Traceback`) in the output. This
    is the fastest way to catch the exact bug class unit tests can miss: an
@@ -32,6 +40,10 @@ from the repository root with Bash available:
 python -m unittest discover -s scripts/tests -v
 python scripts/generate_cli_reference.py --check
 ```
+
+The committed reference covers the complete command surface, including
+documented Microsoft-internal options. Generation is independent of the
+local account; interactive CLI help still applies normal tenant visibility.
 
 ## Live-verification workflow
 

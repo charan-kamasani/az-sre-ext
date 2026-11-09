@@ -104,6 +104,38 @@ az sre managed-resource revoke -g myrg --agent-name myagent \
   --target-subscription <sub-id> --target-resource-group monitored-rg
 ```
 
+All three commands default to the agent's **system-assigned managed identity
+(SAMI)**, even when its knowledge graph, action configuration, or a connector
+uses a user-assigned managed identity (UAMI). To target a UAMI, pass its full
+assigned ARM resource ID as `--identity` on **grant, list, and revoke**:
+
+```bash
+UAMI_ID="/subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime"
+
+az sre identity show -g myrg --agent-name myagent
+az sre managed-resource grant -g myrg --agent-name myagent \
+  --identity "$UAMI_ID" --target-subscription <sub-id> --target-resource-group monitored-rg
+az sre managed-resource list -g myrg --agent-name myagent --identity "$UAMI_ID"
+az sre managed-resource revoke -g myrg --agent-name myagent \
+  --identity "$UAMI_ID" --target-subscription <sub-id> --target-resource-group monitored-rg
+```
+
+`--identity system` explicitly selects the default SAMI. UAMI resource IDs
+are matched case-insensitively against `identity show`'s
+`userAssignedIdentities`; names, client IDs, principal IDs, unassigned UAMIs,
+and identities without principal metadata are rejected. Selection uses the
+attached identity's `principalId`, with no additional directory lookup.
+The selected identity and principal ID are logged on stderr (unless
+`--only-show-errors` suppresses warnings), including when a list is empty.
+These commands do not attach identities, change runtime identity settings,
+restart the agent, or select the first attached UAMI automatically.
+
+Grant and revoke still operate on Reader + Monitoring Contributor as a pair.
+Revoke is limited to the chosen identity and exact requested scope, preserving
+other principals, other roles, and assignments on parent or child scopes.
+List retains `az role assignment list --all`'s current-subscription scope and
+returns every role, not just the managed pair, for the chosen identity.
+
 `access list` and `managed-resource list` both return a raw
 `az role assignment list` object (a dozen-plus flat top-level fields —
 `id`/`principalId`/`principalName`/`principalType`/`roleDefinitionId`/
@@ -115,8 +147,8 @@ terminal width. Both commands register a custom `table_transformer`
 `Principal`/`Type`/`Role`/`GrantedOn` view for `access list` (the scope is
 always the agent itself, so it's omitted), and a
 `Scope`/`Role`/`PrincipalType`/`GrantedOn` view for `managed-resource list`
-(the principal is always the agent's own identity, so its GUID/app-id is
-omitted as noise). `-o json`/`-o jsonc`/`-o yaml`/etc. are unaffected and
+(the principal is the selected agent identity, reported separately on stderr).
+`-o json`/`-o jsonc`/`-o yaml`/etc. are unaffected and
 still return every field.
 
 ## Data connectors
@@ -610,6 +642,45 @@ A universal constraint applies to every extension type: the decoded
 always rejected with `"request body contains an invalid or unrecognized
 property"`.
 
+### Non-Microsoft tenants
+
+The service currently rejects agent extension calls through ARM from
+non-Microsoft tenants with "This feature is restricted to internal tenants
+only". When that happens, these commands retry on the agent's own API, the
+same one the Azure SRE portal uses:
+
+`tool`, `skill`, `hook`, `instructions`, `automation scheduled-task`,
+`automation http-trigger`, `plugin marketplace`, `plugin install`,
+`agent settings`, `response-plan`, `repo connect` and its GitHub / Azure DevOps
+credentials.
+
+Changing anything through the agent's API needs the **SRE Agent Author** or
+**SRE Agent Administrator** role on the agent. `agent settings` can be shown and
+updated but not listed or deleted this way. Other types (for example
+`subagents`) still show a plain "not available for this tenant" message.
+
+The CLI asks the agent once (`GET /api/v1/feature/status`) whether it is a
+Microsoft first-party agent, and remembers the answer for 24 hours in
+`sre_agent_features.json` in the Azure CLI config folder. For other tenants it
+goes straight to the agent's API, so there is no failed first call. If the agent
+can't be asked, it tries ARM first and falls back as described above. Set
+`AZSRE_EXTENSION_ROUTE=direct` or `arm` to force a route. Creating scheduled
+tasks or HTTP triggers on an agent that reports the feature as off fails with a
+clear message.
+
+Some features are Microsoft-internal, as in the portal. On an agent that
+reports it isn't first-party, `connector create` rejects the `Dgrep`,
+`GenevaMetrics` and `S360` types. IcM (the `Icm` connector
+type, `response-plan --platform Icm` and `agent create/update` with
+`type=Icm`) is blocked the same way, because in
+the public cloud IcM is offered only to first-party tenants. Use PagerDuty,
+ServiceNow or Azure Monitor instead.
+
+`--help` can't ask the agent, so it goes by the tenant you're signed in to
+(read from the local Azure CLI profile, no network call). For other tenants it
+doesn't mention these internal options, as the portal hides them. If the tenant
+can't be read, help lists them. Typing one anyway still gets the error above.
+
 ### `hook` eventType has 4 values, not 2
 
 The official docs (`sre.azure.com/docs/capabilities/agent-hooks`) confirm
@@ -719,7 +790,8 @@ source than the ARM control-plane proxy) and live-verified by creating a
 real `LinkTool` on `mytestagent`:
 
 - The polymorphic discriminator field is **`type`** (values: `KustoTool`,
-  `LinkTool`, `PythonFunctionTool`, `HttpClientTool`), not `toolType`.
+  `LinkTool`, `PythonFunctionTool`, and legacy/update-only `HttpClientTool`),
+  not `toolType`.
 - `PythonTool` remains accepted as a legacy CLI alias. The CLI normalizes it
   to `PythonFunctionTool` before encoding the request; the runtime rejects
   the old discriminator. Executable code and the other configuration fields
@@ -737,6 +809,33 @@ The CLI's `_validate_tools_shape` client-side validator already enforced
 the correct `type`/`template` fields; only the `--value` help text's
 example was stale and contradicted it. Fixed so the documented example
 now matches the validator and the real API.
+
+### `HttpClientTool` is update-only, not supported for new creation
+
+Fresh-deployment verification of the native tools API returned HTTP 400
+`ValidationFailure` for a valid new `HttpClientTool` with this message:
+**"Creating new HttpClientTool tools is no longer supported. Existing
+HttpClientTool tools can still be updated."** The ARM proxy can instead
+surface a generic invalid extension configuration error. This is a service
+creation policy, not evidence that the discriminator or headers need a
+different JSON shape.
+
+`az sre tool create` now rejects new HTTP tools before sending a PUT,
+including an absent name with `--overwrite`. Updating a legacy HTTP tool
+requires `--overwrite` and an existing resource of the same name whose
+decoded configuration is already `HttpClientTool`; replacing a different
+tool type does not qualify. Without `--overwrite`, an existing name still
+produces the ordinary resource-exists error. `tool show` and `tool list`
+continue to read legacy HTTP tools, and their update payload retains the
+existing HTTP field names and shapes.
+
+For new HTTP integrations, use `PythonFunctionTool` or an MCP server/connector
+configured separately. The CLI does not convert HTTP tools or their
+credentials automatically.
+
+Legacy update support is declared by the service and covered locally with
+existing-resource state and payload checks. The fresh deployment had no
+legacy HTTP tool, so a live legacy update has **not** been qualified.
 
 ### `globalSettings.toolStatuses` is accepted but doesn't round-trip; `toolPermissions`/`approvalExpirationSetting` do
 

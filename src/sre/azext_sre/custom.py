@@ -30,6 +30,7 @@
 import base64
 import json
 import os
+import re
 import uuid
 from functools import partial
 from urllib.parse import quote
@@ -471,6 +472,27 @@ MICROSOFT_FIRST_PARTY_TENANT_IDS = frozenset(
 )
 
 
+def _show_internal_features():
+    """Whether help should mention Microsoft-internal features.
+
+    Reads the default account's tenant from the local profile (no network),
+    like the portal, which hides these for non-Microsoft tenants. Any doubt
+    shows them; the run-time gates still apply.
+    """
+    try:
+        from azure.cli.core._environment import get_config_dir
+        with open(os.path.join(get_config_dir(), "azureProfile.json"), encoding="utf-8-sig") as profile_file:
+            subscriptions = json.load(profile_file).get("subscriptions") or []
+        default = next((s for s in subscriptions if s.get("isDefault")), None)
+        tenant_id = (default or {}).get("tenantId")
+    except Exception:  # pylint: disable=broad-except
+        return True
+    if not tenant_id:
+        return True
+    return _is_microsoft_first_party_tenant(tenant_id) or tenant_id.lower() in ICM_MANAGED_IDENTITY_TENANT_IDS
+
+
+
 def _resolve_signed_in_user_object_id(cli_ctx):
     """Resolve the signed-in user's AAD object ID via 'az ad signed-in-user show'.
 
@@ -651,8 +673,34 @@ class _LogConfigurationWarningMixin:
         super().pre_operations()
 
 
+ICM_MANAGED_IDENTITY_TENANT_IDS = frozenset({
+    "33e01921-4d64-4f8c-a055-5bdaffd5e33d",
+    "975f013f-7f24-47e8-a7d3-abc4752bf346",
+    "cdc5aeea-15c5-4db6-b079-fcadd2505dc2",
+    "68cd85cc-e0b3-43c8-ba3c-67686dbf8a67",
+    "70a90262-f46c-48aa-ac4c-37e37f8be1a2",
+    "dc12cfcb-7c57-4e3e-92b9-6ea4cbc258e9",
+    "20ac2fc4-effc-4f76-ba7d-63c5ae134f5f",
+    "ec044cc1-d8de-4194-a9b6-f5abc1c30081",
+})
+
+
+class _IcmIncidentPlatformGateMixin:
+    """Block type=Icm in --incident-management-configuration outside Microsoft tenants."""
+
+    def pre_operations(self):
+        args = self.ctx.args
+        config = getattr(args, "incident_management_configuration", None)
+        platform = _arg_value(config.type) if config is not None else None
+        if platform and str(platform).lower() == "icm":
+            tenant_id = (_resolve_signed_in_tenant_id(self.cli_ctx) or "").lower()
+            if tenant_id not in ICM_MANAGED_IDENTITY_TENANT_IDS and not _is_microsoft_first_party_tenant(tenant_id):
+                raise CLIError("--incident-management-configuration type=Icm is Microsoft-internal only.")
+        super().pre_operations()
+
+
 @register_command("sre agent create")
-class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
+class Create(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
     :example: Create an agent with an Anthropic default model
@@ -693,7 +741,7 @@ class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdenti
 
 
 @register_command("sre agent update")
-class Update(_ModelProviderArgMixin, _GeneratedUpdate):
+class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GeneratedUpdate):
     """Update an SRE Agent.
 
     PagerDuty matches the portal's Incidents > Connect an incident platform
@@ -707,7 +755,6 @@ class Update(_ModelProviderArgMixin, _GeneratedUpdate):
 
     Azure Monitor needs no configuration here -- it connects automatically
     when the agent is created, with AzMonitor as the enum's implicit default.
-    Icm is this CLI's sandbox/first-party path, set the same way with type=Icm.
 
     :example: Switch an agent's default model to MicrosoftFoundry
         az sre agent update --name myagent --resource-group myrg \\
@@ -978,12 +1025,15 @@ def _normalize_data_connector_type(value):
     key = str(value).strip().lower()
     normalized = DATA_CONNECTOR_TYPES.get(key) or DATA_CONNECTOR_TYPE_ALIASES.get(key)
     if normalized is None:
+        internal = _show_internal_features()
+        hidden = FIRST_PARTY_ONLY_CONNECTOR_TYPES | {"Icm"}
         raise CLIError(
             "--data-connector-type must be one of: "
-            + ", ".join(sorted(DATA_CONNECTOR_TYPES))
+            + ", ".join(sorted(t for t in DATA_CONNECTOR_TYPES if internal or DATA_CONNECTOR_TYPES[t] not in hidden))
             + " (friendly names like 'Azure Data Explorer', 'Custom MCP', "
-            "'Office 365 Outlook', 'Microsoft Teams', 'Microsoft IcM', "
-            "'Microsoft DGrep' also accepted)"
+            "'Office 365 Outlook', 'Microsoft Teams'"
+            + (", 'Microsoft IcM', 'Microsoft DGrep'" if internal else "")
+            + " also accepted)"
             + f" (got '{value}')."
         )
     return normalized
@@ -1011,12 +1061,15 @@ class _DataConnectorTypeArgMixin:
         # See _ModelProviderArgMixin above for why this must merge into the
         # existing ._help dict rather than replace it.
         if data_connector_type is not None and isinstance(getattr(data_connector_type, "_help", None), dict):
+            internal = _show_internal_features()
             data_connector_type._help["short-summary"] = (
                 "Connector type (case-insensitive; portal names also accepted). "
                 "Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, "
-                "LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, "
+                "LogAnalytics, " + ("Icm, Dgrep, " if internal else "") + "Ev2Mcp, "
+                + ("GenevaMetrics, S360, " if internal else "") + "Documentation, "
                 "AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, "
                 "KnowledgeRepository."
+                + (" Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only." if internal else "")
             )
         data_source = getattr(schema, "data_source", None)
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
@@ -1041,13 +1094,16 @@ class _DataConnectorTypeArgMixin:
             normalized = _normalize_data_connector_type(
                 data_connector_type.to_serialized_data()
             )
-            if normalized == "GenevaMetrics":
-                tenant_id = _resolve_signed_in_tenant_id(self.cli_ctx)
-                if not _is_microsoft_first_party_tenant(tenant_id):
-                    raise CLIError(
-                        "--data-connector-type GenevaMetrics is Microsoft-internal "
-                        "only and is not available in this tenant."
-                    )
+            if normalized in FIRST_PARTY_ONLY_CONNECTOR_TYPES:
+                _require_first_party(
+                    self.cli_ctx, _arg_value(getattr(args, "agent_name", None)), _arg_value(getattr(args, "resource_group", None)),
+                    f"--data-connector-type {normalized}", tenant_fallback=True,
+                )
+            if normalized == "Icm":
+                _require_first_party(
+                    self.cli_ctx, _arg_value(getattr(args, "agent_name", None)), _arg_value(getattr(args, "resource_group", None)),
+                    "--data-connector-type Icm",
+                )
             args.data_connector_type = normalized
         super().pre_operations()
 
@@ -1823,7 +1879,7 @@ class AgentSettingsUpdate(AAZCommand):
 #   - 'sre access'          : assignee = a user/group/SP : scope = THIS agent
 #                             (who can manage/use the agent)
 #   - 'sre managed-resource': assignee = the agent's OWN managed identity
-#                             (via 'sre identity show'.principalId) : scope =
+#                             (selected via 'sre identity show') : scope =
 #                             an EXTERNAL subscription/resource-group/
 #                             management-group (what the agent can read/
 #                             monitor out in the world)
@@ -1885,19 +1941,68 @@ def _resolve_managed_resource_scope(cli_ctx, scope, target_subscription, target_
     )
 
 
-def _resolve_agent_principal_id(cli_ctx, agent_name, resource_group):
-    """Resolve the agent's own managed-identity object ID via 'sre identity
-    show' -- this is the fixed "assignee" for every managed-resource grant/
-    revoke (the agent is granted access to the outside world, not the other
-    way around)."""
-    invoke = partial(_cli_invoke, cli_ctx)
-    identity = invoke("sre", "identity", "show", "--agent-name", agent_name, "--resource-group", resource_group)
-    principal_id = (identity or {}).get("principalId") if isinstance(identity, dict) else None
-    if not principal_id:
+def _resolve_agent_principal_id(cli_ctx, agent_name, resource_group, identity="system"):
+    """Resolve a selected identity from the agent's attached ARM metadata.
+
+    The default remains system-assigned, regardless of the identities
+    selected in the agent's runtime configuration.
+    """
+    if not isinstance(identity, str) or not identity.strip():
         raise CLIError(
-            f"Agent '{agent_name}' has no managed identity assigned yet. Run "
-            "'az sre identity assign --agent-name ... --resource-group ... --system-assigned' first."
+            "--identity must be 'system' or the full ARM resource ID of a "
+            "user-assigned identity assigned to the agent."
         )
+    selector = identity.strip()
+    is_system = selector.casefold() == "system"
+    if not is_system and not re.fullmatch(
+        r"/subscriptions/[^/\s?#]+/resourceGroups/[^/\s?#]+/providers/"
+        r"Microsoft\.ManagedIdentity/userAssignedIdentities/[^/\s?#]+",
+        selector, re.IGNORECASE,
+    ):
+        raise CLIError(
+            f"Invalid --identity '{selector}'. Use 'system' or the full ARM "
+            "resource ID of a user-assigned identity assigned to the agent."
+        )
+
+    invoke = partial(_cli_invoke, cli_ctx)
+    assigned = invoke("sre", "identity", "show", "--agent-name", agent_name, "--resource-group", resource_group)
+    if not isinstance(assigned, dict):
+        raise CLIError(
+            f"Could not read managed identities for agent '{agent_name}' via 'az sre identity show'."
+        )
+    if is_system:
+        selected = assigned
+        description = "system-assigned identity"
+    else:
+        user_assigned = assigned.get("userAssignedIdentities", {})
+        if not isinstance(user_assigned, dict):
+            raise CLIError(f"Could not read assigned user-assigned identities for agent '{agent_name}'.")
+        assigned_id = next(
+            (resource_id for resource_id in user_assigned
+             if isinstance(resource_id, str) and resource_id.casefold() == selector.casefold()),
+            None,
+        )
+        if assigned_id is None:
+            raise CLIError(
+                f"User-assigned identity '{selector}' is not assigned to agent '{agent_name}'. "
+                "Use 'az sre identity show' to find an assigned identity."
+            )
+        selected = user_assigned[assigned_id]
+        description = f"user-assigned identity '{assigned_id}'"
+
+    principal_id = selected.get("principalId") if isinstance(selected, dict) else None
+    if not isinstance(principal_id, str) or not principal_id.strip():
+        if is_system:
+            raise CLIError(
+                f"Agent '{agent_name}' has no system-assigned managed identity principal ID. Run "
+                "'az sre identity assign --agent-name ... --resource-group ... --system-assigned' "
+                "first, or select an assigned user-assigned identity with --identity <ARM resource ID>."
+            )
+        raise CLIError(
+            f"The {description} assigned to agent '{agent_name}' has no principal ID "
+            "in 'az sre identity show'."
+        )
+    logger.warning("Using agent '%s' %s (principal ID: %s).", agent_name, description, principal_id)
     return principal_id
 
 
@@ -1917,9 +2022,29 @@ def _resolve_agent_resource_id(cli_ctx, agent_name, resource_group):
     return resource_id
 
 
-class _ManagedResourceScopeCommand(AAZCommand):
+class _ManagedResourceIdentityMixin:
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.identity = AAZStrArg(
+            options=["--identity"],
+            help="Agent identity to target: 'system' (default), or the full ARM resource ID "
+            "of an assigned user-assigned identity. Does not change the agent's runtime identity.",
+            default="system",
+        )
+        return schema
+
+    def _resolve_principal_id(self):
+        args = self.ctx.args
+        return _resolve_agent_principal_id(
+            self.cli_ctx, _arg_value(args.agent_name), _arg_value(args.resource_group),
+            _arg_value(getattr(args, "identity", "system")),
+        )
+
+
+class _ManagedResourceScopeCommand(_ManagedResourceIdentityMixin, AAZCommand):
     """Shared base for 'managed-resource grant'/'managed-resource revoke':
-    resolves the agent's own principal ID and the target external scope,
+    resolves the selected agent identity's principal ID and the target external scope,
     so each subclass only has to loop 'role assignment create'/'delete'
     over MANAGED_RESOURCE_ROLES with (principal_id, scope) already in hand."""
 
@@ -1961,9 +2086,7 @@ class _ManagedResourceScopeCommand(AAZCommand):
         return schema
 
     def _resolve(self):
-        agent_name = _arg_value(self.ctx.args.agent_name)
-        resource_group = _arg_value(self.ctx.args.resource_group)
-        principal_id = _resolve_agent_principal_id(self.cli_ctx, agent_name, resource_group)
+        principal_id = self._resolve_principal_id()
         scope = _resolve_managed_resource_scope(
             self.cli_ctx,
             _arg_value(getattr(self.ctx.args, "scope", None)),
@@ -1980,12 +2103,17 @@ class _ManagedResourceGroup(AAZCommandGroup):
 
     Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles
     together on a subscription, resource group, or management group.
+    Defaults to the system-assigned identity. Use --identity with an
+    assigned user-assigned identity's ARM resource ID to target it instead.
     """
 
 
 @register_command("sre managed-resource grant")
 class ManagedResourceGrant(_ManagedResourceScopeCommand):
     """Give the agent Reader and Monitoring Contributor on a scope.
+
+    Targets the system-assigned identity by default. Use --identity to
+    select an assigned user-assigned identity without changing runtime settings.
 
     :example: Grant on a subscription
         az sre managed-resource grant --agent-name myagent --resource-group myrg \\
@@ -1998,6 +2126,11 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
     :example: Grant on a management group
         az sre managed-resource grant --agent-name myagent --resource-group myrg \\
             --management-group my-mg
+
+    :example: Grant an assigned user-assigned identity access to a resource group
+        az sre managed-resource grant -g myrg --agent-name myagent \\
+            --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \\
+            --target-subscription my-sub --target-resource-group monitored-rg
     """
 
     _args_schema = None
@@ -2020,8 +2153,17 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
 class ManagedResourceRevoke(_ManagedResourceScopeCommand):
     """Remove the agent's Reader and Monitoring Contributor on a scope.
 
+    Only removes these two roles for the selected identity on the exact
+    requested scope. Other identities, roles, and scopes are unaffected.
+    Defaults to the system-assigned identity.
+
     :example: Revoke access to a resource group
         az sre managed-resource revoke --agent-name myagent --resource-group myrg \\
+            --target-subscription my-sub --target-resource-group monitored-rg
+
+    :example: Revoke an assigned user-assigned identity's access
+        az sre managed-resource revoke -g myrg --agent-name myagent \\
+            --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \\
             --target-subscription my-sub --target-resource-group monitored-rg
     """
 
@@ -2041,13 +2183,20 @@ class ManagedResourceRevoke(_ManagedResourceScopeCommand):
 
 
 @register_command("sre managed-resource list")
-class ManagedResourceList(AAZCommand):
+class ManagedResourceList(_ManagedResourceIdentityMixin, AAZCommand):
     """List the scopes the agent's managed identity can access.
 
-    Shows every role assignment where the agent is the assignee.
+    Shows role assignments under the current subscription for the selected
+    identity, not just Reader and Monitoring Contributor. Defaults to the
+    system-assigned identity. Use --identity to select an assigned
+    user-assigned identity.
 
     :example: List what an agent can currently monitor
         az sre managed-resource list --agent-name myagent --resource-group myrg
+
+    :example: List an assigned user-assigned identity's role assignments
+        az sre managed-resource list -g myrg --agent-name myagent \\
+            --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime
     """
 
     _args_schema = None
@@ -2068,9 +2217,7 @@ class ManagedResourceList(AAZCommand):
 
     def _handler(self, command_args):
         super()._handler(command_args)
-        agent_name = _arg_value(self.ctx.args.agent_name)
-        resource_group = _arg_value(self.ctx.args.resource_group)
-        principal_id = _resolve_agent_principal_id(self.cli_ctx, agent_name, resource_group)
+        principal_id = self._resolve_principal_id()
 
         invoke = partial(_cli_invoke, self.cli_ctx)
         return invoke("role", "assignment", "list", "--assignee", principal_id, "--all")
@@ -3692,7 +3839,142 @@ def _resolve_agent_resource_id(cli_ctx, agent_name, resource_group):
     return agent_resource_id
 
 
-def _extension_resource_create(
+INTERNAL_TENANT_ONLY_MARKER = "restricted to internal tenants only"
+DIRECT_EXTENSION_ROUTES = {
+    "tools": ("/api/v2/extendedAgent/tools", "ExtendedAgentTool"),
+    "skills": ("/api/v2/extendedAgent/skills", "Skill"),
+    "hooks": ("/api/v2/extendedAgent/hooks", "GlobalHook"),
+    "commonPrompts": ("/api/v2/extendedAgent/commonprompts", "CommonPrompt"),
+    "scheduledTasks": ("/api/v2/extendedAgent/scheduledtasks", "ScheduledTask"),
+    "repositories": ("/api/v2/repos", "CodeRepo"),
+    "httpTriggers": ("/api/v2/extendedAgent/httpTriggers", "HttpTrigger"),
+    "pluginMarketplaces": ("/api/v2/extendedAgent/pluginMarketplaces", "Marketplace"),
+    "pluginInstallations": ("/api/v2/extendedAgent/pluginInstallations", "PluginInstallation"),
+    "globalSettings": ("/api/v2/extendedAgent/globalSettings", "GlobalSettings"),
+    "incidentFilters": ("/api/v2/incidentManagement/incidentFilters", "IncidentFilter"),
+    "githubAuths": ("/api/v2/github/domains", None),
+    "azureDevOpsAuths": ("/api/v2/azuredevops/orgs", None),
+}
+DIRECT_SKIP_EXISTS_CHECK = {"repositories"}
+DIRECT_NO_LIST_OR_DELETE = {"globalSettings"}
+
+
+class InternalTenantOnlyError(CLIError):
+    """The ARM extension route refused the agent's tenant."""
+
+
+def _extension_arm_request(cli_ctx, extension_type, *args, **kwargs):
+    """_arm_request for agent extensions, turning the service's tenant gate
+    into a plain message instead of a raw HTTP error."""
+    try:
+        return _arm_request(cli_ctx, *args, **kwargs)
+    except Exception as ex:
+        response_text = getattr(getattr(ex, "response", None), "text", "") or ""
+        if INTERNAL_TENANT_ONLY_MARKER in f"{ex} {response_text}".lower():
+            raise InternalTenantOnlyError(
+                f"This tenant can't use '{extension_type}' yet. The service only "
+                "allows agent extensions in Microsoft internal tenants right now. "
+                "Nothing is wrong with your command or your agent. If you need "
+                "this in your tenant, please ask the SRE Agent team to open it up."
+            ) from ex
+        raise
+
+
+def _direct_extension_path(extension_type, extension_name=None):
+    base = DIRECT_EXTENSION_ROUTES[extension_type][0]
+    return f"{base}/{quote(extension_name, safe='')}" if extension_name else base
+
+
+def _direct_extension_request(cli_ctx, agent_name, resource_group, method, path, **kwargs):
+    try:
+        return _data_plane_request(cli_ctx, agent_name, resource_group, method, path, **kwargs)
+    except Exception as ex:
+        if getattr(getattr(ex, "response", None), "status_code", None) == 403:
+            raise CLIError(
+                "The agent's own API refused this request (403). Your account may lack "
+                "permission on the agent; creating or changing items needs the "
+                "'SRE Agent Author' or 'SRE Agent Administrator' role."
+            ) from ex
+        raise
+
+
+def _direct_extension_to_arm_shape(extension_type, envelope):
+    if not isinstance(envelope, dict):
+        return envelope
+    return {
+        "name": envelope.get("name"),
+        "type": f"microsoft.app/agents/{extension_type}",
+        "properties": {"value": envelope.get("properties")},
+    }
+
+
+def _direct_extension_create(cli_ctx, agent_name, resource_group, extension_type, name, raw_value, overwrite):
+    _encode_extension_value(raw_value, extension_type)
+    properties = json.loads(raw_value)
+    properties.pop("name", None)
+    path = _direct_extension_path(extension_type, name)
+    envelope_type = DIRECT_EXTENSION_ROUTES[extension_type][1]
+    if envelope_type is None:
+        result = _direct_extension_request(cli_ctx, agent_name, resource_group, "PUT", path, body=properties)
+        return _direct_extension_to_arm_shape(extension_type, {"name": name, "properties": result})
+    if not overwrite and extension_type not in DIRECT_SKIP_EXISTS_CHECK and _direct_extension_request(
+            cli_ctx, agent_name, resource_group, "GET", path, missing_ok=True) is not None:
+        raise ResourceExistsError(
+            f"An extension named '{name}' of type '{extension_type}' already exists on "
+            f"agent '{agent_name}'. Pass --overwrite to replace it intentionally, or "
+            "choose another name."
+        )
+    envelope = {"name": name, "type": envelope_type, "properties": properties}
+    result = _direct_extension_request(cli_ctx, agent_name, resource_group, "PUT", path, body=envelope)
+    return _direct_extension_to_arm_shape(
+        extension_type, result if isinstance(result, dict) and result.get("properties") else envelope)
+
+
+def _direct_auth_items(cli_ctx, agent_name, resource_group, extension_type):
+    result = _direct_extension_request(
+        cli_ctx, agent_name, resource_group, "GET", _direct_extension_path(extension_type))
+    items = result.get("values") if isinstance(result, dict) else None
+    return items or []
+
+
+def _direct_auth_to_arm_shape(extension_type, item):
+    return _direct_extension_to_arm_shape(extension_type, {"name": item.get("name"), "properties": item})
+
+
+def _direct_extension_show(cli_ctx, agent_name, resource_group, extension_type, name):
+    if DIRECT_EXTENSION_ROUTES[extension_type][1] is None:
+        match = next((i for i in _direct_auth_items(cli_ctx, agent_name, resource_group, extension_type)
+                      if i.get("name") == name), None)
+        if match is None:
+            raise ResourceNotFoundError(
+                f"Extension '{name}' of type '{extension_type}' not found on agent '{agent_name}'.")
+        return _direct_auth_to_arm_shape(extension_type, match)
+    result = _direct_extension_request(
+        cli_ctx, agent_name, resource_group, "GET", _direct_extension_path(extension_type, name), missing_ok=True)
+    if result is None:
+        raise ResourceNotFoundError(
+            f"Extension '{name}' of type '{extension_type}' not found on agent '{agent_name}'.")
+    return _direct_extension_to_arm_shape(extension_type, result)
+
+
+def _direct_extension_list(cli_ctx, agent_name, resource_group, extension_type):
+    if DIRECT_EXTENSION_ROUTES[extension_type][1] is None:
+        items = _direct_auth_items(cli_ctx, agent_name, resource_group, extension_type)
+        return {"value": [_direct_auth_to_arm_shape(extension_type, i) for i in items]}
+    result = _direct_extension_request(
+        cli_ctx, agent_name, resource_group, "GET", _direct_extension_path(extension_type))
+    items = result.get("value") if isinstance(result, dict) else result
+    return {"value": [_direct_extension_to_arm_shape(extension_type, item) for item in items or []]}
+
+
+def _direct_extension_delete(cli_ctx, agent_name, resource_group, extension_type, name):
+    if extension_type == "azureDevOpsAuths":
+        path = f"{_direct_extension_path(extension_type)}?org={quote(name, safe='')}"
+    else:
+        path = _direct_extension_path(extension_type, name)
+    return _direct_extension_request(cli_ctx, agent_name, resource_group, "DELETE", path, missing_ok=True)
+
+def _arm_extension_create(
     cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False
 ):
     """Create or update an agent extension resource. Shared by every noun-
@@ -3700,8 +3982,9 @@ def _extension_resource_create(
     automation/plugin/repo connect/agent settings)."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
     resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    existing = None
     if not overwrite:
-        existing = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+        existing = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
         if existing is not None:
             raise ResourceExistsError(
                 f"An extension named '{extension_name}' of type "
@@ -3709,20 +3992,34 @@ def _extension_resource_create(
                 "Pass --overwrite to replace it intentionally, or choose "
                 "another name."
             )
+    encoded_value = _encode_extension_value(raw_value, extension_type)
+    if extension_type == "tools" and json.loads(raw_value).get("type") == "HttpClientTool":
+        if overwrite:
+            existing = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+        existing = _decode_extension_envelope(existing)
+        properties = existing.get("properties") if isinstance(existing, dict) else None
+        existing_tool = properties.get("value") if isinstance(properties, dict) else None
+        if not isinstance(existing_tool, dict) or existing_tool.get("type") != "HttpClientTool":
+            raise CLIError(
+                "Creating new HttpClientTool tools is no longer supported. "
+                "--overwrite can update an existing HttpClientTool of the same name, "
+                "but cannot create one or replace a different tool type. "
+                "Use PythonFunctionTool or an MCP server for new HTTP integrations."
+            )
     body = {
         "type": f"microsoft.app/agents/{extension_type}",
-        "properties": {"value": _encode_extension_value(raw_value, extension_type)},
+        "properties": {"value": encoded_value},
     }
-    result = _arm_request(cli_ctx, "PUT", resource_id, EXTENSION_API_VERSION, body=body)
+    result = _extension_arm_request(cli_ctx, extension_type, "PUT", resource_id, EXTENSION_API_VERSION, body=body)
     return _decode_extension_envelope(result)
 
 
-def _extension_resource_show(cli_ctx, agent_name, resource_group, extension_type, extension_name):
+def _arm_extension_show(cli_ctx, agent_name, resource_group, extension_type, extension_name):
     """Show an agent extension resource. Shared by every noun-specific
     'show' facade."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
     resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
-    result = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+    result = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
     if result is None:
         raise ResourceNotFoundError(
             f"Extension '{extension_name}' of type '{extension_type}' not found on agent '{agent_name}'."
@@ -3730,12 +4027,12 @@ def _extension_resource_show(cli_ctx, agent_name, resource_group, extension_type
     return _decode_extension_envelope(result)
 
 
-def _extension_resource_list(cli_ctx, agent_name, resource_group, extension_type):
+def _arm_extension_list(cli_ctx, agent_name, resource_group, extension_type):
     """List an agent's extension resources of a given type. Shared by every
     noun-specific 'list' facade."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
     resource_id = f"{agent_resource_id}/{extension_type}"
-    result = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION)
+    result = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION)
     if isinstance(result, dict) and isinstance(result.get("value"), list):
         result["value"] = [_decode_extension_envelope(item) for item in result["value"]]
         if not result["value"]:
@@ -3748,12 +4045,162 @@ def _extension_resource_list(cli_ctx, agent_name, resource_group, extension_type
     return result
 
 
-def _extension_resource_delete(cli_ctx, agent_name, resource_group, extension_type, extension_name):
+def _arm_extension_delete(cli_ctx, agent_name, resource_group, extension_type, extension_name):
     """Delete an agent extension resource. Shared by every noun-specific
     'delete' facade."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
     resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
-    return _arm_request(cli_ctx, "DELETE", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+    return _extension_arm_request(cli_ctx, extension_type, "DELETE", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+
+
+FEATURE_STATUS_PATH = "/api/v1/feature/status"
+FEATURE_CACHE_TTL_SECONDS = 24 * 60 * 60
+FEATURE_CACHE_FILE = "sre_agent_features.json"
+EXTENSION_FEATURE_FLAGS = {
+    "scheduledTasks": ("scheduledTasks", "scheduled tasks"),
+    "httpTriggers": ("httpTriggers", "HTTP triggers"),
+}
+_FEATURES_MEMORY = {}
+
+
+def _feature_cache_path():
+    from azure.cli.core._environment import get_config_dir
+
+    return os.path.join(get_config_dir(), FEATURE_CACHE_FILE)
+
+
+def _feature_cache_key(cli_ctx, agent_name, resource_group):
+    subscription = (getattr(cli_ctx, "data", None) or {}).get("subscription_id") or ""
+    if not subscription:
+        try:
+            from azure.cli.core._profile import Profile
+
+            subscription = Profile(cli_ctx=cli_ctx).get_subscription_id()
+        except Exception:  # pylint: disable=broad-except
+            subscription = ""
+    return f"{subscription}/{resource_group}/{agent_name}".lower()
+
+
+def _feature_cache_read(key):
+    import time
+
+    try:
+        with open(_feature_cache_path(), encoding="utf-8") as handle:
+            entry = json.load(handle).get(key)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(entry, dict) or time.time() - entry.get("cachedAt", 0) > FEATURE_CACHE_TTL_SECONDS:
+        return None
+    return entry.get("features") if isinstance(entry.get("features"), dict) else None
+
+
+def _feature_cache_write(key, features):
+    import time
+
+    try:
+        try:
+            with open(_feature_cache_path(), encoding="utf-8") as handle:
+                cache = json.load(handle)
+        except (OSError, ValueError):
+            cache = {}
+        cache[key] = {"cachedAt": time.time(), "features": features}
+        with open(_feature_cache_path(), "w", encoding="utf-8") as handle:
+            json.dump(cache, handle)
+    except OSError:
+        logger.debug("Could not write the agent feature cache.")
+
+
+def _agent_features(cli_ctx, agent_name, resource_group):
+    """The agent's own feature flags, which say whether it is a first-party agent.
+
+    Cached per agent. An empty dict means unknown, so callers keep the ARM-first path.
+    """
+    override = os.environ.get("AZSRE_EXTENSION_ROUTE", "").strip().lower()
+    if override == "direct":
+        return {"isFirstParty": False}
+    if override == "arm":
+        return {}
+    key = _feature_cache_key(cli_ctx, agent_name, resource_group)
+    if key in _FEATURES_MEMORY:
+        return _FEATURES_MEMORY[key]
+    features = _feature_cache_read(key)
+    if features is None:
+        try:
+            response = _data_plane_request(cli_ctx, agent_name, resource_group, "GET", FEATURE_STATUS_PATH)
+            raw = response.get("features") if isinstance(response, dict) else None
+            features = raw if isinstance(raw, dict) else {}
+        except Exception as ex:  # pylint: disable=broad-except
+            logger.debug("Could not read agent feature status: %s", ex)
+            features = {}
+        if features:
+            _feature_cache_write(key, features)
+    _FEATURES_MEMORY[key] = features
+    return features
+
+
+def _require_feature(features, extension_type):
+    flag = EXTENSION_FEATURE_FLAGS.get(extension_type)
+    if flag and features.get(flag[0]) is False:
+        raise CLIError(f"This agent doesn't have {flag[1]} enabled, so it can't be configured here.")
+
+
+FIRST_PARTY_ONLY_CONNECTOR_TYPES = frozenset({"GenevaMetrics", "S360", "Dgrep"})
+
+
+def _require_first_party(cli_ctx, agent_name, resource_group, what, tenant_fallback=False):
+    """Block Microsoft-internal features on agents that report they are not first-party.
+
+    When the agent's status is unknown, tenant_fallback checks the signed-in tenant instead.
+    """
+    first_party = _agent_features(cli_ctx, agent_name, resource_group).get("isFirstParty")
+    if first_party is None and tenant_fallback:
+        first_party = _is_microsoft_first_party_tenant(_resolve_signed_in_tenant_id(cli_ctx))
+    if first_party is False:
+        raise CLIError(f"{what} is Microsoft-internal only and is not available on this agent.")
+
+
+def _with_direct_fallback(arm_func, direct_func, cli_ctx, agent_name, resource_group, extension_type, *args, **kwargs):
+    features = _agent_features(cli_ctx, agent_name, resource_group)
+    if extension_type in DIRECT_EXTENSION_ROUTES and features.get("isFirstParty") is False and not (
+            extension_type in DIRECT_NO_LIST_OR_DELETE
+            and direct_func in (_direct_extension_list, _direct_extension_delete)):
+        if direct_func is _direct_extension_create:
+            _require_feature(features, extension_type)
+        direct_kwargs = {k: v for k, v in kwargs.items() if k == "overwrite"} if direct_func is _direct_extension_create else {}
+        return direct_func(cli_ctx, agent_name, resource_group, extension_type, *args, **direct_kwargs)
+    try:
+        return arm_func(cli_ctx, agent_name, resource_group, extension_type, *args, **kwargs)
+    except InternalTenantOnlyError:
+        if extension_type not in DIRECT_EXTENSION_ROUTES or (
+                extension_type in DIRECT_NO_LIST_OR_DELETE
+                and direct_func in (_direct_extension_list, _direct_extension_delete)):
+            raise
+        logger.info("ARM route refused this tenant; using the agent's own API for '%s'.", extension_type)
+        direct_kwargs = {k: v for k, v in kwargs.items() if k == "overwrite"} if direct_func is _direct_extension_create else {}
+        return direct_func(cli_ctx, agent_name, resource_group, extension_type, *args, **direct_kwargs)
+
+
+def _extension_resource_create(cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False):
+    return _with_direct_fallback(
+        _arm_extension_create, _direct_extension_create, cli_ctx, agent_name, resource_group,
+        extension_type, extension_name, raw_value, overwrite=overwrite)
+
+
+def _extension_resource_show(cli_ctx, agent_name, resource_group, extension_type, extension_name):
+    return _with_direct_fallback(
+        _arm_extension_show, _direct_extension_show, cli_ctx, agent_name, resource_group,
+        extension_type, extension_name)
+
+
+def _extension_resource_list(cli_ctx, agent_name, resource_group, extension_type):
+    return _with_direct_fallback(
+        _arm_extension_list, _direct_extension_list, cli_ctx, agent_name, resource_group, extension_type)
+
+
+def _extension_resource_delete(cli_ctx, agent_name, resource_group, extension_type, extension_name):
+    return _with_direct_fallback(
+        _arm_extension_delete, _direct_extension_delete, cli_ctx, agent_name, resource_group,
+        extension_type, extension_name)
 
 
 # --------------------------------------------------------------------------------------------
@@ -3978,9 +4425,9 @@ class _ToolGroup(AAZCommandGroup):
 
 @register_command("sre tool create")
 class ToolCreate(_PinnedExtensionCreate):
-    """Create or update a custom tool.
+    """Create a custom tool, or update one with --overwrite.
 
-    :example: Create an HTTP tool
+    :example: Create a link tool
         az sre tool create -g myrg --agent-name myagent --name docs-link \\
             --value '{"type": "LinkTool", "name": "docs", "description": "Link to docs", "template": "https://learn.microsoft.com/azure/"}'
     """
@@ -3988,8 +4435,10 @@ class ToolCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "tools"
     _args_schema = None
     _VALUE_HELP = (
-        "Tool configuration as JSON. \"type\" is KustoTool, LinkTool, PythonFunctionTool or "
-        "HttpClientTool. PythonTool is a legacy alias for PythonFunctionTool."
+        "Tool configuration as JSON. New tools: KustoTool, LinkTool or PythonFunctionTool. "
+        "PythonTool is a legacy alias for PythonFunctionTool. "
+        "HttpClientTool is update-only: pass --overwrite for an existing HttpClientTool of the same name. "
+        "Use PythonFunctionTool or an MCP server for new HTTP integrations."
     )
 
 
@@ -4384,7 +4833,8 @@ def _add_response_plan_criteria_args(schema):
     )
     schema.owning_teams = AAZListArg(
         options=["--owning-team"],
-        help="Space-separated owning team IDs (IcM team IDs are numeric). Portal: Owning team.",
+        help="Space-separated owning team IDs"
+        + (" (IcM team IDs are numeric)" if _show_internal_features() else "") + ". Portal: Owning team.",
     )
     schema.owning_teams.Element = AAZStrArg()
     schema.merge_enabled = AAZBoolArg(
@@ -4472,7 +4922,11 @@ class ResponsePlanCreate(AAZCommand):
         _response_plan_target_schema(schema)
         schema.platform = AAZStrArg(
             options=["--platform"], required=True,
-            help="Incident platform: " + ", ".join(RESPONSE_PLAN_PLATFORMS) + ".",
+            help=(
+                "Incident platform: " + ", ".join(RESPONSE_PLAN_PLATFORMS) + ". Icm is Microsoft-internal only."
+                if _show_internal_features()
+                else "Incident platform: " + ", ".join(p for p in RESPONSE_PLAN_PLATFORMS if p != "Icm") + "."
+            ),
         )
         schema.subagent = AAZStrArg(
             options=["--subagent"], required=True,
@@ -4502,9 +4956,12 @@ class ResponsePlanCreate(AAZCommand):
         mode = _arg_value(args.mode)
         overwrite = bool(_arg_value(args.overwrite))
         if platform not in RESPONSE_PLAN_PLATFORMS:
-            raise CLIError(f"--platform must be one of: {', '.join(RESPONSE_PLAN_PLATFORMS)}.")
+            visible = [p for p in RESPONSE_PLAN_PLATFORMS if p != "Icm" or _show_internal_features()]
+            raise CLIError(f"--platform must be one of: {', '.join(visible)}.")
         if mode not in RESPONSE_PLAN_MODES:
             raise CLIError(f"--mode must be one of: {', '.join(RESPONSE_PLAN_MODES)}.")
+        if platform == "Icm":
+            _require_first_party(self.cli_ctx, agent_name, resource_group, "--platform Icm")
         flt = {
             "incidentPlatform": platform,
             "handlingAgent": _arg_value(args.subagent),
@@ -4579,7 +5036,8 @@ class ResponsePlanUpdate(AAZCommand):
         _response_plan_target_schema(schema)
         schema.platform = AAZStrArg(
             options=["--platform"],
-            help="Incident platform: " + ", ".join(RESPONSE_PLAN_PLATFORMS) + ".",
+            help="Incident platform: "
+            + ", ".join(p for p in RESPONSE_PLAN_PLATFORMS if p != "Icm" or _show_internal_features()) + ".",
         )
         schema.subagent = AAZStrArg(
             options=["--subagent"], help="Name of the existing subagent that handles matched incidents.",
@@ -4607,6 +5065,8 @@ class ResponsePlanUpdate(AAZCommand):
                     flag = "--platform" if key == "incidentPlatform" else "--mode"
                     raise CLIError(f"{flag} must be one of: {', '.join(allowed)}.")
                 changes[key] = value
+                if key == "incidentPlatform" and value == "Icm":
+                    _require_first_party(self.cli_ctx, agent_name, resource_group, "--platform Icm")
         subagent = _arg_value(args.subagent)
         if subagent:
             changes["handlingAgent"] = subagent

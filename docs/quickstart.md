@@ -106,6 +106,13 @@ az sre managed-resource grant \
 To cover a whole subscription, omit `--target-resource-group`. Check the result with
 `az sre managed-resource list` and undo it with `az sre managed-resource revoke`.
 
+These commands default to the agent's system-assigned identity. If the runtime
+uses a user-assigned identity, find its assigned ARM resource ID with
+`az sre identity show` and pass `--identity "<assigned-UAMI-ARM-ID>"` to
+**grant, list, and revoke**. `--identity system` explicitly selects the default.
+Selecting an identity for RBAC does not change the agent's runtime configuration.
+See the [identity selection workflow](operations.md#rbac) for a complete example.
+
 ## Add a custom skill
 
 A skill teaches the agent a procedure. Write it as a `SKILL.md` file with a description

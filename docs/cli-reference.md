@@ -14,10 +14,11 @@ Public surface: **24 groups** and **77 commands**.
 
 ## Important caveats
 
-- This CLI only talks to the control plane (`Microsoft.App/agents` ARM resource). It never talks to the agent's own data plane (`*.azuresre.ai`) directly. See the [implementation plan](../PLAN.md).
+- This CLI uses both the control plane (`Microsoft.App/agents` ARM resource) and the agent's own data plane (`*.azuresre.ai`). The route depends on the operation and tenant. See the [operations guide](operations.md).
+- This reference includes the complete command surface, including Microsoft-internal options where documented. Interactive help can hide those options for other tenants; generation does not depend on your signed-in account.
 - The overall noun/verb shape (why `agent` isn't a wrapper for every other noun, why there's one dedicated noun per runbook-extension type instead of a generic `extension --type`) is a deliberate decision with alternatives considered -- see the [shape design doc](shape-design.md).
 - `network update` is hand-written against the real `2026-11-01-preview` api-version; there is no public Swagger for it yet. See the [networking guide](networking.md).
-- `--value` JSON documents (e.g. `tool create`, `skill create`, `agent settings update`) are base64-encoded and sent as-is to the agent's data plane. Each extension type has its own dedicated front-door noun (`tool`, `skill`, `hook`, `instructions`, `plugin marketplace`/`plugin install`, `repo connect`, `agent settings`); there is no generic `extension` escape hatch anymore. See the [operations guide](operations.md).
+- `--value` JSON documents (e.g. `tool create`, `skill create`, `agent settings update`) are validated and sent in the envelope required by the selected API. Each extension type has its own dedicated front-door noun (`tool`, `skill`, `hook`, `instructions`, `plugin marketplace`/`plugin install`, `repo connect`, `agent settings`); there is no generic `extension` escape hatch anymore. See the [operations guide](operations.md).
 - `connector list-secret` is the only command that can return connector secret material in plain text; everything else (`connector show`, `connector list`, `connector create`/`update` responses) redacts secret fields server-side.
 
 ## Global options
@@ -354,7 +355,7 @@ Stop a running SRE Agent.
 
 Update an SRE Agent.
 
-PagerDuty matches the portal's Incidents > Connect an incident platform > PagerDuty workflow. It uses an ARM PATCH on the agent resource, not the separate Connector Gateway used by Jira, Slack and SharePoint. --connection-key is the PagerDuty REST API access key; --obo-user is the identity the agent acts under when resolving or commenting on incidents. ServiceNow uses Basic Auth: set --connection-url to the instance URL and --connection-key to the credentials. Azure Monitor needs no configuration here -- it connects automatically when the agent is created, with AzMonitor as the enum's implicit default. Icm is this CLI's sandbox/first-party path, set the same way with type=Icm.
+PagerDuty matches the portal's Incidents > Connect an incident platform > PagerDuty workflow. It uses an ARM PATCH on the agent resource, not the separate Connector Gateway used by Jira, Slack and SharePoint. --connection-key is the PagerDuty REST API access key; --obo-user is the identity the agent acts under when resolving or commenting on incidents. ServiceNow uses Basic Auth: set --connection-url to the instance URL and --connection-key to the credentials. Azure Monitor needs no configuration here -- it connects automatically when the agent is created, with AzMonitor as the enum's implicit default.
 
 **Syntax**
 
@@ -458,7 +459,7 @@ Create an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. |
+| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
@@ -627,7 +628,7 @@ Update an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. |
+| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
@@ -1130,24 +1131,27 @@ Show a knowledge source.
 
 Let the agent monitor resources outside its resource group.
 
-Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles together on a subscription, resource group, or management group.
+Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles together on a subscription, resource group, or management group. Defaults to the system-assigned identity. Use --identity with an assigned user-assigned identity's ARM resource ID to target it instead.
 
 | Verb | Exact syntax |
 | --- | --- |
-| `grant` | `az sre managed-resource grant --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
-| `list` | `az sre managed-resource list --name <value> --resource-group <value>` |
-| `revoke` | `az sre managed-resource revoke --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
+| `grant` | `az sre managed-resource grant [--identity <value>] --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
+| `list` | `az sre managed-resource list [--identity <value>] --name <value> --resource-group <value>` |
+| `revoke` | `az sre managed-resource revoke [--identity <value>] --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
 
 ### `az sre managed-resource grant`
 
 Give the agent Reader and Monitoring Contributor on a scope.
 
+Targets the system-assigned identity by default. Use --identity to select an assigned user-assigned identity without changing runtime settings.
+
 **Syntax**
 
-`az sre managed-resource grant --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
+`az sre managed-resource grant [--identity <value>] --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
+| `--identity` | String | No | system |  | Agent identity to target: 'system' (default), or the full ARM resource ID of an assigned user-assigned identity. Does not change the agent's runtime identity. |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent (NOT the target scope -- use --target-resource-group for that). |
 | `--scope` | String | No |  |  | Full resource ID of the scope to grant access on/from. Alternative to --target-subscription/--target-resource-group/--management-group. |
@@ -1175,19 +1179,27 @@ Give the agent Reader and Monitoring Contributor on a scope.
   az sre managed-resource grant --agent-name myagent --resource-group myrg \
   --management-group my-mg
   ```
+- Grant an assigned user-assigned identity access to a resource group
+
+  ```bash
+  az sre managed-resource grant -g myrg --agent-name myagent \
+  --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \
+  --target-subscription my-sub --target-resource-group monitored-rg
+  ```
 
 ### `az sre managed-resource list`
 
 List the scopes the agent's managed identity can access.
 
-Shows every role assignment where the agent is the assignee.
+Shows role assignments under the current subscription for the selected identity, not just Reader and Monitoring Contributor. Defaults to the system-assigned identity. Use --identity to select an assigned user-assigned identity.
 
 **Syntax**
 
-`az sre managed-resource list --name <value> --resource-group <value>`
+`az sre managed-resource list [--identity <value>] --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
+| `--identity` | String | No | system |  | Agent identity to target: 'system' (default), or the full ARM resource ID of an assigned user-assigned identity. Does not change the agent's runtime identity. |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent. |
 
@@ -1198,17 +1210,26 @@ Shows every role assignment where the agent is the assignee.
   ```bash
   az sre managed-resource list --agent-name myagent --resource-group myrg
   ```
+- List an assigned user-assigned identity's role assignments
+
+  ```bash
+  az sre managed-resource list -g myrg --agent-name myagent \
+  --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime
+  ```
 
 ### `az sre managed-resource revoke`
 
 Remove the agent's Reader and Monitoring Contributor on a scope.
 
+Only removes these two roles for the selected identity on the exact requested scope. Other identities, roles, and scopes are unaffected. Defaults to the system-assigned identity.
+
 **Syntax**
 
-`az sre managed-resource revoke --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
+`az sre managed-resource revoke [--identity <value>] --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
+| `--identity` | String | No | system |  | Agent identity to target: 'system' (default), or the full ARM resource ID of an assigned user-assigned identity. Does not change the agent's runtime identity. |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent (NOT the target scope -- use --target-resource-group for that). |
 | `--scope` | String | No |  |  | Full resource ID of the scope to revoke access on/from. Alternative to --target-subscription/--target-resource-group/--management-group. |
@@ -1222,6 +1243,13 @@ Remove the agent's Reader and Monitoring Contributor on a scope.
 
   ```bash
   az sre managed-resource revoke --agent-name myagent --resource-group myrg \
+  --target-subscription my-sub --target-resource-group monitored-rg
+  ```
+- Revoke an assigned user-assigned identity's access
+
+  ```bash
+  az sre managed-resource revoke -g myrg --agent-name myagent \
+  --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \
   --target-subscription my-sub --target-resource-group monitored-rg
   ```
 
@@ -1363,7 +1391,7 @@ Routes matching incidents to a subagent. Connect the incident platform and creat
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of the response plan. |
-| `--platform` | String | Yes |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. |
+| `--platform` | String | Yes |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. Icm is Microsoft-internal only. |
 | `--subagent` | String | Yes |  |  | Name of the existing subagent that handles matched incidents. |
 | `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all. |
 | `--title-contains` | String | No |  |  | Only match incidents whose title contains this text. |
@@ -1797,7 +1825,7 @@ Built-in tools and MCP servers/services are configured separately and are not ye
 
 ### `az sre tool create`
 
-Create or update a custom tool.
+Create a custom tool, or update one with --overwrite.
 
 **Syntax**
 
@@ -1808,12 +1836,12 @@ Create or update a custom tool.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Tool configuration as JSON. "type" is KustoTool, LinkTool, PythonFunctionTool or HttpClientTool. PythonTool is a legacy alias for PythonFunctionTool. |
+| `--value` | String | Yes |  |  | Tool configuration as JSON. New tools: KustoTool, LinkTool or PythonFunctionTool. PythonTool is a legacy alias for PythonFunctionTool. HttpClientTool is update-only: pass --overwrite for an existing HttpClientTool of the same name. Use PythonFunctionTool or an MCP server for new HTTP integrations. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**
 
-- Create an HTTP tool
+- Create a link tool
 
   ```bash
   az sre tool create -g myrg --agent-name myagent --name docs-link \

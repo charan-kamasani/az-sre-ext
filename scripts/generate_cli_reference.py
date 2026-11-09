@@ -19,6 +19,7 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1] / "src" / "sre"
@@ -209,6 +210,14 @@ def _group_help_by_name():
 
 
 def collect_reference():
+    """Collect the complete reference, independent of the local account."""
+    from azext_sre import custom
+
+    with patch.object(custom, "_show_internal_features", return_value=True):
+        return _collect_reference()
+
+
+def _collect_reference():
     from azure.cli.core.aaz import AAZUndefined
     from azure.cli.core.mock import DummyCli
 
@@ -317,9 +326,13 @@ def render_reference(reference=None) -> str:
         "",
         "## Important caveats",
         "",
-        "- This CLI only talks to the control plane (`Microsoft.App/agents` ARM "
-        "resource). It never talks to the agent's own data plane "
-        "(`*.azuresre.ai`) directly. See the [implementation plan](../PLAN.md).",
+        "- This CLI uses both the control plane (`Microsoft.App/agents` ARM "
+        "resource) and the agent's own data plane (`*.azuresre.ai`). The route "
+        "depends on the operation and tenant. See the [operations guide](operations.md).",
+        "- This reference includes the complete command surface, including "
+        "Microsoft-internal options where documented. Interactive help can "
+        "hide those options for other tenants; generation does not depend "
+        "on your signed-in account.",
         "- The overall noun/verb shape (why `agent` isn't a wrapper for every "
         "other noun, why there's one dedicated noun per runbook-extension "
         "type instead of a generic `extension --type`) is a deliberate "
@@ -329,8 +342,8 @@ def render_reference(reference=None) -> str:
         "`2026-11-01-preview` api-version; there is no public Swagger for it "
         "yet. See the [networking guide](networking.md).",
         "- `--value` JSON documents (e.g. `tool create`, `skill create`, "
-        "`agent settings update`) are base64-encoded and sent as-is to the "
-        "agent's data plane. Each extension type has its own dedicated "
+        "`agent settings update`) are validated and sent in the envelope "
+        "required by the selected API. Each extension type has its own dedicated "
         "front-door noun (`tool`, `skill`, `hook`, `instructions`, "
         "`plugin marketplace`/`plugin install`, `repo connect`, "
         "`agent settings`); there is no generic `extension` escape hatch "
