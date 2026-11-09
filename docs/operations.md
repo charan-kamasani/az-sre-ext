@@ -627,6 +627,15 @@ Changing anything through the agent's API needs the **SRE Agent Author** or
 updated but not listed or deleted this way. Other types (for example
 `subagents`) still show a plain "not available for this tenant" message.
 
+The CLI asks the agent once (`GET /api/v1/feature/status`) whether it is a
+Microsoft first-party agent, and remembers the answer for 24 hours in
+`sre_agent_features.json` in the Azure CLI config folder. For other tenants it
+goes straight to the agent's API, so there is no failed first call. If the agent
+can't be asked, it tries ARM first and falls back as described above. Set
+`AZSRE_EXTENSION_ROUTE=direct` or `arm` to force a route. Creating scheduled
+tasks or HTTP triggers on an agent that reports the feature as off fails with a
+clear message.
+
 ### `hook` eventType has 4 values, not 2
 
 The official docs (`sre.azure.com/docs/capabilities/agent-hooks`) confirm

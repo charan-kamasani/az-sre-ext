@@ -2278,6 +2278,61 @@ class ExtensionTenantGateTests(unittest.TestCase):
 
     _AGENT = {"id": "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"}
 
+    def test_3p_agent_skips_arm_and_caches_the_detection(self):
+        from azext_sre import custom
+
+        status = {"features": {"isFirstParty": False, "scheduledTasks": True}}
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": ""}), \
+             patch("azext_sre.custom._feature_cache_path", return_value=os.path.join(tmp, "f.json")), \
+             patch.dict(custom._FEATURES_MEMORY, clear=True), \
+             patch("azext_sre.custom._arm_request") as arm, \
+             patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._data_plane_request", side_effect=[status, {"value": []}, {"value": []}]) as dp:
+            _extension_resource_list(None, "myagent", "rg", "tools")
+            custom._FEATURES_MEMORY.clear()
+            _extension_resource_list(None, "myagent", "rg", "tools")
+            arm.assert_not_called()
+            paths = [c[0][4] for c in dp.call_args_list]
+            self.assertEqual(paths, ["/api/v1/feature/status", "/api/v2/extendedAgent/tools", "/api/v2/extendedAgent/tools"])
+
+    def test_1p_agent_keeps_the_arm_route(self):
+        from azext_sre import custom
+
+        with patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": ""}), \
+             patch("azext_sre.custom._feature_cache_key", return_value="k"), \
+             patch.dict(custom._FEATURES_MEMORY, {"k": {"isFirstParty": True}}, clear=True), \
+             patch("azext_sre.custom._arm_request", return_value={"value": []}) as arm, \
+             patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._data_plane_request") as dp:
+            _extension_resource_list(None, "myagent", "rg", "tools")
+            arm.assert_called()
+            dp.assert_not_called()
+
+    def test_unknown_features_fall_back_to_the_arm_error(self):
+        from azext_sre import custom
+
+        with patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": ""}), \
+             patch("azext_sre.custom._feature_cache_key", return_value="k"), \
+             patch.dict(custom._FEATURES_MEMORY, {"k": {}}, clear=True), \
+             patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+             patch("azext_sre.custom._data_plane_request", return_value={"value": []}) as dp:
+            _extension_resource_list(None, "myagent", "rg", "tools")
+            self.assertEqual(dp.call_args[0][4], "/api/v2/extendedAgent/tools")
+
+    def test_disabled_feature_blocks_create_with_a_clear_message(self):
+        from azext_sre import custom
+
+        with patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": ""}), \
+             patch("azext_sre.custom._feature_cache_key", return_value="k"), \
+             patch.dict(custom._FEATURES_MEMORY, {"k": {"isFirstParty": False, "httpTriggers": False}}, clear=True), \
+             patch("azext_sre.custom._data_plane_request") as dp:
+            with self.assertRaises(CLIError) as ctx:
+                _extension_resource_create(None, "myagent", "rg", "httpTriggers", "t", "{}")
+            self.assertIn("HTTP triggers enabled", str(ctx.exception))
+            dp.assert_not_called()
+
     def _gate_error(self):
         response = Response()
         response.status_code = 400
@@ -4115,6 +4170,11 @@ class ConnectorTableTransformerTests(unittest.TestCase):
         self.assertIsNotNone(command_table["sre connector list"].table_transformer)
         self.assertIsNotNone(command_table["sre connector show"].table_transformer)
         self.assertIsNone(command_table["sre connector create"].table_transformer)
+
+
+def setUpModule():
+    # Keep route detection off by default so tests never touch the network or the real cache.
+    os.environ["AZSRE_EXTENSION_ROUTE"] = "arm"
 
 
 if __name__ == "__main__":
