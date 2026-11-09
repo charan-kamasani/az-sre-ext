@@ -1047,6 +1047,11 @@ class _DataConnectorTypeArgMixin:
                     self.cli_ctx, _arg_value(getattr(args, "agent_name", None)), _arg_value(getattr(args, "resource_group", None)),
                     f"--data-connector-type {normalized}", tenant_fallback=True,
                 )
+            if normalized == "Icm":
+                _require_first_party(
+                    self.cli_ctx, _arg_value(getattr(args, "agent_name", None)), _arg_value(getattr(args, "resource_group", None)),
+                    "--data-connector-type Icm",
+                )
             args.data_connector_type = normalized
         super().pre_operations()
 
@@ -4788,6 +4793,8 @@ class ResponsePlanCreate(AAZCommand):
             raise CLIError(f"--platform must be one of: {', '.join(RESPONSE_PLAN_PLATFORMS)}.")
         if mode not in RESPONSE_PLAN_MODES:
             raise CLIError(f"--mode must be one of: {', '.join(RESPONSE_PLAN_MODES)}.")
+        if platform == "Icm":
+            _require_first_party(self.cli_ctx, agent_name, resource_group, "--platform Icm")
         flt = {
             "incidentPlatform": platform,
             "handlingAgent": _arg_value(args.subagent),
@@ -4890,6 +4897,8 @@ class ResponsePlanUpdate(AAZCommand):
                     flag = "--platform" if key == "incidentPlatform" else "--mode"
                     raise CLIError(f"{flag} must be one of: {', '.join(allowed)}.")
                 changes[key] = value
+                if key == "incidentPlatform" and value == "Icm":
+                    _require_first_party(self.cli_ctx, agent_name, resource_group, "--platform Icm")
         subagent = _arg_value(args.subagent)
         if subagent:
             changes["handlingAgent"] = subagent

@@ -3237,6 +3237,12 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
         command = self._create_with_features("s360", {"isFirstParty": True})
         self.assertEqual(command.ctx.args.data_connector_type, "S360")
 
+    def test_icm_connector_blocked_only_when_the_agent_says_it_is_not_first_party(self):
+        with self.assertRaises(CLIError):
+            self._create_with_features("icm", {"isFirstParty": False})
+        command = self._create_with_features("icm", {})
+        self.assertEqual(command.ctx.args.data_connector_type, "Icm")
+
     def test_require_first_party_blocks_only_agents_that_say_they_are_not(self):
         from azext_sre.custom import _require_first_party
 
