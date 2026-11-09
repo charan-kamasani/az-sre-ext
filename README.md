@@ -167,7 +167,7 @@ Install the tracked commit hook and the test dependencies:
 git config core.hooksPath .githooks
 
 cd src/sre
-pip install azure-cli-core azure-cli-testsdk build setuptools wheel
+pip install azure-cli-core azure-cli-testsdk msrest azure-common build setuptools wheel
 ```
 
 Most commands are generated from the `Microsoft.App/agents` API spec under

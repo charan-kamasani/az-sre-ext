@@ -996,24 +996,27 @@ Show a knowledge source.
 
 Let the agent monitor resources outside its resource group.
 
-Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles together on a subscription, resource group, or management group.
+Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles together on a subscription, resource group, or management group. Defaults to the system-assigned identity. Use --identity with an assigned user-assigned identity's ARM resource ID to target it instead.
 
 | Verb | Exact syntax |
 | --- | --- |
-| `grant` | `az sre managed-resource grant --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
-| `list` | `az sre managed-resource list --name <value> --resource-group <value>` |
-| `revoke` | `az sre managed-resource revoke --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
+| `grant` | `az sre managed-resource grant [--identity <value>] --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
+| `list` | `az sre managed-resource list [--identity <value>] --name <value> --resource-group <value>` |
+| `revoke` | `az sre managed-resource revoke [--identity <value>] --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
 
 ### `az sre managed-resource grant`
 
 Give the agent Reader and Monitoring Contributor on a scope.
 
+Targets the system-assigned identity by default. Use --identity to select an assigned user-assigned identity without changing runtime settings.
+
 **Syntax**
 
-`az sre managed-resource grant --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
+`az sre managed-resource grant [--identity <value>] --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
+| `--identity` | String | No | system |  | Agent identity to target: 'system' (default), or the full ARM resource ID of an assigned user-assigned identity. Does not change the agent's runtime identity. |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent (NOT the target scope -- use --target-resource-group for that). |
 | `--scope` | String | No |  |  | Full resource ID of the scope to grant access on/from. Alternative to --target-subscription/--target-resource-group/--management-group. |
@@ -1032,19 +1035,23 @@ Give the agent Reader and Monitoring Contributor on a scope.
 - Grant on a management group
 
   `az sre managed-resource grant --agent-name myagent --resource-group myrg \ --management-group my-mg`
+- Grant an assigned user-assigned identity access to a resource group
+
+  `az sre managed-resource grant -g myrg --agent-name myagent \ --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \ --target-subscription my-sub --target-resource-group monitored-rg`
 
 ### `az sre managed-resource list`
 
 List the scopes the agent's managed identity can access.
 
-Shows every role assignment where the agent is the assignee.
+Shows role assignments under the current subscription for the selected identity, not just Reader and Monitoring Contributor. Defaults to the system-assigned identity. Use --identity to select an assigned user-assigned identity.
 
 **Syntax**
 
-`az sre managed-resource list --name <value> --resource-group <value>`
+`az sre managed-resource list [--identity <value>] --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
+| `--identity` | String | No | system |  | Agent identity to target: 'system' (default), or the full ARM resource ID of an assigned user-assigned identity. Does not change the agent's runtime identity. |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent. |
 
@@ -1053,17 +1060,23 @@ Shows every role assignment where the agent is the assignee.
 - List what an agent can currently monitor
 
   `az sre managed-resource list --agent-name myagent --resource-group myrg`
+- List an assigned user-assigned identity's role assignments
+
+  `az sre managed-resource list -g myrg --agent-name myagent \ --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime`
 
 ### `az sre managed-resource revoke`
 
 Remove the agent's Reader and Monitoring Contributor on a scope.
 
+Only removes these two roles for the selected identity on the exact requested scope. Other identities, roles, and scopes are unaffected. Defaults to the system-assigned identity.
+
 **Syntax**
 
-`az sre managed-resource revoke --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
+`az sre managed-resource revoke [--identity <value>] --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
+| `--identity` | String | No | system |  | Agent identity to target: 'system' (default), or the full ARM resource ID of an assigned user-assigned identity. Does not change the agent's runtime identity. |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent (NOT the target scope -- use --target-resource-group for that). |
 | `--scope` | String | No |  |  | Full resource ID of the scope to revoke access on/from. Alternative to --target-subscription/--target-resource-group/--management-group. |
@@ -1076,6 +1089,9 @@ Remove the agent's Reader and Monitoring Contributor on a scope.
 - Revoke access to a resource group
 
   `az sre managed-resource revoke --agent-name myagent --resource-group myrg \ --target-subscription my-sub --target-resource-group monitored-rg`
+- Revoke an assigned user-assigned identity's access
+
+  `az sre managed-resource revoke -g myrg --agent-name myagent \ --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \ --target-subscription my-sub --target-resource-group monitored-rg`
 
 ## `az sre network`
 

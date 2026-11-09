@@ -30,6 +30,7 @@
 import base64
 import json
 import os
+import re
 import uuid
 from functools import partial
 from urllib.parse import quote
@@ -1878,7 +1879,7 @@ class AgentSettingsUpdate(AAZCommand):
 #   - 'sre access'          : assignee = a user/group/SP : scope = THIS agent
 #                             (who can manage/use the agent)
 #   - 'sre managed-resource': assignee = the agent's OWN managed identity
-#                             (via 'sre identity show'.principalId) : scope =
+#                             (selected via 'sre identity show') : scope =
 #                             an EXTERNAL subscription/resource-group/
 #                             management-group (what the agent can read/
 #                             monitor out in the world)
@@ -1940,19 +1941,68 @@ def _resolve_managed_resource_scope(cli_ctx, scope, target_subscription, target_
     )
 
 
-def _resolve_agent_principal_id(cli_ctx, agent_name, resource_group):
-    """Resolve the agent's own managed-identity object ID via 'sre identity
-    show' -- this is the fixed "assignee" for every managed-resource grant/
-    revoke (the agent is granted access to the outside world, not the other
-    way around)."""
-    invoke = partial(_cli_invoke, cli_ctx)
-    identity = invoke("sre", "identity", "show", "--agent-name", agent_name, "--resource-group", resource_group)
-    principal_id = (identity or {}).get("principalId") if isinstance(identity, dict) else None
-    if not principal_id:
+def _resolve_agent_principal_id(cli_ctx, agent_name, resource_group, identity="system"):
+    """Resolve a selected identity from the agent's attached ARM metadata.
+
+    The default remains system-assigned, regardless of the identities
+    selected in the agent's runtime configuration.
+    """
+    if not isinstance(identity, str) or not identity.strip():
         raise CLIError(
-            f"Agent '{agent_name}' has no managed identity assigned yet. Run "
-            "'az sre identity assign --agent-name ... --resource-group ... --system-assigned' first."
+            "--identity must be 'system' or the full ARM resource ID of a "
+            "user-assigned identity assigned to the agent."
         )
+    selector = identity.strip()
+    is_system = selector.casefold() == "system"
+    if not is_system and not re.fullmatch(
+        r"/subscriptions/[^/\s?#]+/resourceGroups/[^/\s?#]+/providers/"
+        r"Microsoft\.ManagedIdentity/userAssignedIdentities/[^/\s?#]+",
+        selector, re.IGNORECASE,
+    ):
+        raise CLIError(
+            f"Invalid --identity '{selector}'. Use 'system' or the full ARM "
+            "resource ID of a user-assigned identity assigned to the agent."
+        )
+
+    invoke = partial(_cli_invoke, cli_ctx)
+    assigned = invoke("sre", "identity", "show", "--agent-name", agent_name, "--resource-group", resource_group)
+    if not isinstance(assigned, dict):
+        raise CLIError(
+            f"Could not read managed identities for agent '{agent_name}' via 'az sre identity show'."
+        )
+    if is_system:
+        selected = assigned
+        description = "system-assigned identity"
+    else:
+        user_assigned = assigned.get("userAssignedIdentities", {})
+        if not isinstance(user_assigned, dict):
+            raise CLIError(f"Could not read assigned user-assigned identities for agent '{agent_name}'.")
+        assigned_id = next(
+            (resource_id for resource_id in user_assigned
+             if isinstance(resource_id, str) and resource_id.casefold() == selector.casefold()),
+            None,
+        )
+        if assigned_id is None:
+            raise CLIError(
+                f"User-assigned identity '{selector}' is not assigned to agent '{agent_name}'. "
+                "Use 'az sre identity show' to find an assigned identity."
+            )
+        selected = user_assigned[assigned_id]
+        description = f"user-assigned identity '{assigned_id}'"
+
+    principal_id = selected.get("principalId") if isinstance(selected, dict) else None
+    if not isinstance(principal_id, str) or not principal_id.strip():
+        if is_system:
+            raise CLIError(
+                f"Agent '{agent_name}' has no system-assigned managed identity principal ID. Run "
+                "'az sre identity assign --agent-name ... --resource-group ... --system-assigned' "
+                "first, or select an assigned user-assigned identity with --identity <ARM resource ID>."
+            )
+        raise CLIError(
+            f"The {description} assigned to agent '{agent_name}' has no principal ID "
+            "in 'az sre identity show'."
+        )
+    logger.warning("Using agent '%s' %s (principal ID: %s).", agent_name, description, principal_id)
     return principal_id
 
 
@@ -1972,9 +2022,29 @@ def _resolve_agent_resource_id(cli_ctx, agent_name, resource_group):
     return resource_id
 
 
-class _ManagedResourceScopeCommand(AAZCommand):
+class _ManagedResourceIdentityMixin:
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.identity = AAZStrArg(
+            options=["--identity"],
+            help="Agent identity to target: 'system' (default), or the full ARM resource ID "
+            "of an assigned user-assigned identity. Does not change the agent's runtime identity.",
+            default="system",
+        )
+        return schema
+
+    def _resolve_principal_id(self):
+        args = self.ctx.args
+        return _resolve_agent_principal_id(
+            self.cli_ctx, _arg_value(args.agent_name), _arg_value(args.resource_group),
+            _arg_value(getattr(args, "identity", "system")),
+        )
+
+
+class _ManagedResourceScopeCommand(_ManagedResourceIdentityMixin, AAZCommand):
     """Shared base for 'managed-resource grant'/'managed-resource revoke':
-    resolves the agent's own principal ID and the target external scope,
+    resolves the selected agent identity's principal ID and the target external scope,
     so each subclass only has to loop 'role assignment create'/'delete'
     over MANAGED_RESOURCE_ROLES with (principal_id, scope) already in hand."""
 
@@ -2016,9 +2086,7 @@ class _ManagedResourceScopeCommand(AAZCommand):
         return schema
 
     def _resolve(self):
-        agent_name = _arg_value(self.ctx.args.agent_name)
-        resource_group = _arg_value(self.ctx.args.resource_group)
-        principal_id = _resolve_agent_principal_id(self.cli_ctx, agent_name, resource_group)
+        principal_id = self._resolve_principal_id()
         scope = _resolve_managed_resource_scope(
             self.cli_ctx,
             _arg_value(getattr(self.ctx.args, "scope", None)),
@@ -2035,12 +2103,17 @@ class _ManagedResourceGroup(AAZCommandGroup):
 
     Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles
     together on a subscription, resource group, or management group.
+    Defaults to the system-assigned identity. Use --identity with an
+    assigned user-assigned identity's ARM resource ID to target it instead.
     """
 
 
 @register_command("sre managed-resource grant")
 class ManagedResourceGrant(_ManagedResourceScopeCommand):
     """Give the agent Reader and Monitoring Contributor on a scope.
+
+    Targets the system-assigned identity by default. Use --identity to
+    select an assigned user-assigned identity without changing runtime settings.
 
     :example: Grant on a subscription
         az sre managed-resource grant --agent-name myagent --resource-group myrg \\
@@ -2053,6 +2126,11 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
     :example: Grant on a management group
         az sre managed-resource grant --agent-name myagent --resource-group myrg \\
             --management-group my-mg
+
+    :example: Grant an assigned user-assigned identity access to a resource group
+        az sre managed-resource grant -g myrg --agent-name myagent \\
+            --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \\
+            --target-subscription my-sub --target-resource-group monitored-rg
     """
 
     _args_schema = None
@@ -2075,8 +2153,17 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
 class ManagedResourceRevoke(_ManagedResourceScopeCommand):
     """Remove the agent's Reader and Monitoring Contributor on a scope.
 
+    Only removes these two roles for the selected identity on the exact
+    requested scope. Other identities, roles, and scopes are unaffected.
+    Defaults to the system-assigned identity.
+
     :example: Revoke access to a resource group
         az sre managed-resource revoke --agent-name myagent --resource-group myrg \\
+            --target-subscription my-sub --target-resource-group monitored-rg
+
+    :example: Revoke an assigned user-assigned identity's access
+        az sre managed-resource revoke -g myrg --agent-name myagent \\
+            --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \\
             --target-subscription my-sub --target-resource-group monitored-rg
     """
 
@@ -2096,13 +2183,20 @@ class ManagedResourceRevoke(_ManagedResourceScopeCommand):
 
 
 @register_command("sre managed-resource list")
-class ManagedResourceList(AAZCommand):
+class ManagedResourceList(_ManagedResourceIdentityMixin, AAZCommand):
     """List the scopes the agent's managed identity can access.
 
-    Shows every role assignment where the agent is the assignee.
+    Shows role assignments under the current subscription for the selected
+    identity, not just Reader and Monitoring Contributor. Defaults to the
+    system-assigned identity. Use --identity to select an assigned
+    user-assigned identity.
 
     :example: List what an agent can currently monitor
         az sre managed-resource list --agent-name myagent --resource-group myrg
+
+    :example: List an assigned user-assigned identity's role assignments
+        az sre managed-resource list -g myrg --agent-name myagent \\
+            --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime
     """
 
     _args_schema = None
@@ -2123,9 +2217,7 @@ class ManagedResourceList(AAZCommand):
 
     def _handler(self, command_args):
         super()._handler(command_args)
-        agent_name = _arg_value(self.ctx.args.agent_name)
-        resource_group = _arg_value(self.ctx.args.resource_group)
-        principal_id = _resolve_agent_principal_id(self.cli_ctx, agent_name, resource_group)
+        principal_id = self._resolve_principal_id()
 
         invoke = partial(_cli_invoke, self.cli_ctx)
         return invoke("role", "assignment", "list", "--assignee", principal_id, "--all")

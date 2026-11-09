@@ -104,6 +104,38 @@ az sre managed-resource revoke -g myrg --agent-name myagent \
   --target-subscription <sub-id> --target-resource-group monitored-rg
 ```
 
+All three commands default to the agent's **system-assigned managed identity
+(SAMI)**, even when its knowledge graph, action configuration, or a connector
+uses a user-assigned managed identity (UAMI). To target a UAMI, pass its full
+assigned ARM resource ID as `--identity` on **grant, list, and revoke**:
+
+```bash
+UAMI_ID="/subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime"
+
+az sre identity show -g myrg --agent-name myagent
+az sre managed-resource grant -g myrg --agent-name myagent \
+  --identity "$UAMI_ID" --target-subscription <sub-id> --target-resource-group monitored-rg
+az sre managed-resource list -g myrg --agent-name myagent --identity "$UAMI_ID"
+az sre managed-resource revoke -g myrg --agent-name myagent \
+  --identity "$UAMI_ID" --target-subscription <sub-id> --target-resource-group monitored-rg
+```
+
+`--identity system` explicitly selects the default SAMI. UAMI resource IDs
+are matched case-insensitively against `identity show`'s
+`userAssignedIdentities`; names, client IDs, principal IDs, unassigned UAMIs,
+and identities without principal metadata are rejected. Selection uses the
+attached identity's `principalId`, with no additional directory lookup.
+The selected identity and principal ID are logged on stderr (unless
+`--only-show-errors` suppresses warnings), including when a list is empty.
+These commands do not attach identities, change runtime identity settings,
+restart the agent, or select the first attached UAMI automatically.
+
+Grant and revoke still operate on Reader + Monitoring Contributor as a pair.
+Revoke is limited to the chosen identity and exact requested scope, preserving
+other principals, other roles, and assignments on parent or child scopes.
+List retains `az role assignment list --all`'s current-subscription scope and
+returns every role, not just the managed pair, for the chosen identity.
+
 `access list` and `managed-resource list` both return a raw
 `az role assignment list` object (a dozen-plus flat top-level fields —
 `id`/`principalId`/`principalName`/`principalType`/`roleDefinitionId`/
@@ -115,8 +147,8 @@ terminal width. Both commands register a custom `table_transformer`
 `Principal`/`Type`/`Role`/`GrantedOn` view for `access list` (the scope is
 always the agent itself, so it's omitted), and a
 `Scope`/`Role`/`PrincipalType`/`GrantedOn` view for `managed-resource list`
-(the principal is always the agent's own identity, so its GUID/app-id is
-omitted as noise). `-o json`/`-o jsonc`/`-o yaml`/etc. are unaffected and
+(the principal is the selected agent identity, reported separately on stderr).
+`-o json`/`-o jsonc`/`-o yaml`/etc. are unaffected and
 still return every field.
 
 ## Data connectors
