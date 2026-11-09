@@ -3692,7 +3692,142 @@ def _resolve_agent_resource_id(cli_ctx, agent_name, resource_group):
     return agent_resource_id
 
 
-def _extension_resource_create(
+INTERNAL_TENANT_ONLY_MARKER = "restricted to internal tenants only"
+DIRECT_EXTENSION_ROUTES = {
+    "tools": ("/api/v2/extendedAgent/tools", "ExtendedAgentTool"),
+    "skills": ("/api/v2/extendedAgent/skills", "Skill"),
+    "hooks": ("/api/v2/extendedAgent/hooks", "GlobalHook"),
+    "commonPrompts": ("/api/v2/extendedAgent/commonprompts", "CommonPrompt"),
+    "scheduledTasks": ("/api/v2/extendedAgent/scheduledtasks", "ScheduledTask"),
+    "repositories": ("/api/v2/repos", "CodeRepo"),
+    "httpTriggers": ("/api/v2/extendedAgent/httpTriggers", "HttpTrigger"),
+    "pluginMarketplaces": ("/api/v2/extendedAgent/pluginMarketplaces", "Marketplace"),
+    "pluginInstallations": ("/api/v2/extendedAgent/pluginInstallations", "PluginInstallation"),
+    "globalSettings": ("/api/v2/extendedAgent/globalSettings", "GlobalSettings"),
+    "incidentFilters": ("/api/v2/incidentManagement/incidentFilters", "IncidentFilter"),
+    "githubAuths": ("/api/v2/github/domains", None),
+    "azureDevOpsAuths": ("/api/v2/azuredevops/orgs", None),
+}
+DIRECT_SKIP_EXISTS_CHECK = {"repositories"}
+DIRECT_NO_LIST_OR_DELETE = {"globalSettings"}
+
+
+class InternalTenantOnlyError(CLIError):
+    """The ARM extension route refused the agent's tenant."""
+
+
+def _extension_arm_request(cli_ctx, extension_type, *args, **kwargs):
+    """_arm_request for agent extensions, turning the service's tenant gate
+    into a plain message instead of a raw HTTP error."""
+    try:
+        return _arm_request(cli_ctx, *args, **kwargs)
+    except Exception as ex:
+        response_text = getattr(getattr(ex, "response", None), "text", "") or ""
+        if INTERNAL_TENANT_ONLY_MARKER in f"{ex} {response_text}".lower():
+            raise InternalTenantOnlyError(
+                f"This tenant can't use '{extension_type}' yet. The service only "
+                "allows agent extensions in Microsoft internal tenants right now. "
+                "Nothing is wrong with your command or your agent. If you need "
+                "this in your tenant, please ask the SRE Agent team to open it up."
+            ) from ex
+        raise
+
+
+def _direct_extension_path(extension_type, extension_name=None):
+    base = DIRECT_EXTENSION_ROUTES[extension_type][0]
+    return f"{base}/{quote(extension_name, safe='')}" if extension_name else base
+
+
+def _direct_extension_request(cli_ctx, agent_name, resource_group, method, path, **kwargs):
+    try:
+        return _data_plane_request(cli_ctx, agent_name, resource_group, method, path, **kwargs)
+    except Exception as ex:
+        if getattr(getattr(ex, "response", None), "status_code", None) == 403:
+            raise CLIError(
+                "The agent's own API refused this request (403). Your account may lack "
+                "permission on the agent; creating or changing items needs the "
+                "'SRE Agent Author' or 'SRE Agent Administrator' role."
+            ) from ex
+        raise
+
+
+def _direct_extension_to_arm_shape(extension_type, envelope):
+    if not isinstance(envelope, dict):
+        return envelope
+    return {
+        "name": envelope.get("name"),
+        "type": f"microsoft.app/agents/{extension_type}",
+        "properties": {"value": envelope.get("properties")},
+    }
+
+
+def _direct_extension_create(cli_ctx, agent_name, resource_group, extension_type, name, raw_value, overwrite):
+    _encode_extension_value(raw_value, extension_type)
+    properties = json.loads(raw_value)
+    properties.pop("name", None)
+    path = _direct_extension_path(extension_type, name)
+    envelope_type = DIRECT_EXTENSION_ROUTES[extension_type][1]
+    if envelope_type is None:
+        result = _direct_extension_request(cli_ctx, agent_name, resource_group, "PUT", path, body=properties)
+        return _direct_extension_to_arm_shape(extension_type, {"name": name, "properties": result})
+    if not overwrite and extension_type not in DIRECT_SKIP_EXISTS_CHECK and _direct_extension_request(
+            cli_ctx, agent_name, resource_group, "GET", path, missing_ok=True) is not None:
+        raise ResourceExistsError(
+            f"An extension named '{name}' of type '{extension_type}' already exists on "
+            f"agent '{agent_name}'. Pass --overwrite to replace it intentionally, or "
+            "choose another name."
+        )
+    envelope = {"name": name, "type": envelope_type, "properties": properties}
+    result = _direct_extension_request(cli_ctx, agent_name, resource_group, "PUT", path, body=envelope)
+    return _direct_extension_to_arm_shape(
+        extension_type, result if isinstance(result, dict) and result.get("properties") else envelope)
+
+
+def _direct_auth_items(cli_ctx, agent_name, resource_group, extension_type):
+    result = _direct_extension_request(
+        cli_ctx, agent_name, resource_group, "GET", _direct_extension_path(extension_type))
+    items = result.get("values") if isinstance(result, dict) else None
+    return items or []
+
+
+def _direct_auth_to_arm_shape(extension_type, item):
+    return _direct_extension_to_arm_shape(extension_type, {"name": item.get("name"), "properties": item})
+
+
+def _direct_extension_show(cli_ctx, agent_name, resource_group, extension_type, name):
+    if DIRECT_EXTENSION_ROUTES[extension_type][1] is None:
+        match = next((i for i in _direct_auth_items(cli_ctx, agent_name, resource_group, extension_type)
+                      if i.get("name") == name), None)
+        if match is None:
+            raise ResourceNotFoundError(
+                f"Extension '{name}' of type '{extension_type}' not found on agent '{agent_name}'.")
+        return _direct_auth_to_arm_shape(extension_type, match)
+    result = _direct_extension_request(
+        cli_ctx, agent_name, resource_group, "GET", _direct_extension_path(extension_type, name), missing_ok=True)
+    if result is None:
+        raise ResourceNotFoundError(
+            f"Extension '{name}' of type '{extension_type}' not found on agent '{agent_name}'.")
+    return _direct_extension_to_arm_shape(extension_type, result)
+
+
+def _direct_extension_list(cli_ctx, agent_name, resource_group, extension_type):
+    if DIRECT_EXTENSION_ROUTES[extension_type][1] is None:
+        items = _direct_auth_items(cli_ctx, agent_name, resource_group, extension_type)
+        return {"value": [_direct_auth_to_arm_shape(extension_type, i) for i in items]}
+    result = _direct_extension_request(
+        cli_ctx, agent_name, resource_group, "GET", _direct_extension_path(extension_type))
+    items = result.get("value") if isinstance(result, dict) else result
+    return {"value": [_direct_extension_to_arm_shape(extension_type, item) for item in items or []]}
+
+
+def _direct_extension_delete(cli_ctx, agent_name, resource_group, extension_type, name):
+    if extension_type == "azureDevOpsAuths":
+        path = f"{_direct_extension_path(extension_type)}?org={quote(name, safe='')}"
+    else:
+        path = _direct_extension_path(extension_type, name)
+    return _direct_extension_request(cli_ctx, agent_name, resource_group, "DELETE", path, missing_ok=True)
+
+def _arm_extension_create(
     cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False
 ):
     """Create or update an agent extension resource. Shared by every noun-
@@ -3701,7 +3836,7 @@ def _extension_resource_create(
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
     resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
     if not overwrite:
-        existing = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+        existing = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
         if existing is not None:
             raise ResourceExistsError(
                 f"An extension named '{extension_name}' of type "
@@ -3713,16 +3848,16 @@ def _extension_resource_create(
         "type": f"microsoft.app/agents/{extension_type}",
         "properties": {"value": _encode_extension_value(raw_value, extension_type)},
     }
-    result = _arm_request(cli_ctx, "PUT", resource_id, EXTENSION_API_VERSION, body=body)
+    result = _extension_arm_request(cli_ctx, extension_type, "PUT", resource_id, EXTENSION_API_VERSION, body=body)
     return _decode_extension_envelope(result)
 
 
-def _extension_resource_show(cli_ctx, agent_name, resource_group, extension_type, extension_name):
+def _arm_extension_show(cli_ctx, agent_name, resource_group, extension_type, extension_name):
     """Show an agent extension resource. Shared by every noun-specific
     'show' facade."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
     resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
-    result = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+    result = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
     if result is None:
         raise ResourceNotFoundError(
             f"Extension '{extension_name}' of type '{extension_type}' not found on agent '{agent_name}'."
@@ -3730,12 +3865,12 @@ def _extension_resource_show(cli_ctx, agent_name, resource_group, extension_type
     return _decode_extension_envelope(result)
 
 
-def _extension_resource_list(cli_ctx, agent_name, resource_group, extension_type):
+def _arm_extension_list(cli_ctx, agent_name, resource_group, extension_type):
     """List an agent's extension resources of a given type. Shared by every
     noun-specific 'list' facade."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
     resource_id = f"{agent_resource_id}/{extension_type}"
-    result = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION)
+    result = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION)
     if isinstance(result, dict) and isinstance(result.get("value"), list):
         result["value"] = [_decode_extension_envelope(item) for item in result["value"]]
         if not result["value"]:
@@ -3748,12 +3883,48 @@ def _extension_resource_list(cli_ctx, agent_name, resource_group, extension_type
     return result
 
 
-def _extension_resource_delete(cli_ctx, agent_name, resource_group, extension_type, extension_name):
+def _arm_extension_delete(cli_ctx, agent_name, resource_group, extension_type, extension_name):
     """Delete an agent extension resource. Shared by every noun-specific
     'delete' facade."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
     resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
-    return _arm_request(cli_ctx, "DELETE", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+    return _extension_arm_request(cli_ctx, extension_type, "DELETE", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+
+
+def _with_direct_fallback(arm_func, direct_func, cli_ctx, agent_name, resource_group, extension_type, *args, **kwargs):
+    try:
+        return arm_func(cli_ctx, agent_name, resource_group, extension_type, *args, **kwargs)
+    except InternalTenantOnlyError:
+        if extension_type not in DIRECT_EXTENSION_ROUTES or (
+                extension_type in DIRECT_NO_LIST_OR_DELETE
+                and direct_func in (_direct_extension_list, _direct_extension_delete)):
+            raise
+        logger.info("ARM route refused this tenant; using the agent's own API for '%s'.", extension_type)
+        direct_kwargs = {k: v for k, v in kwargs.items() if k == "overwrite"} if direct_func is _direct_extension_create else {}
+        return direct_func(cli_ctx, agent_name, resource_group, extension_type, *args, **direct_kwargs)
+
+
+def _extension_resource_create(cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False):
+    return _with_direct_fallback(
+        _arm_extension_create, _direct_extension_create, cli_ctx, agent_name, resource_group,
+        extension_type, extension_name, raw_value, overwrite=overwrite)
+
+
+def _extension_resource_show(cli_ctx, agent_name, resource_group, extension_type, extension_name):
+    return _with_direct_fallback(
+        _arm_extension_show, _direct_extension_show, cli_ctx, agent_name, resource_group,
+        extension_type, extension_name)
+
+
+def _extension_resource_list(cli_ctx, agent_name, resource_group, extension_type):
+    return _with_direct_fallback(
+        _arm_extension_list, _direct_extension_list, cli_ctx, agent_name, resource_group, extension_type)
+
+
+def _extension_resource_delete(cli_ctx, agent_name, resource_group, extension_type, extension_name):
+    return _with_direct_fallback(
+        _arm_extension_delete, _direct_extension_delete, cli_ctx, agent_name, resource_group,
+        extension_type, extension_name)
 
 
 # --------------------------------------------------------------------------------------------
