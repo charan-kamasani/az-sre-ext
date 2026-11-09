@@ -1434,7 +1434,7 @@ class ConnectorCreate(
 
     :example: Connect one Kusto cluster and database
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name kusto --data-connector-type Kusto \\
+            --name kusto --data-connector-type "Azure Data Explorer" \\
             --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"
     """
 
@@ -1452,8 +1452,7 @@ class ConnectorUpdate(_DataConnectorTypeArgMixin, _GeneratedConnectorUpdate):
 
     :example: Point a Kusto connector at a different database
         az sre connector update -g myrg --agent-name myagent -n conn-kusto \\
-            --data-connector-type Kusto \\
-            --data-source https://mycluster.kusto.windows.net/mydb
+            --data-connector-type "Azure Data Explorer" \\
     """
 
     _args_schema = None

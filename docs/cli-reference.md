@@ -450,7 +450,7 @@ Create an Agent Connector.
   `az sre connector create --agent-name myagent --resource-group myrg \ --name mcp --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --managed-identity-auth true`
 - Connect one Kusto cluster and database
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name kusto --data-connector-type Kusto \ --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"`
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name kusto --data-connector-type "Azure Data Explorer" \ --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"`
 
 ### `az sre connector delete`
 
@@ -569,7 +569,7 @@ Update an Agent Connector.
 
 - Point a Kusto connector at a different database
 
-  `az sre connector update -g myrg --agent-name myagent -n conn-kusto \ --data-connector-type Kusto \ --data-source https://mycluster.kusto.windows.net/mydb`
+  `az sre connector update -g myrg --agent-name myagent -n conn-kusto \ --data-connector-type "Azure Data Explorer" \`
 
 ## `az sre endpoint`
 

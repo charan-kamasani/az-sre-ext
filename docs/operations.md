@@ -249,6 +249,8 @@ cross-referenced against this CLI's `DATA_CONNECTOR_TYPES` allowlist. This is
 the authoritative tracking table for "is X implemented in the CLI yet?" —
 update it whenever a new wire value or portal card is confirmed.
 
+`az sre connector create --help` lists only the portal names in the table below that the CLI implements (Microsoft-internal ones are hidden for third-party tenants). `--data-connector-type` accepts either the portal name or the wire value.
+
 | Portal card (Title) | Portal subtitle | Wire value (`--data-connector-type`) | CLI status |
 |---|---|---|---|
 | Azure Data Explorer | Azure Data Explorer | `KustoClient` | **Implemented** — live-verified, default type |
@@ -478,7 +480,7 @@ and a full catalog text export):**
 | `Ev2Mcp` | "EV2" | Confirmed — Title; subtitle is "Ev2 (ExpressV2)" |
 | `GenevaMetrics` | "Geneva Metrics" | Confirmed — Title; subtitle is "Geneva Metrics (MDM)" (gated, see above) |
 | `S360` | "S360 connector" | Confirmed — Title; subtitle is "S360" |
-| `Documentation` | "Documentation connector" | Confirmed — Title; subtitle is "Documentation" |
+| `Documentation` | "Documentation connector" | Confirmed — Title; subtitle is "Documentation". **Unresolved:** the portal source (`ConnectorType.ts`) maps this card to `TsgCrawler`, so the card may save as `TsgCrawler`. The CLI help lists `TsgCrawler` for it and accepts both; a create-and-inspect test would settle it |
 | `Mcp` | "MCP server" | **Corrected 2026-11-04**: the real Title is "MCP server" (subtitle "User provided connector"), not "Custom MCP" as previously (incorrectly) documented/coded — "Custom MCP" does not appear anywhere in the real catalog |
 | `Icm` | "IcM connector" | **Corrected 2026-11-04**: the real Title is "IcM connector" (subtitle "Microsoft IcM") — previously had Title/subtitle swapped |
 | `Dgrep` | "DGrep" | **Corrected 2026-11-04**: the real Title is "DGrep" (subtitle "Microsoft DGrep") — previously had Title/subtitle swapped |
@@ -486,7 +488,7 @@ and a full catalog text export):**
 | `KustoUser` | "Database query connector (user)" *(high-confidence, unconfirmed)* | Subtitle "Azure Data Explorer"; description "Query Azure Data Explorer using your own identity via OAuth sign-in" matches the wire value's name/purpose closely, but no create-and-inspect test has confirmed the mapping |
 | `KustoDataIndexer` | "Database indexing connector" *(high-confidence, unconfirmed)* | Subtitle "Azure Data Explorer"; description "The agent generates queries by learning about your logs, telemetry, and time series data" matches closely, same caveat as above |
 | `AzureDevOpsBuiltinMcp` | "Azure DevOps AI Search" *(high-confidence, unconfirmed)* | Subtitle "Azure DevOps"; description "AI-powered remote code search across Azure DevOps repositories without local cloning" matches closely, same caveat as above |
-| `TsgCrawler` | *(none)* | Confirmed **not** present as a picker card (empty search, and absent from the full catalog export) |
+| `TsgCrawler` | "Documentation connector" *(per portal source, unconfirmed live)* | Not a separate card in the catalog export; the portal source maps the Documentation card to this value |
 | `ConnectorGateway` | *(none)* | Confirmed **not** present as a picker card — consistent with it needing separate `Microsoft.Web/connectorGateways` infrastructure, not a direct picker entry |
 | `AzureMonitor` / `MonitorClient` | *(none)* | Confirmed **not** present as their own cards anywhere in the full catalog — no "Azure Monitor" card exists; Azure Monitor's constituent signals are reached via the dedicated Log Analytics Workspace / Application Insights cards instead |
 
