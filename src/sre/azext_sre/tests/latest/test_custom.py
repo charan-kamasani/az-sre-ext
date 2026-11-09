@@ -114,6 +114,8 @@ from azext_sre.custom import (
     _resolve_agent_principal_id,
     _resolve_managed_resource_scope,
     _resolve_signed_in_tenant_id,
+    _IcmIncidentPlatformGateMixin,
+    _show_internal_features,
     _resolve_signed_in_user_object_id,
     MICROSOFT_FIRST_PARTY_TENANT_IDS,
 )
@@ -3126,6 +3128,44 @@ class _TestConnectorConvenience(_ConnectorConvenienceArgsMixin, _NoOpPreOperatio
     pass
 
 
+class InternalFeatureHelpVisibilityTests(unittest.TestCase):
+    """Help hides Microsoft-internal options for non-Microsoft tenants, like the portal."""
+
+    def _visible_with_profile(self, profile):
+        with tempfile.TemporaryDirectory() as config_dir:
+            if profile is not None:
+                with open(os.path.join(config_dir, "azureProfile.json"), "w", encoding="utf-8") as f:
+                    f.write(profile if isinstance(profile, str) else json.dumps(profile))
+            old = os.environ.get("AZURE_CONFIG_DIR")
+            os.environ["AZURE_CONFIG_DIR"] = config_dir
+            try:
+                return _show_internal_features()
+            finally:
+                if old is None:
+                    del os.environ["AZURE_CONFIG_DIR"]
+                else:
+                    os.environ["AZURE_CONFIG_DIR"] = old
+
+    @staticmethod
+    def _profile(tenant_id):
+        return {"subscriptions": [
+            {"id": "other", "tenantId": "11111111-1111-1111-1111-111111111111", "isDefault": False},
+            {"id": "sub", "tenantId": tenant_id, "isDefault": True},
+        ]}
+
+    def test_hidden_for_non_microsoft_tenant(self):
+        self.assertFalse(self._visible_with_profile(self._profile("e0a62563-74af-4081-8ae3-fb94b692e394")))
+
+    def test_shown_for_microsoft_and_sovereign_tenants(self):
+        self.assertTrue(self._visible_with_profile(self._profile("72f988bf-86f1-41af-91ab-2d7cd011db47")))
+        self.assertTrue(self._visible_with_profile(self._profile("70a90262-f46c-48aa-ac4c-37e37f8be1a2")))
+
+    def test_shown_when_tenant_unknown(self):
+        self.assertTrue(self._visible_with_profile(None))
+        self.assertTrue(self._visible_with_profile("not json"))
+        self.assertTrue(self._visible_with_profile({"subscriptions": []}))
+
+
 class GenevaMetricsTenantGateTests(unittest.TestCase):
     """GenevaMetrics is Microsoft-internal only (Paul's 2026-11-02 Teams
     feedback). _DataConnectorTypeArgMixin.pre_operations() now resolves the
@@ -3148,6 +3188,31 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
         be None/AAZUndefined, and pre_operations() calls .to_serialized_data()
         on it (mirrors ConnectorConvenienceArgsTests' approach one level up)."""
         return SimpleNamespace(to_serialized_data=lambda: serialized)
+
+    class _TestIcmPlatformGate(_IcmIncidentPlatformGateMixin, _NoOpPreOperationsBase):
+        pass
+
+    def test_agent_icm_platform_blocked_outside_microsoft_tenants(self):
+        config = SimpleNamespace(type="Icm")
+        for tenant, blocked in (
+                ("e0a62563-74af-4081-8ae3-fb94b692e394", True),
+                (self.MICROSOFT_CORP_TENANT_ID, False),
+                (self.MICROSOFT_AME_TENANT_ID, False)):
+            with self.subTest(tenant=tenant), patch(
+                    "azext_sre.custom._resolve_signed_in_tenant_id", lambda cli_ctx, t=tenant: t):
+                command = _bare_command(self._TestIcmPlatformGate, incident_management_configuration=config)
+                if blocked:
+                    with self.assertRaises(CLIError):
+                        command.pre_operations()
+                else:
+                    command.pre_operations()
+
+    def test_agent_non_icm_platform_is_never_blocked(self):
+        command = _bare_command(
+            self._TestIcmPlatformGate,
+            incident_management_configuration=SimpleNamespace(type="PagerDuty"))
+        with patch("azext_sre.custom._resolve_signed_in_tenant_id", lambda cli_ctx: "e0a62563-74af-4081-8ae3-fb94b692e394"):
+            command.pre_operations()
 
     def test_resolve_signed_in_tenant_id_returns_tenant(self):
         with patch(
@@ -3219,6 +3284,38 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
         ):
             command.pre_operations()
         self.assertEqual(command.ctx.args.data_connector_type, "Kusto")
+
+    def _create_with_features(self, connector_type, features):
+        command = _bare_command(
+            self._TestDataConnectorType, data_connector_type=self._value(connector_type)
+        )
+        with patch("azext_sre.custom._agent_features", return_value=features):
+            command.pre_operations()
+        return command
+
+    def test_internal_only_connectors_blocked_when_the_agent_is_not_first_party(self):
+        for connector_type in ("GenevaMetrics", "S360", "dgrep"):
+            with self.assertRaises(CLIError):
+                self._create_with_features(connector_type, {"isFirstParty": False})
+
+    def test_internal_only_connectors_allowed_when_the_agent_is_first_party(self):
+        command = self._create_with_features("s360", {"isFirstParty": True})
+        self.assertEqual(command.ctx.args.data_connector_type, "S360")
+
+    def test_icm_connector_blocked_only_when_the_agent_says_it_is_not_first_party(self):
+        with self.assertRaises(CLIError):
+            self._create_with_features("icm", {"isFirstParty": False})
+        command = self._create_with_features("icm", {})
+        self.assertEqual(command.ctx.args.data_connector_type, "Icm")
+
+    def test_require_first_party_blocks_only_agents_that_say_they_are_not(self):
+        from azext_sre.custom import _require_first_party
+
+        with patch("azext_sre.custom._agent_features", return_value={"isFirstParty": False}):
+            with self.assertRaises(CLIError):
+                _require_first_party(None, "a", "rg", "Something internal")
+        with patch("azext_sre.custom._agent_features", return_value={}):
+            _require_first_party(None, "a", "rg", "Something internal")
 
 
 class ConnectorConvenienceArgsTests(unittest.TestCase):

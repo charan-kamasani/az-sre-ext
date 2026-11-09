@@ -359,7 +359,7 @@ Update an SRE Agent.
   `> Connect an incident platform > PagerDuty). This is a plain ARM PATCH on the agent resource -- confirmed via the control plane's own AgentDocument.cs model and real E2E fixtures (PagerDutySetupFixture.cs) -- not the separate, portal-only Connector Gateway (which Jira/Slack/ SharePoint/etc. use). --connection-key is the PagerDuty REST API access key from the tutorial; --obo-user is the user whose identity the agent acts under when resolving/commenting on incidents. az sre agent update --name myagent --resource-group myrg \ --incident-management-configuration "{type:PagerDuty,connection-name:pagerduty,connection-key:<api-key>,obo-user:oncall@contoso.com}"`
 - Connect ServiceNow as the incident platform (Basic Auth; set
 
-  `--connection-url to the instance URL and --connection-key to the credentials, per the tutorial's "instance URL and credentials" step) az sre agent update --name myagent --resource-group myrg \ --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:https://contoso.service-now.com,connection-key:<credentials>}" Azure Monitor needs no configuration here -- it connects automatically when the agent is created (confirmed by the tutorial and by AzMonitor being the enum's implicit default). Icm is this CLI's own sandbox/ first-party path, set the same way with type=Icm.`
+  `--connection-url to the instance URL and --connection-key to the credentials, per the tutorial's "instance URL and credentials" step) az sre agent update --name myagent --resource-group myrg \ --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:https://contoso.service-now.com,connection-key:<credentials>}" Azure Monitor needs no configuration here -- it connects automatically when the agent is created (confirmed by the tutorial and by AzMonitor being the enum's implicit default).`
 
 ### `az sre agent wait`
 
@@ -418,7 +418,7 @@ Create an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. |
+| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
@@ -559,7 +559,7 @@ Update an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. |
+| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
@@ -1198,7 +1198,7 @@ Routes matching incidents to a subagent. Connect the incident platform and creat
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of the response plan. |
-| `--platform` | String | Yes |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. |
+| `--platform` | String | Yes |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. Icm is Microsoft-internal only. |
 | `--subagent` | String | Yes |  |  | Name of the existing subagent that handles matched incidents. |
 | `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all. |
 | `--title-contains` | String | No |  |  | Only match incidents whose title contains this text. |

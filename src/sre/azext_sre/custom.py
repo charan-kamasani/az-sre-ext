@@ -471,6 +471,27 @@ MICROSOFT_FIRST_PARTY_TENANT_IDS = frozenset(
 )
 
 
+def _show_internal_features():
+    """Whether help should mention Microsoft-internal features.
+
+    Reads the default account's tenant from the local profile (no network),
+    like the portal, which hides these for non-Microsoft tenants. Any doubt
+    shows them; the run-time gates still apply.
+    """
+    try:
+        from azure.cli.core._environment import get_config_dir
+        with open(os.path.join(get_config_dir(), "azureProfile.json"), encoding="utf-8-sig") as profile_file:
+            subscriptions = json.load(profile_file).get("subscriptions") or []
+        default = next((s for s in subscriptions if s.get("isDefault")), None)
+        tenant_id = (default or {}).get("tenantId")
+    except Exception:  # pylint: disable=broad-except
+        return True
+    if not tenant_id:
+        return True
+    return _is_microsoft_first_party_tenant(tenant_id) or tenant_id.lower() in ICM_MANAGED_IDENTITY_TENANT_IDS
+
+
+
 def _resolve_signed_in_user_object_id(cli_ctx):
     """Resolve the signed-in user's AAD object ID via 'az ad signed-in-user show'.
 
@@ -651,8 +672,34 @@ class _LogConfigurationWarningMixin:
         super().pre_operations()
 
 
+ICM_MANAGED_IDENTITY_TENANT_IDS = frozenset({
+    "33e01921-4d64-4f8c-a055-5bdaffd5e33d",
+    "975f013f-7f24-47e8-a7d3-abc4752bf346",
+    "cdc5aeea-15c5-4db6-b079-fcadd2505dc2",
+    "68cd85cc-e0b3-43c8-ba3c-67686dbf8a67",
+    "70a90262-f46c-48aa-ac4c-37e37f8be1a2",
+    "dc12cfcb-7c57-4e3e-92b9-6ea4cbc258e9",
+    "20ac2fc4-effc-4f76-ba7d-63c5ae134f5f",
+    "ec044cc1-d8de-4194-a9b6-f5abc1c30081",
+})
+
+
+class _IcmIncidentPlatformGateMixin:
+    """Block type=Icm in --incident-management-configuration outside Microsoft tenants."""
+
+    def pre_operations(self):
+        args = self.ctx.args
+        config = getattr(args, "incident_management_configuration", None)
+        platform = _arg_value(config.type) if config is not None else None
+        if platform and str(platform).lower() == "icm":
+            tenant_id = (_resolve_signed_in_tenant_id(self.cli_ctx) or "").lower()
+            if tenant_id not in ICM_MANAGED_IDENTITY_TENANT_IDS and not _is_microsoft_first_party_tenant(tenant_id):
+                raise CLIError("--incident-management-configuration type=Icm is Microsoft-internal only.")
+        super().pre_operations()
+
+
 @register_command("sre agent create")
-class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
+class Create(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
     :example: Create an agent with an Anthropic default model
@@ -693,7 +740,7 @@ class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdenti
 
 
 @register_command("sre agent update")
-class Update(_ModelProviderArgMixin, _GeneratedUpdate):
+class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GeneratedUpdate):
     """Update an SRE Agent.
 
     :example: Switch an agent's default model to MicrosoftFoundry
@@ -719,8 +766,7 @@ class Update(_ModelProviderArgMixin, _GeneratedUpdate):
 
     Azure Monitor needs no configuration here -- it connects automatically
     when the agent is created (confirmed by the tutorial and by AzMonitor
-    being the enum's implicit default). Icm is this CLI's own sandbox/
-    first-party path, set the same way with type=Icm.
+    being the enum's implicit default).
     """
 
     _args_schema = None
@@ -979,12 +1025,15 @@ def _normalize_data_connector_type(value):
     key = str(value).strip().lower()
     normalized = DATA_CONNECTOR_TYPES.get(key) or DATA_CONNECTOR_TYPE_ALIASES.get(key)
     if normalized is None:
+        internal = _show_internal_features()
+        hidden = FIRST_PARTY_ONLY_CONNECTOR_TYPES | {"Icm"}
         raise CLIError(
             "--data-connector-type must be one of: "
-            + ", ".join(sorted(DATA_CONNECTOR_TYPES))
+            + ", ".join(sorted(t for t in DATA_CONNECTOR_TYPES if internal or DATA_CONNECTOR_TYPES[t] not in hidden))
             + " (friendly names like 'Azure Data Explorer', 'Custom MCP', "
-            "'Office 365 Outlook', 'Microsoft Teams', 'Microsoft IcM', "
-            "'Microsoft DGrep' also accepted)"
+            "'Office 365 Outlook', 'Microsoft Teams'"
+            + (", 'Microsoft IcM', 'Microsoft DGrep'" if internal else "")
+            + " also accepted)"
             + f" (got '{value}')."
         )
     return normalized
@@ -1012,12 +1061,15 @@ class _DataConnectorTypeArgMixin:
         # See _ModelProviderArgMixin above for why this must merge into the
         # existing ._help dict rather than replace it.
         if data_connector_type is not None and isinstance(getattr(data_connector_type, "_help", None), dict):
+            internal = _show_internal_features()
             data_connector_type._help["short-summary"] = (
                 "Connector type (case-insensitive; portal names also accepted). "
                 "Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, "
-                "LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, "
+                "LogAnalytics, " + ("Icm, Dgrep, " if internal else "") + "Ev2Mcp, "
+                + ("GenevaMetrics, S360, " if internal else "") + "Documentation, "
                 "AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, "
                 "KnowledgeRepository."
+                + (" Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only." if internal else "")
             )
         data_source = getattr(schema, "data_source", None)
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
@@ -1042,13 +1094,16 @@ class _DataConnectorTypeArgMixin:
             normalized = _normalize_data_connector_type(
                 data_connector_type.to_serialized_data()
             )
-            if normalized == "GenevaMetrics":
-                tenant_id = _resolve_signed_in_tenant_id(self.cli_ctx)
-                if not _is_microsoft_first_party_tenant(tenant_id):
-                    raise CLIError(
-                        "--data-connector-type GenevaMetrics is Microsoft-internal "
-                        "only and is not available in this tenant."
-                    )
+            if normalized in FIRST_PARTY_ONLY_CONNECTOR_TYPES:
+                _require_first_party(
+                    self.cli_ctx, _arg_value(getattr(args, "agent_name", None)), _arg_value(getattr(args, "resource_group", None)),
+                    f"--data-connector-type {normalized}", tenant_fallback=True,
+                )
+            if normalized == "Icm":
+                _require_first_party(
+                    self.cli_ctx, _arg_value(getattr(args, "agent_name", None)), _arg_value(getattr(args, "resource_group", None)),
+                    "--data-connector-type Icm",
+                )
             args.data_connector_type = normalized
         super().pre_operations()
 
@@ -3982,6 +4037,21 @@ def _require_feature(features, extension_type):
         raise CLIError(f"This agent doesn't have {flag[1]} enabled, so it can't be configured here.")
 
 
+FIRST_PARTY_ONLY_CONNECTOR_TYPES = frozenset({"GenevaMetrics", "S360", "Dgrep"})
+
+
+def _require_first_party(cli_ctx, agent_name, resource_group, what, tenant_fallback=False):
+    """Block Microsoft-internal features on agents that report they are not first-party.
+
+    When the agent's status is unknown, tenant_fallback checks the signed-in tenant instead.
+    """
+    first_party = _agent_features(cli_ctx, agent_name, resource_group).get("isFirstParty")
+    if first_party is None and tenant_fallback:
+        first_party = _is_microsoft_first_party_tenant(_resolve_signed_in_tenant_id(cli_ctx))
+    if first_party is False:
+        raise CLIError(f"{what} is Microsoft-internal only and is not available on this agent.")
+
+
 def _with_direct_fallback(arm_func, direct_func, cli_ctx, agent_name, resource_group, extension_type, *args, **kwargs):
     features = _agent_features(cli_ctx, agent_name, resource_group)
     if extension_type in DIRECT_EXTENSION_ROUTES and features.get("isFirstParty") is False and not (
@@ -4654,7 +4724,8 @@ def _add_response_plan_criteria_args(schema):
     )
     schema.owning_teams = AAZListArg(
         options=["--owning-team"],
-        help="Space-separated owning team IDs (IcM team IDs are numeric). Portal: Owning team.",
+        help="Space-separated owning team IDs"
+        + (" (IcM team IDs are numeric)" if _show_internal_features() else "") + ". Portal: Owning team.",
     )
     schema.owning_teams.Element = AAZStrArg()
     schema.merge_enabled = AAZBoolArg(
@@ -4742,7 +4813,11 @@ class ResponsePlanCreate(AAZCommand):
         _response_plan_target_schema(schema)
         schema.platform = AAZStrArg(
             options=["--platform"], required=True,
-            help="Incident platform: " + ", ".join(RESPONSE_PLAN_PLATFORMS) + ".",
+            help=(
+                "Incident platform: " + ", ".join(RESPONSE_PLAN_PLATFORMS) + ". Icm is Microsoft-internal only."
+                if _show_internal_features()
+                else "Incident platform: " + ", ".join(p for p in RESPONSE_PLAN_PLATFORMS if p != "Icm") + "."
+            ),
         )
         schema.subagent = AAZStrArg(
             options=["--subagent"], required=True,
@@ -4772,9 +4847,12 @@ class ResponsePlanCreate(AAZCommand):
         mode = _arg_value(args.mode)
         overwrite = bool(_arg_value(args.overwrite))
         if platform not in RESPONSE_PLAN_PLATFORMS:
-            raise CLIError(f"--platform must be one of: {', '.join(RESPONSE_PLAN_PLATFORMS)}.")
+            visible = [p for p in RESPONSE_PLAN_PLATFORMS if p != "Icm" or _show_internal_features()]
+            raise CLIError(f"--platform must be one of: {', '.join(visible)}.")
         if mode not in RESPONSE_PLAN_MODES:
             raise CLIError(f"--mode must be one of: {', '.join(RESPONSE_PLAN_MODES)}.")
+        if platform == "Icm":
+            _require_first_party(self.cli_ctx, agent_name, resource_group, "--platform Icm")
         flt = {
             "incidentPlatform": platform,
             "handlingAgent": _arg_value(args.subagent),
@@ -4849,7 +4927,8 @@ class ResponsePlanUpdate(AAZCommand):
         _response_plan_target_schema(schema)
         schema.platform = AAZStrArg(
             options=["--platform"],
-            help="Incident platform: " + ", ".join(RESPONSE_PLAN_PLATFORMS) + ".",
+            help="Incident platform: "
+            + ", ".join(p for p in RESPONSE_PLAN_PLATFORMS if p != "Icm" or _show_internal_features()) + ".",
         )
         schema.subagent = AAZStrArg(
             options=["--subagent"], help="Name of the existing subagent that handles matched incidents.",
@@ -4877,6 +4956,8 @@ class ResponsePlanUpdate(AAZCommand):
                     flag = "--platform" if key == "incidentPlatform" else "--mode"
                     raise CLIError(f"{flag} must be one of: {', '.join(allowed)}.")
                 changes[key] = value
+                if key == "incidentPlatform" and value == "Icm":
+                    _require_first_party(self.cli_ctx, agent_name, resource_group, "--platform Icm")
         subagent = _arg_value(args.subagent)
         if subagent:
             changes["handlingAgent"] = subagent
