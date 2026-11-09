@@ -15,6 +15,7 @@ import base64
 import json
 import os
 import tempfile
+import types
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -2599,6 +2600,24 @@ class ShowNetworkTests(unittest.TestCase):
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
              patch("azext_sre.custom._arm_request", fake_arm_request):
+            with self.assertRaises(ResourceNotFoundError):
+                command._handler({})
+
+    def test_404_on_the_get_becomes_not_found(self):
+        command = _bare_command(ShowNetwork, name="myagent", resource_group="rg")
+
+        class Http404(Exception):
+            response = type("R", (), {"status_code": 404})()
+
+        def raise_404(*args, **kwargs):
+            raise Http404()
+
+        command.cli_ctx.cloud = types.SimpleNamespace(
+            endpoints=types.SimpleNamespace(resource_manager="https://management.azure.com/"))
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
+             patch("azext_sre.custom.send_raw_request", raise_404):
             with self.assertRaises(ResourceNotFoundError):
                 command._handler({})
 
