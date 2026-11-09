@@ -1026,14 +1026,14 @@ def _normalize_data_connector_type(value):
     normalized = DATA_CONNECTOR_TYPES.get(key) or DATA_CONNECTOR_TYPE_ALIASES.get(key)
     if normalized is None:
         internal = _show_internal_features()
-        hidden = FIRST_PARTY_ONLY_CONNECTOR_TYPES | {"Icm"}
+        hidden = FIRST_PARTY_ONLY_CONNECTOR_TYPES | {"Icm"} | {t for t in DATA_CONNECTOR_TYPES.values() if t.startswith("Knowledge")}
         raise CLIError(
             "--data-connector-type must be one of: "
             + ", ".join(sorted(t for t in DATA_CONNECTOR_TYPES if internal or DATA_CONNECTOR_TYPES[t] not in hidden))
             + " (friendly names like 'Azure Data Explorer', 'Custom MCP', "
             "'Office 365 Outlook', 'Microsoft Teams'"
             + (", 'Microsoft IcM', 'Microsoft DGrep'" if internal else "")
-            + " also accepted)"
+            + " also accepted). For knowledge sources use 'az sre knowledge create'"
             + f" (got '{value}')."
         )
     return normalized
@@ -1079,7 +1079,7 @@ class _DataConnectorTypeArgMixin:
         for _name, _text in (
             ("endpoint", "Endpoint URL, used by endpoint-based connector types such as Mcp."),
             ("identity", "Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity."),
-            ("extended_properties", "Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository."),
+            ("extended_properties", "Type-specific settings as JSON or shorthand."),
         ):
             _arg = getattr(schema, _name, None)
             if _arg is not None and isinstance(getattr(_arg, "_help", None), dict):
@@ -1134,7 +1134,7 @@ class _ConnectorConvenienceArgsMixin:
         schema.file_path = AAZStrArg(
             options=["--file-path"],
             arg_group="Properties",
-            help="Local file to ingest. KnowledgeFile: base64-encoded and uploaded. KnowledgeText: read as UTF-8 text.",
+            help="Local file to ingest. For knowledge sources use 'az sre knowledge create'.",
         )
         schema.mcp_endpoint = AAZStrArg(
             options=["--mcp-endpoint"],
