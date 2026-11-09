@@ -2437,11 +2437,15 @@ class GetConnection(AAZCommand):
                 with open(_CONNECTIONS_FILE, "r", encoding="utf-8") as handle:
                     connections = json.load(handle)
             except (OSError, json.JSONDecodeError) as ex:
-                logger.warning(
-                    "Could not read existing %s (%s); it will be overwritten.",
-                    _CONNECTIONS_FILE, ex,
+                raise CLIError(
+                    f"Could not read existing {_CONNECTIONS_FILE} ({ex}). "
+                    "The file was left unchanged; fix or delete it and retry."
                 )
-                connections = {}
+            if not isinstance(connections, dict):
+                raise CLIError(
+                    f"{_CONNECTIONS_FILE} does not contain a JSON object. "
+                    "The file was left unchanged; fix or delete it and retry."
+                )
         key = f"{resource_group}/{name}"
         connections[key] = {
             "name": name,

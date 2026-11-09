@@ -3507,6 +3507,27 @@ class ConnectionShowDefaultAudienceTests(unittest.TestCase):
         result = self._run(data_plane_audience="https://custom.audience.example")
         self.assertEqual(result["dataPlaneAudience"], "https://custom.audience.example")
 
+    def test_malformed_connections_file_is_not_overwritten(self):
+        command = _bare_command(
+            GetConnection, name="myagent", resource_group="rg",
+            data_plane_audience="https://azuresre.dev",
+        )
+
+        def fake_cli_invoke(cli_ctx, *cmd_args, allow_missing=False):
+            return {"properties": {"agentEndpoint": "https://myagent.example"}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+             tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "sreAgentConnections.json")
+            for bad in ("{not json", "[1, 2]"):
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(bad)
+                with patch("azext_sre.custom._CONNECTIONS_FILE", path):
+                    with self.assertRaises(CLIError):
+                        command._handler({})
+                with open(path, "r", encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), bad)
 
 class _NoOpPreOpBase2:
     def pre_operations(self):
