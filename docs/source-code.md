@@ -182,8 +182,12 @@ changes; see [development.md](development.md).
 
 - `connector list-secret` is the only command that can return connector
   secret material. Every other connector command recursively redacts
-  secrets from output.
-- The generated `--debug` flag will print raw request/response bodies
-  including any secret fields present on the wire — use it only against
+  secrets from output. `list-secret` turns off HTTP request/response
+  tracing for its own call, so `--debug` does not write the secrets to
+  logs. Store its output securely and never commit it.
+- The generated `--debug` flag still prints raw request/response bodies
+  for every other command, including any secret fields on the wire (for
+  example the token sent by `repo connect`). Use it only against
   disposable test resources, never against anything with real customer
-  data.
+  data, and redact logs before sharing them or attaching them to a
+  support request.

@@ -1524,18 +1524,32 @@ class _ConnectorNameAliasMixin:
         return schema
 
 
+class _SecretHttpOperationMixin:
+    def __call__(self, *args, **kwargs):
+        kwargs["logging_enable"] = False
+        return super().__call__(*args, **kwargs)
+
+
 @register_command("sre connector list-secret")
 class ConnectorListSecret(_ConnectorNameAliasMixin, _GeneratedConnectorListSecret):
     """Show a connector with its secrets in plain text.
 
     Unlike 'sre connector show'/'sre connector list', which redact secret
-    fields server-side, this command returns them unredacted.
+    fields server-side, this command returns them unredacted. HTTP request
+    and response tracing is disabled for this command, including with --debug.
+    Store the output securely and never commit it.
 
     :example: Read back a Kusto connector's secret after creating it
         az sre connector list-secret --agent-name myagent --resource-group myrg --name conn-kusto
     """
 
     _args_schema = None
+
+    class AgentsConnectorsListSecrets(
+        _SecretHttpOperationMixin,
+        _GeneratedConnectorListSecret.AgentsConnectorsListSecrets,
+    ):
+        pass
 
 
 # --------------------------------------------------------------------------------------------

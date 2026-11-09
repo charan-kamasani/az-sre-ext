@@ -3108,6 +3108,18 @@ class ConnectorListSecretAliasTests(unittest.TestCase):
         cmd_arg = schema.connector_name.to_cmd_arg("connector_name")
         self.assertEqual(cmd_arg.options_list, ["-n", "--name", "--connector-name"])
 
+    def test_http_logging_is_disabled_for_the_secret_request(self):
+        operation = ConnectorListSecret.AgentsConnectorsListSecrets.__new__(
+            ConnectorListSecret.AgentsConnectorsListSecrets
+        )
+        seen = {}
+        parent = ConnectorListSecret.AgentsConnectorsListSecrets.__mro__[2]
+        with patch.object(
+            parent, "__call__", lambda self, *a, **kw: seen.update(kw) or "ok"
+        ):
+            self.assertEqual(operation(logging_enable=True), "ok")
+        self.assertIs(seen["logging_enable"], False)
+
 
 class IdentityAndSupportedAgentModelRegistrationTests(unittest.TestCase):
     """'sre identity'/'sre agent list-models' are thin re-registrations

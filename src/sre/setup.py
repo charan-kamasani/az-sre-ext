@@ -25,7 +25,6 @@ CLASSIFIERS = [
     'Programming Language :: Python :: 3.11',
     'Programming Language :: Python :: 3.12',
     'Programming Language :: Python :: 3.13',
-    'License :: OSI Approved :: MIT License',
 ]
 
 DEPENDENCIES = []
@@ -40,10 +39,9 @@ setup(
     version=VERSION,
     description='Microsoft Azure Command-Line Tools Sre Extension.',
     long_description=README + '\n\n' + HISTORY,
-    license='MIT',
     author='Microsoft Corporation',
     author_email='azpycli@microsoft.com',
-    url='https://github.com/Azure/azure-cli-extensions/tree/main/src/sre',
+    url='https://github.com/charan-kamasani/az-sre-ext',
     classifiers=CLASSIFIERS,
     packages=find_packages(exclude=["tests"]),
     package_data={'azext_sre': ['azext_metadata.json']},
