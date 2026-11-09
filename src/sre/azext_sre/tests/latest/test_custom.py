@@ -116,7 +116,7 @@ from azext_sre.custom import (
     _resolve_signed_in_tenant_id,
     _IcmIncidentPlatformGateMixin,
     _show_internal_features,
-    _resolve_signed_in_user_object_id,
+    _listed_connector_types,    _resolve_signed_in_user_object_id,
     MICROSOFT_FIRST_PARTY_TENANT_IDS,
 )
 
@@ -3130,6 +3130,18 @@ class _TestConnectorConvenience(_ConnectorConvenienceArgsMixin, _NoOpPreOperatio
 
 class InternalFeatureHelpVisibilityTests(unittest.TestCase):
     """Help hides Microsoft-internal options for non-Microsoft tenants, like the portal."""
+
+    def test_listed_connector_types_match_portal_picker(self):
+        with patch("azext_sre.custom._show_internal_features", return_value=False):
+            third_party = _listed_connector_types()
+        with patch("azext_sre.custom._show_internal_features", return_value=True):
+            internal = _listed_connector_types()
+        for hidden in ("Icm", "Dgrep", "GenevaMetrics", "S360"):
+            self.assertNotIn(hidden, third_party)
+            self.assertIn(hidden, internal)
+        for unlisted in ("Kusto", "Documentation", "MonitorClient", "KnowledgeText"):
+            self.assertNotIn(unlisted, internal)
+        self.assertIn("TsgCrawler", third_party)
 
     def _visible_with_profile(self, profile):
         with tempfile.TemporaryDirectory() as config_dir:

@@ -880,6 +880,15 @@ DATA_CONNECTOR_TYPE_ALIASES = {
     "microsoft dgrep": "Dgrep",
 }
 
+# Connector types the portal's connector picker offers, in help-list order.
+# Other accepted values (Kusto, Documentation, MonitorClient, Knowledge*, ...)
+# still work but are not advertised.
+PORTAL_CONNECTOR_TYPES = (
+    "KustoClient", "KustoUser", "KustoDataIndexer", "LogAnalytics", "AppInsights",
+    "Mcp", "Outlook", "Teams", "Ev2Mcp", "TsgCrawler", "AzureDevOpsBuiltinMcp",
+    "Icm", "Dgrep", "GenevaMetrics", "S360",
+)
+
 # Connector types that do not require --data-source at all (the data-plane
 # validator exempts them -- see DataConnectorValidator.cs
 # IsKnowledgeConnectorType). Used only to keep --help accurate; the CLI
@@ -1019,6 +1028,13 @@ CONNECTOR_TYPE_PORTAL_NAMES = {
 }
 
 
+def _listed_connector_types():
+    types = PORTAL_CONNECTOR_TYPES
+    if _show_internal_features():
+        return types
+    return tuple(t for t in types if t not in FIRST_PARTY_ONLY_CONNECTOR_TYPES and t != "Icm")
+
+
 def _normalize_data_connector_type(value):
     if value is None:
         return value
@@ -1026,10 +1042,9 @@ def _normalize_data_connector_type(value):
     normalized = DATA_CONNECTOR_TYPES.get(key) or DATA_CONNECTOR_TYPE_ALIASES.get(key)
     if normalized is None:
         internal = _show_internal_features()
-        hidden = FIRST_PARTY_ONLY_CONNECTOR_TYPES | {"Icm"} | {t for t in DATA_CONNECTOR_TYPES.values() if t.startswith("Knowledge")}
         raise CLIError(
             "--data-connector-type must be one of: "
-            + ", ".join(sorted(t for t in DATA_CONNECTOR_TYPES if internal or DATA_CONNECTOR_TYPES[t] not in hidden))
+            + ", ".join(_listed_connector_types())
             + " (friendly names like 'Azure Data Explorer', 'Custom MCP', "
             "'Office 365 Outlook', 'Microsoft Teams'"
             + (", 'Microsoft IcM', 'Microsoft DGrep'" if internal else "")
@@ -1061,13 +1076,10 @@ class _DataConnectorTypeArgMixin:
         # See _ModelProviderArgMixin above for why this must merge into the
         # existing ._help dict rather than replace it.
         if data_connector_type is not None and isinstance(getattr(data_connector_type, "_help", None), dict):
-            internal = _show_internal_features()
             data_connector_type._help["short-summary"] = (
                 "Connector type (case-insensitive; portal names also accepted). "
-                "Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, "
-                "LogAnalytics, " + ("Icm, Dgrep, " if internal else "") + "Ev2Mcp, "
-                + ("GenevaMetrics, S360, " if internal else "") +                 "Documentation, AppInsights."
-                + (" Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only." if internal else "")
+                "Allowed values: " + ", ".join(_listed_connector_types()) + "."
+                + (" Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only." if _show_internal_features() else "")
                 + " For knowledge sources use 'az sre knowledge create'."
             )
         data_source = getattr(schema, "data_source", None)
