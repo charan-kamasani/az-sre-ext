@@ -1537,7 +1537,9 @@ class ConnectorListSecret(_ConnectorNameAliasMixin, _GeneratedConnectorListSecre
     Unlike 'sre connector show'/'sre connector list', which redact secret
     fields server-side, this command returns them unredacted. HTTP request
     and response tracing is disabled for this command, including with --debug.
-    Store the output securely and never commit it.
+    Store the output securely and never commit it. The service only returns
+    secrets to callers with an admin role on the agent; other callers get an
+    authorization error.
 
     :example: Read back a Kusto connector's secret after creating it
         az sre connector list-secret --agent-name myagent --resource-group myrg --name conn-kusto

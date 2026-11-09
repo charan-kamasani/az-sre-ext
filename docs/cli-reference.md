@@ -483,7 +483,7 @@ consentStatus (Consented/PendingConsent) is shown for EntraOAuth-backed Mcp conn
 
 Show a connector with its secrets in plain text.
 
-Unlike 'sre connector show'/'sre connector list', which redact secret fields server-side, this command returns them unredacted. HTTP request and response tracing is disabled for this command, including with --debug. Store the output securely and never commit it.
+Unlike 'sre connector show'/'sre connector list', which redact secret fields server-side, this command returns them unredacted. HTTP request and response tracing is disabled for this command, including with --debug. Store the output securely and never commit it. The service only returns secrets to callers with an admin role on the agent; other callers get an authorization error.
 
 **Syntax**
 
