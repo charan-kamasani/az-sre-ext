@@ -758,7 +758,8 @@ source than the ARM control-plane proxy) and live-verified by creating a
 real `LinkTool` on `mytestagent`:
 
 - The polymorphic discriminator field is **`type`** (values: `KustoTool`,
-  `LinkTool`, `PythonFunctionTool`, `HttpClientTool`), not `toolType`.
+  `LinkTool`, `PythonFunctionTool`, and legacy/update-only `HttpClientTool`),
+  not `toolType`.
 - `PythonTool` remains accepted as a legacy CLI alias. The CLI normalizes it
   to `PythonFunctionTool` before encoding the request; the runtime rejects
   the old discriminator. Executable code and the other configuration fields
@@ -776,6 +777,33 @@ The CLI's `_validate_tools_shape` client-side validator already enforced
 the correct `type`/`template` fields; only the `--value` help text's
 example was stale and contradicted it. Fixed so the documented example
 now matches the validator and the real API.
+
+### `HttpClientTool` is update-only, not supported for new creation
+
+Fresh-deployment verification of the native tools API returned HTTP 400
+`ValidationFailure` for a valid new `HttpClientTool` with this message:
+**"Creating new HttpClientTool tools is no longer supported. Existing
+HttpClientTool tools can still be updated."** The ARM proxy can instead
+surface a generic invalid extension configuration error. This is a service
+creation policy, not evidence that the discriminator or headers need a
+different JSON shape.
+
+`az sre tool create` now rejects new HTTP tools before sending a PUT,
+including an absent name with `--overwrite`. Updating a legacy HTTP tool
+requires `--overwrite` and an existing resource of the same name whose
+decoded configuration is already `HttpClientTool`; replacing a different
+tool type does not qualify. Without `--overwrite`, an existing name still
+produces the ordinary resource-exists error. `tool show` and `tool list`
+continue to read legacy HTTP tools, and their update payload retains the
+existing HTTP field names and shapes.
+
+For new HTTP integrations, use `PythonFunctionTool` or an MCP server/connector
+configured separately. The CLI does not convert HTTP tools or their
+credentials automatically.
+
+Legacy update support is declared by the service and covered locally with
+existing-resource state and payload checks. The fresh deployment had no
+legacy HTTP tool, so a live legacy update has **not** been qualified.
 
 ### `globalSettings.toolStatuses` is accepted but doesn't round-trip; `toolPermissions`/`approvalExpirationSetting` do
 

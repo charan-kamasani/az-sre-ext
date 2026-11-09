@@ -1581,7 +1581,7 @@ Built-in tools and MCP servers/services are configured separately and are not ye
 
 ### `az sre tool create`
 
-Create or update a custom tool.
+Create a custom tool, or update one with --overwrite.
 
 **Syntax**
 
@@ -1592,12 +1592,12 @@ Create or update a custom tool.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Tool configuration as JSON. "type" is KustoTool, LinkTool, PythonFunctionTool or HttpClientTool. PythonTool is a legacy alias for PythonFunctionTool. |
+| `--value` | String | Yes |  |  | Tool configuration as JSON. New tools: KustoTool, LinkTool or PythonFunctionTool. PythonTool is a legacy alias for PythonFunctionTool. HttpClientTool is update-only: pass --overwrite for an existing HttpClientTool of the same name. Use PythonFunctionTool or an MCP server for new HTTP integrations. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**
 
-- Create an HTTP tool
+- Create a link tool
 
   `az sre tool create -g myrg --agent-name myagent --name docs-link \ --value '{"type": "LinkTool", "name": "docs", "description": "Link to docs", "template": "https://learn.microsoft.com/azure/"}'`
 
