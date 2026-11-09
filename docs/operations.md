@@ -926,9 +926,9 @@ github-actions` already use -- `_github_token()` tries, in order:
    `--only-show-errors` and never pollutes `--query`/`-o json` output),
    opens `verification_uri` in the browser, then polls
    `https://github.com/login/oauth/access_token` until authorized. It
-   requests only the `repo` scope. Tokens issued earlier with broader
-   scopes are not revoked, and `repo` is still broad access to your
-   repositories.
+      requests the `repo` and `workflow` scopes (no `admin:repo_hook`).
+      Tokens issued earlier with broader scopes are not revoked, and `repo`
+      is still broad access to your repositories.
 
 An earlier version of this fix had a middle tier that opportunistically
 reused an installed, already-logged-in `gh` CLI's token (via `gh auth

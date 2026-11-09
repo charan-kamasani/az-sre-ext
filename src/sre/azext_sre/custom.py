@@ -5897,9 +5897,10 @@ ADO_PAT_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
 # nothing worth caching or needing to encrypt in the first place.
 GITHUB_DEVICE_FLOW_CLIENT_ID = "8d8e1f6000648c575489"
 # Narrower than azure-cli's containerapp scopes ("admin:repo_hook repo
-# workflow"): "repo" already covers repository webhooks, and editing
-# workflow files is not requested.
-GITHUB_DEVICE_FLOW_SCOPES = "repo"
+# workflow"): "repo" already covers repository webhooks, so
+# admin:repo_hook is dropped. "workflow" is kept because the agent can
+# commit to .github/workflows files.
+GITHUB_DEVICE_FLOW_SCOPES = "repo workflow"
 
 
 def _github_device_flow(hostname="github.com", scope=GITHUB_DEVICE_FLOW_SCOPES):

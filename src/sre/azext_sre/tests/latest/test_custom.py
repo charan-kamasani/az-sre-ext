@@ -2204,7 +2204,7 @@ class GithubDeviceFlowTests(unittest.TestCase):
              patch("azure.cli.core.util.open_page_in_browser"):
             token = _github_device_flow()
         self.assertEqual(token, "real-device-flow-token")
-        self.assertEqual(requested, ["repo"])
+        self.assertEqual(requested, ["repo workflow"])
 
     def test_denied_authorization_raises_a_clear_error(self):
         code_response = SimpleNamespace(
