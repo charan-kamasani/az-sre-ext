@@ -3744,8 +3744,9 @@ def _direct_extension_request(cli_ctx, agent_name, resource_group, method, path,
     except Exception as ex:
         if getattr(getattr(ex, "response", None), "status_code", None) == 403:
             raise CLIError(
-                "The agent's own API refused this request. Changing it needs the "
-                "'SRE Agent Author' or 'SRE Agent Administrator' role on the agent."
+                "The agent's own API refused this request (403). Your account may lack "
+                "permission on the agent; creating or changing items needs the "
+                "'SRE Agent Author' or 'SRE Agent Administrator' role."
             ) from ex
         raise
 
