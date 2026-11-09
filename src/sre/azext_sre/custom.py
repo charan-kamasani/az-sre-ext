@@ -5883,8 +5883,7 @@ class PluginInstallDelete(_PinnedExtensionDelete):
 ADO_PAT_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
 
 
-# Azure CLI's own registered GitHub OAuth App client ID (and its scope
-# list) used by `az containerapp github-action add --login-with-github`,
+# Azure CLI's own registered GitHub OAuth App client ID used by `az containerapp github-action add --login-with-github`,
 # reused here per Paul's "steal what's tried and true" guidance -- device
 # flow apps don't need a client secret, so this ID is already public in
 # azure-cli's own source (command_modules/containerapp/_github_oauth.py).
@@ -5897,6 +5896,9 @@ ADO_PAT_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
 # repeatedly-invoked command like `github-action add`), so there is
 # nothing worth caching or needing to encrypt in the first place.
 GITHUB_DEVICE_FLOW_CLIENT_ID = "8d8e1f6000648c575489"
+# Narrower than azure-cli's containerapp scopes ("admin:repo_hook repo
+# workflow"): "repo" already covers repository webhooks, and editing
+# workflow files is not requested.
 GITHUB_DEVICE_FLOW_SCOPES = "repo"
 
 
