@@ -5897,7 +5897,7 @@ ADO_PAT_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798"
 # repeatedly-invoked command like `github-action add`), so there is
 # nothing worth caching or needing to encrypt in the first place.
 GITHUB_DEVICE_FLOW_CLIENT_ID = "8d8e1f6000648c575489"
-GITHUB_DEVICE_FLOW_SCOPES = "admin:repo_hook repo workflow"
+GITHUB_DEVICE_FLOW_SCOPES = "repo"
 
 
 def _github_device_flow(hostname="github.com", scope=GITHUB_DEVICE_FLOW_SCOPES):

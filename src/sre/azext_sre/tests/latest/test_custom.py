@@ -2191,8 +2191,11 @@ class GithubDeviceFlowTests(unittest.TestCase):
             SimpleNamespace(json=lambda: {"access_token": "real-device-flow-token"}, raise_for_status=lambda: None),
         ])
 
+        requested = []
+
         def fake_post(url, **kwargs):
             if url.endswith("/login/device/code"):
+                requested.append(kwargs["data"]["scope"])
                 return code_response
             return next(token_responses)
 
@@ -2201,6 +2204,7 @@ class GithubDeviceFlowTests(unittest.TestCase):
              patch("azure.cli.core.util.open_page_in_browser"):
             token = _github_device_flow()
         self.assertEqual(token, "real-device-flow-token")
+        self.assertEqual(requested, ["repo"])
 
     def test_denied_authorization_raises_a_clear_error(self):
         code_response = SimpleNamespace(
