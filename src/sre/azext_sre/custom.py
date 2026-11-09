@@ -5883,7 +5883,7 @@ class RepoConnect(AAZCommand):
         )
         schema.provider = AAZStrArg(
             options=["--provider"],
-            help="Repo provider. Auto-detected from --repo-url's host when omitted. AzureDevOps is Microsoft-internal only.",
+            help="Repo provider. Auto-detected from --repo-url's host when omitted.",
             enum={"GitHub": "GitHub", "AzureDevOps": "AzureDevOps"},
         )
         schema.display_name = AAZStrArg(
@@ -5952,7 +5952,6 @@ class RepoConnect(AAZCommand):
         else:
             from urllib.parse import urlparse
 
-            _require_first_party(self.cli_ctx, agent_name, resource_group, "Azure DevOps repositories")
             organization = devops_organization or urlparse(repo_url).path.strip("/").split("/", 1)[0]
             if not organization:
                 raise CLIError(

@@ -3243,14 +3243,14 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
         command = self._create_with_features("ConnectorGateway", {"connectorGatewayEnabled": True})
         self.assertEqual(command.ctx.args.data_connector_type, "ConnectorGateway")
 
-    def test_devops_repo_blocked_when_the_agent_is_not_first_party(self):
+    def test_require_first_party_blocks_only_agents_that_say_they_are_not(self):
         from azext_sre.custom import _require_first_party
 
         with patch("azext_sre.custom._agent_features", return_value={"isFirstParty": False}):
             with self.assertRaises(CLIError):
-                _require_first_party(None, "a", "rg", "Azure DevOps repositories")
+                _require_first_party(None, "a", "rg", "Something internal")
         with patch("azext_sre.custom._agent_features", return_value={}):
-            _require_first_party(None, "a", "rg", "Azure DevOps repositories")
+            _require_first_party(None, "a", "rg", "Something internal")
 
 
 class ConnectorConvenienceArgsTests(unittest.TestCase):
