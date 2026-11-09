@@ -33,6 +33,7 @@ from azext_sre.custom import (
     GITHUB_COPILOT_MCP_ENDPOINT,
     KNOWLEDGE_TYPES,
     MANAGED_RESOURCE_ROLES,
+    PORTAL_CONNECTOR_NAMES,
     Create,
     AgentSettingsShow,
     AgentSettingsUpdate,
@@ -3141,7 +3142,11 @@ class InternalFeatureHelpVisibilityTests(unittest.TestCase):
             self.assertIn(hidden, internal)
         for unlisted in ("Kusto", "Documentation", "MonitorClient", "KnowledgeText"):
             self.assertNotIn(unlisted, internal)
-        self.assertIn("TsgCrawler", third_party)
+        for retired in ("KustoDataIndexer", "TsgCrawler"):
+            self.assertNotIn(retired, third_party)
+            self.assertNotIn(retired, internal)
+            self.assertEqual(
+                _normalize_data_connector_type(PORTAL_CONNECTOR_NAMES[retired]), retired)
 
     def _visible_with_profile(self, profile):
         with tempfile.TemporaryDirectory() as config_dir:

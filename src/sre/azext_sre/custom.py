@@ -901,6 +901,8 @@ PORTAL_CONNECTOR_NAMES = {
     "S360": "S360 connector",
 }
 PORTAL_CONNECTOR_TYPES = tuple(PORTAL_CONNECTOR_NAMES)
+# Being retired, so still accepted but not advertised in help or errors.
+UNADVERTISED_CONNECTOR_TYPES = ("KustoDataIndexer", "TsgCrawler")
 for _value, _portal_name in PORTAL_CONNECTOR_NAMES.items():
     DATA_CONNECTOR_TYPE_ALIASES.setdefault(_portal_name.lower(), _value)
 
@@ -1044,7 +1046,7 @@ CONNECTOR_TYPE_PORTAL_NAMES = {
 
 
 def _listed_connector_types():
-    types = PORTAL_CONNECTOR_TYPES
+    types = tuple(t for t in PORTAL_CONNECTOR_TYPES if t not in UNADVERTISED_CONNECTOR_TYPES)
     if _show_internal_features():
         return types
     return tuple(t for t in types if t not in FIRST_PARTY_ONLY_CONNECTOR_TYPES and t != "Icm")

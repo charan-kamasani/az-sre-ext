@@ -278,8 +278,8 @@ update it whenever a new wire value or portal card is confirmed.
 | IcM connector | Microsoft IcM | `Icm` | **Implemented** — shape-confirmed; create blocked in this tenant by a real `InternalServerError` (not a CLI defect) |
 | EV2 | Ev2 (ExpressV2) | `Ev2Mcp` | **Implemented** — schema/create-level verified |
 | Database query connector (user) | Azure Data Explorer | `KustoUser` | **Implemented** — high-confidence correlation, not create-and-inspect confirmed |
-| Database indexing connector | Azure Data Explorer | `KustoDataIndexer` | **Implemented** — same caveat |
-| Documentation connector | Documentation | `TsgCrawler` | **Implemented** — portal-confirmed 2026-11-08 (card saves as `TsgCrawler`) |
+| Database indexing connector | Azure Data Explorer | `KustoDataIndexer` | **Implemented** — same caveat; being retired, accepted but not listed in help |
+| Documentation connector | Documentation | `TsgCrawler` | **Implemented** — portal-confirmed 2026-11-08 (card saves as `TsgCrawler`); being retired, accepted but not listed in help |
 | Azure DevOps AI Search | Azure DevOps | `AzureDevOpsBuiltinMcp` | **Implemented** — high-confidence correlation, not create-and-inspect confirmed |
 | Microsoft Security Copilot | Microsoft Security Copilot | *(none)* | **Not implemented** — Connector Gateway/"Additional connectors" platform |
 | Notion | Notion | *(none)* | **Not implemented** — same |
