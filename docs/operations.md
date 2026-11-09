@@ -640,7 +640,8 @@ Some features are Microsoft-internal, as in the portal. On an agent that
 reports it isn't first-party, `connector create` rejects the `Dgrep`,
 `GenevaMetrics` and `S360` types. `--help` still lists them, since help can't
 depend on the agent, and marks the internal-only ones. IcM (the `Icm` connector
-type and `response-plan --platform Icm`) is blocked the same way, because in
+type, `response-plan --platform Icm` and `agent create/update` with
+`type=Icm`) is blocked the same way, because in
 the public cloud IcM is offered only to first-party tenants. Use PagerDuty,
 ServiceNow or Azure Monitor instead.
 

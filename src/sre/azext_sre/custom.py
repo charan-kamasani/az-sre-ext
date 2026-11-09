@@ -651,8 +651,34 @@ class _LogConfigurationWarningMixin:
         super().pre_operations()
 
 
+ICM_MANAGED_IDENTITY_TENANT_IDS = frozenset({
+    "33e01921-4d64-4f8c-a055-5bdaffd5e33d",
+    "975f013f-7f24-47e8-a7d3-abc4752bf346",
+    "cdc5aeea-15c5-4db6-b079-fcadd2505dc2",
+    "68cd85cc-e0b3-43c8-ba3c-67686dbf8a67",
+    "70a90262-f46c-48aa-ac4c-37e37f8be1a2",
+    "dc12cfcb-7c57-4e3e-92b9-6ea4cbc258e9",
+    "20ac2fc4-effc-4f76-ba7d-63c5ae134f5f",
+    "ec044cc1-d8de-4194-a9b6-f5abc1c30081",
+})
+
+
+class _IcmIncidentPlatformGateMixin:
+    """Block type=Icm in --incident-management-configuration outside Microsoft tenants."""
+
+    def pre_operations(self):
+        args = self.ctx.args
+        config = getattr(args, "incident_management_configuration", None)
+        platform = _arg_value(config.type) if config is not None else None
+        if platform and str(platform).lower() == "icm":
+            tenant_id = (_resolve_signed_in_tenant_id(self.cli_ctx) or "").lower()
+            if tenant_id not in ICM_MANAGED_IDENTITY_TENANT_IDS and not _is_microsoft_first_party_tenant(tenant_id):
+                raise CLIError("--incident-management-configuration type=Icm is Microsoft-internal only.")
+        super().pre_operations()
+
+
 @register_command("sre agent create")
-class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
+class Create(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
     :example: Create an agent with an Anthropic default model
@@ -693,7 +719,7 @@ class Create(_ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdenti
 
 
 @register_command("sre agent update")
-class Update(_ModelProviderArgMixin, _GeneratedUpdate):
+class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GeneratedUpdate):
     """Update an SRE Agent.
 
     :example: Switch an agent's default model to MicrosoftFoundry
@@ -719,8 +745,8 @@ class Update(_ModelProviderArgMixin, _GeneratedUpdate):
 
     Azure Monitor needs no configuration here -- it connects automatically
     when the agent is created (confirmed by the tutorial and by AzMonitor
-    being the enum's implicit default). Icm is this CLI's own sandbox/
-    first-party path, set the same way with type=Icm.
+    being the enum's implicit default). Icm is Microsoft-internal only and is
+    set the same way with type=Icm.
     """
 
     _args_schema = None
@@ -1017,7 +1043,7 @@ class _DataConnectorTypeArgMixin:
                 "Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, "
                 "LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, "
                 "AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, "
-                "KnowledgeRepository. Dgrep, GenevaMetrics and S360 are Microsoft-internal only."
+                "KnowledgeRepository. Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only."
             )
         data_source = getattr(schema, "data_source", None)
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
@@ -4760,7 +4786,7 @@ class ResponsePlanCreate(AAZCommand):
         _response_plan_target_schema(schema)
         schema.platform = AAZStrArg(
             options=["--platform"], required=True,
-            help="Incident platform: " + ", ".join(RESPONSE_PLAN_PLATFORMS) + ".",
+            help="Incident platform: " + ", ".join(RESPONSE_PLAN_PLATFORMS) + ". Icm is Microsoft-internal only.",
         )
         schema.subagent = AAZStrArg(
             options=["--subagent"], required=True,

@@ -114,6 +114,7 @@ from azext_sre.custom import (
     _resolve_agent_principal_id,
     _resolve_managed_resource_scope,
     _resolve_signed_in_tenant_id,
+    _IcmIncidentPlatformGateMixin,
     _resolve_signed_in_user_object_id,
     MICROSOFT_FIRST_PARTY_TENANT_IDS,
 )
@@ -3148,6 +3149,31 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
         be None/AAZUndefined, and pre_operations() calls .to_serialized_data()
         on it (mirrors ConnectorConvenienceArgsTests' approach one level up)."""
         return SimpleNamespace(to_serialized_data=lambda: serialized)
+
+    class _TestIcmPlatformGate(_IcmIncidentPlatformGateMixin, _NoOpPreOperationsBase):
+        pass
+
+    def test_agent_icm_platform_blocked_outside_microsoft_tenants(self):
+        config = SimpleNamespace(type="Icm")
+        for tenant, blocked in (
+                ("e0a62563-74af-4081-8ae3-fb94b692e394", True),
+                (self.MICROSOFT_CORP_TENANT_ID, False),
+                (self.MICROSOFT_AME_TENANT_ID, False)):
+            with self.subTest(tenant=tenant), patch(
+                    "azext_sre.custom._resolve_signed_in_tenant_id", lambda cli_ctx, t=tenant: t):
+                command = _bare_command(self._TestIcmPlatformGate, incident_management_configuration=config)
+                if blocked:
+                    with self.assertRaises(CLIError):
+                        command.pre_operations()
+                else:
+                    command.pre_operations()
+
+    def test_agent_non_icm_platform_is_never_blocked(self):
+        command = _bare_command(
+            self._TestIcmPlatformGate,
+            incident_management_configuration=SimpleNamespace(type="PagerDuty"))
+        with patch("azext_sre.custom._resolve_signed_in_tenant_id", lambda cli_ctx: "e0a62563-74af-4081-8ae3-fb94b692e394"):
+            command.pre_operations()
 
     def test_resolve_signed_in_tenant_id_returns_tenant(self):
         with patch(
