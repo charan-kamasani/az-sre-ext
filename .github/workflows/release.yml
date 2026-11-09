@@ -213,9 +213,9 @@ jobs:
           cleanup() {
             if [ "$created" = true ] && [ "$published" = false ]; then
               remote_draft="$(
-                gh api \
-                  "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
-                  --jq .draft 2>/dev/null || true
+                gh release view "$GITHUB_REF_NAME" \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --json isDraft --jq .isDraft 2>/dev/null || true
               )"
               if [ "$remote_draft" = true ]; then
                 gh release delete "$GITHUB_REF_NAME" \
@@ -237,9 +237,11 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" release/* \
             --repo "$GITHUB_REPOSITORY"
           release_json="$(
-            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME"
+            gh release view "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json targetCommitish,assets
           )"
-          if [ "$(jq -r .target_commitish <<<"$release_json")" != "$GITHUB_SHA" ] ||
+          if [ "$(jq -r .targetCommitish <<<"$release_json")" != "$GITHUB_SHA" ] ||
             [ "$(jq -r '.assets | length' <<<"$release_json")" -ne 3 ]; then
             echo "Draft release metadata or asset count is invalid." >&2
             exit 1
@@ -248,5 +250,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --draft=false
           published=true
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
-            --jq '{tag_name, target_commitish, assets: [.assets[].name]}'
+          gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json tagName,targetCommitish,assets \
+            --jq '{tagName, targetCommitish, assets: [.assets[].name]}'
