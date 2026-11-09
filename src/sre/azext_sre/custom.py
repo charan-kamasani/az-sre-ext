@@ -471,6 +471,27 @@ MICROSOFT_FIRST_PARTY_TENANT_IDS = frozenset(
 )
 
 
+def _show_internal_features():
+    """Whether help should mention Microsoft-internal features.
+
+    Reads the default account's tenant from the local profile (no network),
+    like the portal, which hides these for non-Microsoft tenants. Any doubt
+    shows them; the run-time gates still apply.
+    """
+    try:
+        from azure.cli.core._environment import get_config_dir
+        with open(os.path.join(get_config_dir(), "azureProfile.json"), encoding="utf-8-sig") as profile_file:
+            subscriptions = json.load(profile_file).get("subscriptions") or []
+        default = next((s for s in subscriptions if s.get("isDefault")), None)
+        tenant_id = (default or {}).get("tenantId")
+    except Exception:  # pylint: disable=broad-except
+        return True
+    if not tenant_id:
+        return True
+    return _is_microsoft_first_party_tenant(tenant_id) or tenant_id.lower() in ICM_MANAGED_IDENTITY_TENANT_IDS
+
+
+
 def _resolve_signed_in_user_object_id(cli_ctx):
     """Resolve the signed-in user's AAD object ID via 'az ad signed-in-user show'.
 
@@ -745,8 +766,7 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GeneratedUp
 
     Azure Monitor needs no configuration here -- it connects automatically
     when the agent is created (confirmed by the tutorial and by AzMonitor
-    being the enum's implicit default). Icm is Microsoft-internal only and is
-    set the same way with type=Icm.
+    being the enum's implicit default).
     """
 
     _args_schema = None
@@ -1038,12 +1058,15 @@ class _DataConnectorTypeArgMixin:
         # See _ModelProviderArgMixin above for why this must merge into the
         # existing ._help dict rather than replace it.
         if data_connector_type is not None and isinstance(getattr(data_connector_type, "_help", None), dict):
+            internal = _show_internal_features()
             data_connector_type._help["short-summary"] = (
                 "Connector type (case-insensitive; portal names also accepted). "
                 "Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, "
-                "LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, "
+                "LogAnalytics, " + ("Icm, Dgrep, " if internal else "") + "Ev2Mcp, "
+                + ("GenevaMetrics, S360, " if internal else "") + "Documentation, "
                 "AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, "
-                "KnowledgeRepository. Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only."
+                "KnowledgeRepository."
+                + (" Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only." if internal else "")
             )
         data_source = getattr(schema, "data_source", None)
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
@@ -4698,7 +4721,8 @@ def _add_response_plan_criteria_args(schema):
     )
     schema.owning_teams = AAZListArg(
         options=["--owning-team"],
-        help="Space-separated owning team IDs (IcM team IDs are numeric). Portal: Owning team.",
+        help="Space-separated owning team IDs"
+        + (" (IcM team IDs are numeric)" if _show_internal_features() else "") + ". Portal: Owning team.",
     )
     schema.owning_teams.Element = AAZStrArg()
     schema.merge_enabled = AAZBoolArg(
@@ -4786,7 +4810,11 @@ class ResponsePlanCreate(AAZCommand):
         _response_plan_target_schema(schema)
         schema.platform = AAZStrArg(
             options=["--platform"], required=True,
-            help="Incident platform: " + ", ".join(RESPONSE_PLAN_PLATFORMS) + ". Icm is Microsoft-internal only.",
+            help=(
+                "Incident platform: " + ", ".join(RESPONSE_PLAN_PLATFORMS) + ". Icm is Microsoft-internal only."
+                if _show_internal_features()
+                else "Incident platform: " + ", ".join(p for p in RESPONSE_PLAN_PLATFORMS if p != "Icm") + "."
+            ),
         )
         schema.subagent = AAZStrArg(
             options=["--subagent"], required=True,
@@ -4895,7 +4923,8 @@ class ResponsePlanUpdate(AAZCommand):
         _response_plan_target_schema(schema)
         schema.platform = AAZStrArg(
             options=["--platform"],
-            help="Incident platform: " + ", ".join(RESPONSE_PLAN_PLATFORMS) + ".",
+            help="Incident platform: "
+            + ", ".join(p for p in RESPONSE_PLAN_PLATFORMS if p != "Icm" or _show_internal_features()) + ".",
         )
         schema.subagent = AAZStrArg(
             options=["--subagent"], help="Name of the existing subagent that handles matched incidents.",

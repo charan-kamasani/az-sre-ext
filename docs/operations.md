@@ -638,12 +638,16 @@ clear message.
 
 Some features are Microsoft-internal, as in the portal. On an agent that
 reports it isn't first-party, `connector create` rejects the `Dgrep`,
-`GenevaMetrics` and `S360` types. `--help` still lists them, since help can't
-depend on the agent, and marks the internal-only ones. IcM (the `Icm` connector
+`GenevaMetrics` and `S360` types. IcM (the `Icm` connector
 type, `response-plan --platform Icm` and `agent create/update` with
 `type=Icm`) is blocked the same way, because in
 the public cloud IcM is offered only to first-party tenants. Use PagerDuty,
 ServiceNow or Azure Monitor instead.
+
+`--help` can't ask the agent, so it goes by the tenant you're signed in to
+(read from the local Azure CLI profile, no network call). For other tenants it
+doesn't mention these internal options, as the portal hides them. If the tenant
+can't be read, help lists them. Typing one anyway still gets the error above.
 
 ### `hook` eventType has 4 values, not 2
 
