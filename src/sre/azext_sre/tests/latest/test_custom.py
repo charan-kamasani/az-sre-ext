@@ -16,6 +16,7 @@ import copy
 import json
 import os
 import tempfile
+import types
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -46,6 +47,7 @@ from azext_sre.custom import (
     ManagedResourceList,
     AccessList,
     UpdateNetwork,
+    ShowNetwork,
     RepoConnect,
     GetConnection,
     KnowledgeCreate,
@@ -3120,6 +3122,62 @@ class UpdateNetworkMergeTests(unittest.TestCase):
         self.assertNotIn("displayName", result)
 
 
+class ShowNetworkTests(unittest.TestCase):
+    _ID = "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"
+
+    def test_reads_at_networking_api_version_and_trims(self):
+        command = _bare_command(ShowNetwork, name="myagent", resource_group="rg")
+        calls = []
+
+        def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+            calls.append((method, resource_id, api_version))
+            return {"id": self._ID, "name": "myagent", "properties": {
+                "displayName": "hide-me", "provisioningState": "Succeeded",
+                "sandboxConfiguration": {"egress": {"mode": "Limited"}}}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
+             patch("azext_sre.custom._arm_request", fake_arm_request):
+            result = command._handler({})
+
+        self.assertEqual(calls, [("GET", self._ID, "2026-11-01-preview")])
+        self.assertEqual(result["sandboxConfiguration"], {"egress": {"mode": "Limited"}})
+        self.assertIsNone(result["vnetConfiguration"])
+        self.assertNotIn("displayName", result)
+
+    def test_missing_agent_raises(self):
+        command = _bare_command(ShowNetwork, name="myagent", resource_group="rg")
+
+        def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+            if not missing_ok:
+                raise AssertionError("a 404 must be tolerated with missing_ok=True")
+            return None
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
+             patch("azext_sre.custom._arm_request", fake_arm_request):
+            with self.assertRaises(ResourceNotFoundError):
+                command._handler({})
+
+    def test_404_on_the_get_becomes_not_found(self):
+        command = _bare_command(ShowNetwork, name="myagent", resource_group="rg")
+
+        class Http404(Exception):
+            response = type("R", (), {"status_code": 404})()
+
+        def raise_404(*args, **kwargs):
+            raise Http404()
+
+        command.cli_ctx.cloud = types.SimpleNamespace(
+            endpoints=types.SimpleNamespace(resource_manager="https://management.azure.com/"))
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
+             patch("azext_sre.custom.send_raw_request", raise_404):
+            with self.assertRaises(ResourceNotFoundError):
+                command._handler({})
+
+
 class CommandRegistrationTests(unittest.TestCase):
     """Every hand-written command in custom.py must actually be reachable
     through the loader's public 'sre ...' surface -- extends the single
@@ -3137,7 +3195,7 @@ class CommandRegistrationTests(unittest.TestCase):
             "sre agent create", "sre agent update", "sre agent show",
             "sre agent list", "sre agent delete", "sre agent start",
             "sre agent stop", "sre endpoint show", "sre usage list",
-            "sre access grant", "sre access revoke", "sre network update",
+            "sre access grant", "sre access revoke", "sre network update", "sre network show",
             "sre connector create", "sre connector show", "sre connector list",
             "sre connector update", "sre connector delete", "sre connector list-secret",
             "sre identity assign", "sre identity remove", "sre identity show",
@@ -4144,6 +4202,27 @@ class ConnectionShowDefaultAudienceTests(unittest.TestCase):
         result = self._run(data_plane_audience="https://custom.audience.example")
         self.assertEqual(result["dataPlaneAudience"], "https://custom.audience.example")
 
+    def test_malformed_connections_file_is_not_overwritten(self):
+        command = _bare_command(
+            GetConnection, name="myagent", resource_group="rg",
+            data_plane_audience="https://azuresre.dev",
+        )
+
+        def fake_cli_invoke(cli_ctx, *cmd_args, allow_missing=False):
+            return {"properties": {"agentEndpoint": "https://myagent.example"}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+             tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "sreAgentConnections.json")
+            for bad in ("{not json", "[1, 2]"):
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(bad)
+                with patch("azext_sre.custom._CONNECTIONS_FILE", path):
+                    with self.assertRaises(CLIError):
+                        command._handler({})
+                with open(path, "r", encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), bad)
 
 class _NoOpPreOpBase2:
     def pre_operations(self):

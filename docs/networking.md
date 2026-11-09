@@ -11,29 +11,11 @@ actually supplied and leaving everything else on the resource untouched.
 
 ## Inspect current networking configuration
 
-> [!WARNING]
-> `agent show`/`agent list` query ARM at the pinned, older
-> `API_VERSION = "2026-01-01"` (see `custom.py`), which does not expose
-> `sandboxConfiguration`/`vnetConfiguration` at all. Live-verified: setting
-> `--sandbox-configuration` via `network update` succeeds (confirmed in the
-> PUT's own response body, which is read at `NETWORK_API_VERSION =
-> "2026-11-01-preview"`), but a subsequent `agent show` on the same agent
-> returns `null` for both fields — not because the write was lost, but
-> because `agent show` is reading the wrong api-version to see them. There
-> is currently **no command in this CLI that can read back** a
-> previously-set networking configuration. Use `az rest` directly against
-> the preview api-version as a workaround until a dedicated `network show`
-> (or an `update`-equivalent read) is added:
->
-> ```bash
-> az rest --method get \
->   --url "https://management.azure.com/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.App/agents/<name>?api-version=2026-11-01-preview" \
->   --query "properties.{sandbox:sandboxConfiguration, vnet:vnetConfiguration}"
-> ```
+```bash
+az sre network show -g myrg --agent-name myagent
+```
 
-There is no dedicated `network show` — networking fields are part of
-the main agent resource body, and today only readable at the preview
-api-version (see warning above).
+This returns the VNet injection and sandbox egress settings. `az sre agent show` omits them because it uses an older API version, so use `network show` to read them back.
 
 ## Configure sandbox egress
 
@@ -82,5 +64,5 @@ to `provisioningState: Succeeded`. However, a subsequent `agent show` read
 show` queries `api-version=2026-01-01`, not the preview version the write
 used — not a lost write. Re-verify the write path against that source if
 the service's shape ever changes; there is no codegen drift check possible
-for a hand-maintained, unspecced api-version. See the read-back gap noted
-above before trusting `agent show` for networking state.
+for a hand-maintained, unspecced api-version. Use `network show` to read
+networking state back instead of `agent show`.

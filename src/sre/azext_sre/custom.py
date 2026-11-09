@@ -2636,12 +2636,16 @@ class GetConnection(AAZCommand):
             try:
                 with open(_CONNECTIONS_FILE, "r", encoding="utf-8") as handle:
                     connections = json.load(handle)
-            except (OSError, json.JSONDecodeError) as ex:
-                logger.warning(
-                    "Could not read existing %s (%s); it will be overwritten.",
-                    _CONNECTIONS_FILE, ex,
+            except (OSError, ValueError) as ex:
+                raise CLIError(
+                    f"Could not read existing {_CONNECTIONS_FILE} ({ex}). "
+                    "The file was left unchanged; fix or delete it and retry."
+                ) from ex
+            if not isinstance(connections, dict):
+                raise CLIError(
+                    f"{_CONNECTIONS_FILE} does not contain a JSON object. "
+                    "The file was left unchanged; fix or delete it and retry."
                 )
-                connections = {}
         key = f"{resource_group}/{name}"
         connections[key] = {
             "name": name,
@@ -3082,25 +3086,63 @@ class UpdateNetwork(AAZCommand):
 
         updated = _arm_request(self.cli_ctx, "PUT", resource_id, NETWORK_API_VERSION, body=current)
 
-        # Trim the response to just the networking-relevant fields instead
-        # of returning the entire parent agent resource -- every other
-        # extension create/update command in this CLI returns only the
-        # scoped sub-resource, not the whole agent; this PUT targets the
-        # agent resource itself (there's no separate ARM child resource for
-        # networking), so without this it was the one inconsistent, overly
-        # verbose command in the surface (usability finding, live-graded).
-        if isinstance(updated, dict):
-            updated_properties = updated.get("properties") or {}
-            return {
-                "id": updated.get("id"),
-                "name": updated.get("name"),
-                "resourceGroup": updated.get("resourceGroup"),
-                "type": updated.get("type"),
-                "provisioningState": updated_properties.get("provisioningState"),
-                "vnetConfiguration": updated_properties.get("vnetConfiguration"),
-                "sandboxConfiguration": updated_properties.get("sandboxConfiguration"),
-            }
-        return updated
+        # The PUT targets the agent resource itself, so trim the response to the
+        # networking fields like the other extension commands do.
+        return _network_view(updated)
+
+
+def _network_view(agent):
+    if not isinstance(agent, dict):
+        return agent
+    properties = agent.get("properties") or {}
+    return {
+        "id": agent.get("id"),
+        "name": agent.get("name"),
+        "resourceGroup": agent.get("resourceGroup"),
+        "type": agent.get("type"),
+        "provisioningState": properties.get("provisioningState"),
+        "vnetConfiguration": properties.get("vnetConfiguration"),
+        "sandboxConfiguration": properties.get("sandboxConfiguration"),
+    }
+
+
+@register_command("sre network show")
+class ShowNetwork(AAZCommand):
+    """Show VNet injection and sandbox egress settings (preview).
+
+    'az sre agent show' omits these because it uses an older API version.
+
+    :example: Show an agent's networking settings
+        az sre network show --name myagent --resource-group myrg
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.name = AAZStrArg(
+            options=["-n", "--name", "--agent-name"],
+            help="Name of the SRE Agent to show networking settings for.",
+            required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        name = _arg_value(self.ctx.args.name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        resource_id = _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
+        current = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION, missing_ok=True)
+        if not isinstance(current, dict):
+            raise ResourceNotFoundError(
+                f"Could not find SRE Agent '{name}' in resource group '{resource_group}' at api-version {NETWORK_API_VERSION}."
+            )
+        return _network_view(current)
 
 
 # --------------------------------------------------------------------------------------------
