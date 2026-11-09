@@ -3700,6 +3700,7 @@ def _extension_resource_create(
     automation/plugin/repo connect/agent settings)."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
     resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    existing = None
     if not overwrite:
         existing = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
         if existing is not None:
@@ -3709,9 +3710,23 @@ def _extension_resource_create(
                 "Pass --overwrite to replace it intentionally, or choose "
                 "another name."
             )
+    encoded_value = _encode_extension_value(raw_value, extension_type)
+    if extension_type == "tools" and json.loads(raw_value).get("type") == "HttpClientTool":
+        if overwrite:
+            existing = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
+        existing = _decode_extension_envelope(existing)
+        properties = existing.get("properties") if isinstance(existing, dict) else None
+        existing_tool = properties.get("value") if isinstance(properties, dict) else None
+        if not isinstance(existing_tool, dict) or existing_tool.get("type") != "HttpClientTool":
+            raise CLIError(
+                "Creating new HttpClientTool tools is no longer supported. "
+                "--overwrite can update an existing HttpClientTool of the same name, "
+                "but cannot create one or replace a different tool type. "
+                "Use PythonFunctionTool or an MCP server for new HTTP integrations."
+            )
     body = {
         "type": f"microsoft.app/agents/{extension_type}",
-        "properties": {"value": _encode_extension_value(raw_value, extension_type)},
+        "properties": {"value": encoded_value},
     }
     result = _arm_request(cli_ctx, "PUT", resource_id, EXTENSION_API_VERSION, body=body)
     return _decode_extension_envelope(result)
@@ -3978,9 +3993,9 @@ class _ToolGroup(AAZCommandGroup):
 
 @register_command("sre tool create")
 class ToolCreate(_PinnedExtensionCreate):
-    """Create or update a custom tool.
+    """Create a custom tool, or update one with --overwrite.
 
-    :example: Create an HTTP tool
+    :example: Create a link tool
         az sre tool create -g myrg --agent-name myagent --name docs-link \\
             --value '{"type": "LinkTool", "name": "docs", "description": "Link to docs", "template": "https://learn.microsoft.com/azure/"}'
     """
@@ -3988,8 +4003,10 @@ class ToolCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "tools"
     _args_schema = None
     _VALUE_HELP = (
-        "Tool configuration as JSON. \"type\" is KustoTool, LinkTool, PythonFunctionTool or "
-        "HttpClientTool. PythonTool is a legacy alias for PythonFunctionTool."
+        "Tool configuration as JSON. New tools: KustoTool, LinkTool or PythonFunctionTool. "
+        "PythonTool is a legacy alias for PythonFunctionTool. "
+        "HttpClientTool is update-only: pass --overwrite for an existing HttpClientTool of the same name. "
+        "Use PythonFunctionTool or an MCP server for new HTTP integrations."
     )
 
 

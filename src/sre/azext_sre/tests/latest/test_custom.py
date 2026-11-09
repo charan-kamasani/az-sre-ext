@@ -2382,6 +2382,175 @@ class ExtensionCommandResourceIdTests(unittest.TestCase):
         )
 
 
+class HttpToolCreationPolicyTests(unittest.TestCase):
+    """Exercise tool commands against persisted ARM envelopes, without Azure calls."""
+
+    _AGENT_ID = "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"
+    _TOOL_ID = f"{_AGENT_ID}/tools/mytool"
+    _HTTP_TOOL = {
+        "type": "HttpClientTool",
+        "description": "Call a read-only API",
+        "url": "https://example.com/{{id}}",
+        "method": "GET",
+        "headers": [{"key": "Accept", "value": "application/json"}],
+        "parameters": [{"name": "id", "type": "string", "required": True}],
+        "auth": {"dataconnector": "api-connector", "scope": "https://example.com/.default"},
+        "timeout_seconds": 30,
+    }
+    _SUPPORTED_TOOLS = (
+        {"type": "LinkTool", "template": "https://example.com/docs"},
+        {"type": "KustoTool", "connector": "kusto", "database": "db", "query": "Table | take 1"},
+        {"type": "PythonFunctionTool", "functionCode": "def main():\n    return {'status': 200}\n"},
+    )
+
+    def setUp(self):
+        self.resources = {}
+        self.puts = []
+        self.read_error = None
+
+    def _seed(self, value):
+        self.resources[self._TOOL_ID] = {
+            "id": self._TOOL_ID,
+            "type": "microsoft.app/agents/tools",
+            "properties": {"value": base64.b64encode(json.dumps(value).encode("utf-8")).decode("ascii")},
+        }
+
+    def _arm_request(self, cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+        if method == "GET":
+            if self.read_error is not None:
+                raise self.read_error
+            if resource_id == f"{self._AGENT_ID}/tools":
+                return {"value": copy.deepcopy(list(self.resources.values()))}
+            return copy.deepcopy(self.resources.get(resource_id))
+        if method == "PUT":
+            self.puts.append({"resource_id": resource_id, "body": copy.deepcopy(body)})
+            self.resources[resource_id] = {"id": resource_id, **copy.deepcopy(body)}
+            return copy.deepcopy(self.resources[resource_id])
+        self.fail(f"Unexpected ARM method: {method}")
+
+    def _invoke(self, command_cls, **args):
+        command = _bare_command(command_cls, agent_name="myagent", resource_group="rg", **args)
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", return_value={"id": self._AGENT_ID}), \
+             patch("azext_sre.custom._arm_request", self._arm_request):
+            return command._handler({})
+
+    def _create(self, value, overwrite=False):
+        return self._invoke(
+            ToolCreate, extension_name="mytool", value=json.dumps(value), overwrite=overwrite,
+        )
+
+    def test_rejects_new_http_tool_with_and_without_overwrite(self):
+        for overwrite in (False, True):
+            with self.subTest(overwrite=overwrite):
+                self.resources.clear()
+                self.puts.clear()
+                with self.assertRaises(CLIError) as raised:
+                    self._create(self._HTTP_TOOL, overwrite=overwrite)
+                message = str(raised.exception)
+                self.assertIn("Creating new HttpClientTool tools is no longer supported", message)
+                self.assertIn("--overwrite", message)
+                self.assertIn("PythonFunctionTool", message)
+                self.assertIn("MCP", message)
+                self.assertEqual(self.resources, {})
+                self.assertEqual(self.puts, [])
+
+    def test_overwrite_cannot_replace_another_tool_type_with_http(self):
+        for tool in self._SUPPORTED_TOOLS:
+            with self.subTest(existing_type=tool["type"]):
+                self.puts.clear()
+                self._seed(tool)
+                before = copy.deepcopy(self.resources)
+                with self.assertRaises(CLIError):
+                    self._create(self._HTTP_TOOL, overwrite=True)
+                self.assertEqual(self.resources, before)
+                self.assertEqual(self.puts, [])
+
+    def test_existing_name_still_requires_intentional_overwrite(self):
+        for tool in (self._HTTP_TOOL, *self._SUPPORTED_TOOLS):
+            with self.subTest(existing_type=tool["type"]):
+                self._seed(tool)
+                before = copy.deepcopy(self.resources)
+                with self.assertRaises(ResourceExistsError) as raised:
+                    self._create(self._HTTP_TOOL)
+                self.assertIn("--overwrite", str(raised.exception))
+                self.assertEqual(self.resources, before)
+                self.assertEqual(self.puts, [])
+
+    def test_existing_http_tool_can_be_updated_without_converting_its_payload(self):
+        self._seed({"type": "HttpClientTool", "url": "https://example.com/old", "method": "GET"})
+        self._create(self._HTTP_TOOL, overwrite=True)
+        self.assertEqual(set(self.resources), {self._TOOL_ID})
+        persisted = self.resources[self._TOOL_ID]
+        self.assertEqual(persisted["type"], "microsoft.app/agents/tools")
+        self.assertEqual(json.loads(base64.b64decode(persisted["properties"]["value"])), self._HTTP_TOOL)
+
+    def test_unrecognized_existing_payload_does_not_authorize_http_creation(self):
+        for value in (None, [], {}, {"type": "UnknownTool"}):
+            with self.subTest(existing_value=value):
+                self.puts.clear()
+                self._seed(value)
+                before = copy.deepcopy(self.resources)
+                with self.assertRaises(CLIError):
+                    self._create(self._HTTP_TOOL, overwrite=True)
+                self.assertEqual(self.resources, before)
+                self.assertEqual(self.puts, [])
+
+    def test_undecodable_existing_payload_does_not_authorize_http_creation(self):
+        self.resources[self._TOOL_ID] = {"properties": {"value": "not a valid encoded tool"}}
+        before = copy.deepcopy(self.resources)
+        with self.assertRaises(CLIError):
+            self._create(self._HTTP_TOOL, overwrite=True)
+        self.assertEqual(self.resources, before)
+        self.assertEqual(self.puts, [])
+
+    def test_http_tools_remain_readable_by_show_and_list(self):
+        self._seed(self._HTTP_TOOL)
+        before = copy.deepcopy(self.resources)
+        shown = self._invoke(ToolShow, extension_name="mytool")
+        listed = self._invoke(ToolList)
+        self.assertEqual(shown["properties"]["value"], self._HTTP_TOOL)
+        self.assertEqual(listed["value"][0]["properties"]["value"], self._HTTP_TOOL)
+        self.assertEqual(self.resources, before)
+        self.assertEqual(self.puts, [])
+
+    def test_supported_tools_can_still_be_created(self):
+        for tool in self._SUPPORTED_TOOLS:
+            with self.subTest(tool_type=tool["type"]):
+                self.resources.clear()
+                self._create(tool)
+                persisted = self.resources[self._TOOL_ID]
+                self.assertEqual(json.loads(base64.b64decode(persisted["properties"]["value"])), tool)
+
+    def test_supported_overwrite_does_not_require_a_tool_lookup(self):
+        self.read_error = CLIError("Tool lookup denied")
+        for tool in self._SUPPORTED_TOOLS:
+            with self.subTest(tool_type=tool["type"]):
+                self._seed(self._HTTP_TOOL)
+                self._create(tool, overwrite=True)
+                persisted = self.resources[self._TOOL_ID]
+                self.assertEqual(json.loads(base64.b64decode(persisted["properties"]["value"])), tool)
+
+    def test_http_lookup_errors_propagate_without_mutation(self):
+        self._seed(self._HTTP_TOOL)
+        before = copy.deepcopy(self.resources)
+        self.read_error = CLIError("Tool lookup denied")
+        with self.assertRaises(CLIError) as raised:
+            self._create(self._HTTP_TOOL, overwrite=True)
+        self.assertIs(raised.exception, self.read_error)
+        self.assertEqual(self.resources, before)
+        self.assertEqual(self.puts, [])
+
+    def test_legacy_http_update_still_validates_the_payload(self):
+        self._seed(self._HTTP_TOOL)
+        before = copy.deepcopy(self.resources)
+        with self.assertRaises(CLIError) as raised:
+            self._create({**self._HTTP_TOOL, "headers": {"Accept": "application/json"}}, overwrite=True)
+        self.assertIn("--value.headers", str(raised.exception))
+        self.assertEqual(self.resources, before)
+        self.assertEqual(self.puts, [])
+
+
 class PinnedExtensionFacadeTests(unittest.TestCase):
     """'sre tool'/'sre skill'/'sre hook'/'sre instructions'/
     'sre plugin marketplace'/'sre plugin install' are thin noun-specific
