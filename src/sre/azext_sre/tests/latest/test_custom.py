@@ -33,6 +33,7 @@ from azext_sre.custom import (
     GITHUB_COPILOT_MCP_ENDPOINT,
     KNOWLEDGE_TYPES,
     MANAGED_RESOURCE_ROLES,
+    PORTAL_CONNECTOR_NAMES,
     Create,
     AgentSettingsShow,
     AgentSettingsUpdate,
@@ -116,7 +117,7 @@ from azext_sre.custom import (
     _resolve_signed_in_tenant_id,
     _IcmIncidentPlatformGateMixin,
     _show_internal_features,
-    _resolve_signed_in_user_object_id,
+    _listed_connector_types,    _resolve_signed_in_user_object_id,
     MICROSOFT_FIRST_PARTY_TENANT_IDS,
 )
 
@@ -3249,7 +3250,7 @@ class ArgSchemaHelpRegressionTests(unittest.TestCase):
     def test_connector_create_help_does_not_crash(self):
         schema = ConnectorCreate._build_arguments_schema()
         cmd_arg = schema.data_connector_type.to_cmd_arg("data_connector_type")
-        self.assertIn("Kusto", cmd_arg.type.settings.get("help"))
+        self.assertIn("Azure Data Explorer", cmd_arg.type.settings.get("help"))
 
     def test_agent_create_help_does_not_crash(self):
         schema = Create._build_arguments_schema()
@@ -3299,6 +3300,22 @@ class _TestConnectorConvenience(_ConnectorConvenienceArgsMixin, _NoOpPreOperatio
 
 class InternalFeatureHelpVisibilityTests(unittest.TestCase):
     """Help hides Microsoft-internal options for non-Microsoft tenants, like the portal."""
+
+    def test_listed_connector_types_match_portal_picker(self):
+        with patch("azext_sre.custom._show_internal_features", return_value=False):
+            third_party = _listed_connector_types()
+        with patch("azext_sre.custom._show_internal_features", return_value=True):
+            internal = _listed_connector_types()
+        for hidden in ("Icm", "Dgrep", "GenevaMetrics", "S360"):
+            self.assertNotIn(hidden, third_party)
+            self.assertIn(hidden, internal)
+        for unlisted in ("Kusto", "Documentation", "MonitorClient", "KnowledgeText"):
+            self.assertNotIn(unlisted, internal)
+        for retired in ("KustoDataIndexer", "TsgCrawler"):
+            self.assertNotIn(retired, third_party)
+            self.assertNotIn(retired, internal)
+            self.assertEqual(
+                _normalize_data_connector_type(PORTAL_CONNECTOR_NAMES[retired]), retired)
 
     def _visible_with_profile(self, profile):
         with tempfile.TemporaryDirectory() as config_dir:

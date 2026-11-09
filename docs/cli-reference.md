@@ -418,12 +418,12 @@ Create an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only. |
+| `--data-connector-type` | String | No |  |  | Connector type, by portal name (case-insensitive): Azure Data Explorer, Database query connector (user), Log Analytics Workspace, Application Insights, MCP server, Office 365 Outlook, Microsoft Teams, EV2, Azure DevOps AI Search, IcM connector, DGrep, Geneva Metrics, S360 connector. For knowledge sources use 'az sre knowledge create'. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
-| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
+| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. |
 | `--identity` | String | No |  |  | Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity. |
-| `--file-path` | String | No |  |  | Local file to ingest. KnowledgeFile: base64-encoded and uploaded. KnowledgeText: read as UTF-8 text. |
+| `--file-path` | String | No |  |  | Local file to ingest. For knowledge sources use 'az sre knowledge create'. |
 | `--mcp-endpoint` | String | No |  |  | For Mcp: the MCP server's HTTP endpoint URL. |
 | `--github` | Boolean | No |  | `false`, `true` | For Mcp: connect the public GitHub Copilot MCP server (https://api.githubcopilot.com/mcp/). |
 | `--tool-access` | Boolean | No |  | `false`, `true` | For KustoClient: let the agent use query tools from this connector (portal 'Allow agent to use query tools'). |
@@ -450,7 +450,7 @@ Create an Agent Connector.
   `az sre connector create --agent-name myagent --resource-group myrg \ --name mcp --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --managed-identity-auth true`
 - Connect one Kusto cluster and database
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name kusto --data-connector-type Kusto \ --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"`
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name kusto --data-connector-type "Azure Data Explorer" \ --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"`
 
 ### `az sre connector delete`
 
@@ -559,17 +559,17 @@ Update an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only. |
+| `--data-connector-type` | String | No |  |  | Connector type, by portal name (case-insensitive): Azure Data Explorer, Database query connector (user), Log Analytics Workspace, Application Insights, MCP server, Office 365 Outlook, Microsoft Teams, EV2, Azure DevOps AI Search, IcM connector, DGrep, Geneva Metrics, S360 connector. For knowledge sources use 'az sre knowledge create'. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
-| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
+| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. |
 | `--identity` | String | No |  |  | Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity. |
 
 **Examples**
 
 - Point a Kusto connector at a different database
 
-  `az sre connector update -g myrg --agent-name myagent -n conn-kusto \ --data-connector-type Kusto \ --data-source https://mycluster.kusto.windows.net/mydb`
+  `az sre connector update -g myrg --agent-name myagent -n conn-kusto \ --data-connector-type "Azure Data Explorer" \`
 
 ## `az sre endpoint`
 

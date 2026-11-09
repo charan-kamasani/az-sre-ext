@@ -881,6 +881,32 @@ DATA_CONNECTOR_TYPE_ALIASES = {
     "microsoft dgrep": "Dgrep",
 }
 
+# Connector types the portal's connector picker offers, in help-list order.
+# Other accepted values (Kusto, Documentation, MonitorClient, Knowledge*, ...)
+# still work but are not advertised.
+PORTAL_CONNECTOR_NAMES = {
+    "KustoClient": "Azure Data Explorer",
+    "KustoUser": "Database query connector (user)",
+    "KustoDataIndexer": "Database indexing connector",
+    "LogAnalytics": "Log Analytics Workspace",
+    "AppInsights": "Application Insights",
+    "Mcp": "MCP server",
+    "Outlook": "Office 365 Outlook",
+    "Teams": "Microsoft Teams",
+    "Ev2Mcp": "EV2",
+    "TsgCrawler": "Documentation connector",
+    "AzureDevOpsBuiltinMcp": "Azure DevOps AI Search",
+    "Icm": "IcM connector",
+    "Dgrep": "DGrep",
+    "GenevaMetrics": "Geneva Metrics",
+    "S360": "S360 connector",
+}
+PORTAL_CONNECTOR_TYPES = tuple(PORTAL_CONNECTOR_NAMES)
+# Being retired, so still accepted but not advertised in help or errors.
+UNADVERTISED_CONNECTOR_TYPES = ("KustoDataIndexer", "TsgCrawler")
+for _value, _portal_name in PORTAL_CONNECTOR_NAMES.items():
+    DATA_CONNECTOR_TYPE_ALIASES.setdefault(_portal_name.lower(), _value)
+
 # Connector types that do not require --data-source at all (the data-plane
 # validator exempts them -- see DataConnectorValidator.cs
 # IsKnowledgeConnectorType). Used only to keep --help accurate; the CLI
@@ -1020,21 +1046,23 @@ CONNECTOR_TYPE_PORTAL_NAMES = {
 }
 
 
+def _listed_connector_types():
+    types = tuple(t for t in PORTAL_CONNECTOR_TYPES if t not in UNADVERTISED_CONNECTOR_TYPES)
+    if _show_internal_features():
+        return types
+    return tuple(t for t in types if t not in FIRST_PARTY_ONLY_CONNECTOR_TYPES and t != "Icm")
+
+
 def _normalize_data_connector_type(value):
     if value is None:
         return value
     key = str(value).strip().lower()
     normalized = DATA_CONNECTOR_TYPES.get(key) or DATA_CONNECTOR_TYPE_ALIASES.get(key)
     if normalized is None:
-        internal = _show_internal_features()
-        hidden = FIRST_PARTY_ONLY_CONNECTOR_TYPES | {"Icm"}
         raise CLIError(
             "--data-connector-type must be one of: "
-            + ", ".join(sorted(t for t in DATA_CONNECTOR_TYPES if internal or DATA_CONNECTOR_TYPES[t] not in hidden))
-            + " (friendly names like 'Azure Data Explorer', 'Custom MCP', "
-            "'Office 365 Outlook', 'Microsoft Teams'"
-            + (", 'Microsoft IcM', 'Microsoft DGrep'" if internal else "")
-            + " also accepted)"
+            + ", ".join(PORTAL_CONNECTOR_NAMES[t] for t in _listed_connector_types())
+            + ". For knowledge sources use 'az sre knowledge create'"
             + f" (got '{value}')."
         )
     return normalized
@@ -1062,15 +1090,10 @@ class _DataConnectorTypeArgMixin:
         # See _ModelProviderArgMixin above for why this must merge into the
         # existing ._help dict rather than replace it.
         if data_connector_type is not None and isinstance(getattr(data_connector_type, "_help", None), dict):
-            internal = _show_internal_features()
             data_connector_type._help["short-summary"] = (
-                "Connector type (case-insensitive; portal names also accepted). "
-                "Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, "
-                "LogAnalytics, " + ("Icm, Dgrep, " if internal else "") + "Ev2Mcp, "
-                + ("GenevaMetrics, S360, " if internal else "") + "Documentation, "
-                "AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, "
-                "KnowledgeRepository."
-                + (" Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only." if internal else "")
+                "Connector type, by portal name (case-insensitive): "
+                + ", ".join(PORTAL_CONNECTOR_NAMES[t] for t in _listed_connector_types()) + "."
+                + " For knowledge sources use 'az sre knowledge create'."
             )
         data_source = getattr(schema, "data_source", None)
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
@@ -1081,7 +1104,7 @@ class _DataConnectorTypeArgMixin:
         for _name, _text in (
             ("endpoint", "Endpoint URL, used by endpoint-based connector types such as Mcp."),
             ("identity", "Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity."),
-            ("extended_properties", "Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository."),
+            ("extended_properties", "Type-specific settings as JSON or shorthand."),
         ):
             _arg = getattr(schema, _name, None)
             if _arg is not None and isinstance(getattr(_arg, "_help", None), dict):
@@ -1136,7 +1159,7 @@ class _ConnectorConvenienceArgsMixin:
         schema.file_path = AAZStrArg(
             options=["--file-path"],
             arg_group="Properties",
-            help="Local file to ingest. KnowledgeFile: base64-encoded and uploaded. KnowledgeText: read as UTF-8 text.",
+            help="Local file to ingest. For knowledge sources use 'az sre knowledge create'.",
         )
         schema.mcp_endpoint = AAZStrArg(
             options=["--mcp-endpoint"],
@@ -1414,7 +1437,7 @@ class ConnectorCreate(
 
     :example: Connect one Kusto cluster and database
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name kusto --data-connector-type Kusto \\
+            --name kusto --data-connector-type "Azure Data Explorer" \\
             --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"
     """
 
@@ -1432,8 +1455,7 @@ class ConnectorUpdate(_DataConnectorTypeArgMixin, _GeneratedConnectorUpdate):
 
     :example: Point a Kusto connector at a different database
         az sre connector update -g myrg --agent-name myagent -n conn-kusto \\
-            --data-connector-type Kusto \\
-            --data-source https://mycluster.kusto.windows.net/mydb
+            --data-connector-type "Azure Data Explorer" \\
     """
 
     _args_schema = None
