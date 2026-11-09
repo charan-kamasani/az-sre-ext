@@ -3080,7 +3080,7 @@ class ArgSchemaHelpRegressionTests(unittest.TestCase):
     def test_connector_create_help_does_not_crash(self):
         schema = ConnectorCreate._build_arguments_schema()
         cmd_arg = schema.data_connector_type.to_cmd_arg("data_connector_type")
-        self.assertIn("Kusto", cmd_arg.type.settings.get("help"))
+        self.assertIn("Azure Data Explorer", cmd_arg.type.settings.get("help"))
 
     def test_agent_create_help_does_not_crash(self):
         schema = Create._build_arguments_schema()
