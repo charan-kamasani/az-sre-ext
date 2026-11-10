@@ -71,6 +71,7 @@ from azure.cli.core.aaz._operation import AAZHttpOperation
 from azure.cli.core.azclierror import CLIError, ResourceNotFoundError
 from azure.core.exceptions import ResourceExistsError
 from azure.cli.core.util import send_raw_request
+from azure.mgmt.core.tools import parse_resource_id
 from knack.log import get_logger
 
 from .aaz.latest.app.agent import Create as _GeneratedCreate
@@ -3114,7 +3115,9 @@ def _network_view(agent):
     return {
         "id": agent.get("id"),
         "name": agent.get("name"),
-        "resourceGroup": agent.get("resourceGroup"),
+        # ARM never returns resourceGroup, and a key set to None also stops the
+        # Azure CLI output transform from filling it in, so derive it from the ID.
+        "resourceGroup": parse_resource_id(agent.get("id")).get("resource_group"),
         "type": agent.get("type"),
         "provisioningState": properties.get("provisioningState"),
         "vnetConfiguration": properties.get("vnetConfiguration"),

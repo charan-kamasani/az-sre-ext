@@ -772,7 +772,9 @@ unrelated `null` fields) because the underlying call is a PUT directly on
 the agent resource itself (there's no separate ARM child resource for
 networking). Fixed to trim the response to `id`/`name`/`resourceGroup`/
 `type`/`provisioningState`/`vnetConfiguration`/`sandboxConfiguration` only,
-matching the output shape convention used everywhere else.
+matching the output shape convention used everywhere else. Until 2026-11-10,
+`resourceGroup` in this output (and in `network show`) was always `null`,
+because ARM doesn't return the field; it is now derived from the resource ID.
 
 ### `sre agent list-models --output table` used to show only a concatenated name
 
