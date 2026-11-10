@@ -926,11 +926,21 @@ github-actions` already use -- `_github_token()` tries, in order:
    directly in Python with `requests` + Azure CLI's own
    `azure.cli.core.util.open_page_in_browser` -- no `gh` CLI, no client
    secret needed (device-flow apps are public clients by design). Posts to
-   `https://github.com/login/device/code`, logs the `user_code` via the
-   CLI's standard `logger.warning()` (not a bare `print()`, so it respects
-   `--only-show-errors` and never pollutes `--query`/`-o json` output),
+   `https://github.com/login/device/code`, prints the page address, the
+   `user_code` and its expiry to stderr (not through `logger.warning()`, so
+   `--only-show-errors` can't hide the code; stdout stays clean for
+   `--query`/`-o json`),
    opens `verification_uri` in the browser, then polls
    `https://github.com/login/oauth/access_token` until authorized.
+
+The sign-in text is written for keyboard-only and screen reader use. The
+page address and the code each get a short line of their own, and they're
+printed with the expiry time and Ctrl+C before the browser opens and takes
+focus, so you can switch back and read them. The browser opens without a
+prompt, like `az login` and the `--login-with-github` sign-in in the
+appservice, staticwebapp and containerapp commands. Denied, expired,
+network and proxy failures end with a plain error that offers
+`GITHUB_TOKEN` (no time limit, no browser) instead of a traceback.
 
 An earlier version of this fix had a middle tier that opportunistically
 reused an installed, already-logged-in `gh` CLI's token (via `gh auth
