@@ -437,14 +437,39 @@ class HttpTraceSuppressionTests(unittest.TestCase):
             pipeline = Pipeline(_Transport(), [RetryPolicy(retry_backoff_factor=0),
                                                SafeNetworkTraceLoggingPolicy()])
             request = HttpRequest("PUT", "https://x", content="ghp_secret")
-            with custom._no_http_trace():
-                pipeline.run(request, logging_enable=False)
+
+            class _Send:
+                def __call__(self, **kwargs):
+                    return pipeline.run(request, **kwargs)
+
+            class _SecretSend(custom._SecretHttpOperationMixin, _Send):
+                pass
+
+            _Send()(logging_enable=False)
+            self.assertTrue(any("ghp_secret" in r.getMessage() for r in records))
+            records.clear()
+            statuses[:] = [503, 200]
+            _SecretSend()()
+            self.assertEqual(logger.level, logging.DEBUG)
         finally:
             logger.removeHandler(handler)
             logger.setLevel(previous)
         self.assertEqual(statuses, [])
         self.assertFalse(any("ghp_secret" in r.getMessage() for r in records))
-        self.assertEqual(logger.level, previous)
+
+    def test_levels_restored_when_the_call_raises(self):
+        import logging
+        from azext_sre import custom
+
+        http_loggers = [logging.getLogger(name) for name in (
+            "cli.azure.cli.core.util", "cli.azure.cli.core.sdk.policies")]
+        for http_logger in http_loggers:
+            self.addCleanup(http_logger.setLevel, http_logger.level)
+            http_logger.setLevel(logging.INFO)
+        with self.assertRaises(RuntimeError):
+            with custom._no_http_trace():
+                raise RuntimeError("request failed")
+        self.assertEqual([http_logger.level for http_logger in http_loggers], [logging.INFO] * 2)
 
     def test_warns_only_when_secret_is_typed(self):
         from azext_sre import custom
