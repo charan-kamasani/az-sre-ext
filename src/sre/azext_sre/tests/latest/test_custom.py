@@ -2092,6 +2092,11 @@ class RepoProviderDetectionTests(unittest.TestCase):
             _detect_repo_provider("https://gitlab.com/org/repo")
         self.assertIn("--provider", str(raised.exception))
 
+    def test_rejects_lookalike_hosts(self):
+        for url in ("https://evilvisualstudio.com/p/_git/r", "https://notdev.azure.com/o/p/_git/r"):
+            with self.assertRaises(CLIError):
+                _detect_repo_provider(url)
+
 
 class RepoConnectTests(unittest.TestCase):
     """RepoConnect is a one-command golden path: it must fetch a token itself

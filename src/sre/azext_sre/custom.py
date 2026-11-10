@@ -6137,7 +6137,7 @@ def _detect_repo_provider(repo_url):
     host = (urlparse(repo_url).hostname or "").lower()
     if host == "github.com":
         return "GitHub"
-    if host.endswith("dev.azure.com") or host.endswith("visualstudio.com"):
+    if any(host == d or host.endswith("." + d) for d in ("dev.azure.com", "visualstudio.com")):
         return "AzureDevOps"
     raise CLIError(
         f"Could not detect the repo provider from '{repo_url}'. Pass "
