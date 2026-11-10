@@ -36,6 +36,7 @@ from azure.core.exceptions import ResourceExistsError
 from azext_sre import SreCommandsLoader
 from azext_sre.custom import (
     EXTENSION_TYPES,
+    EXTENSION_VALUE_VALIDATORS,
     GITHUB_COPILOT_MCP_ENDPOINT,
     KNOWLEDGE_TYPES,
     MANAGED_RESOURCE_ROLES,
@@ -2546,6 +2547,19 @@ class HttpTriggersShapeValidationTests(unittest.TestCase):
         with self.assertRaises(CLIError) as raised:
             _encode_extension_value(raw, "httpTriggers")
         self.assertIn("--value.agentMode must be", str(raised.exception))
+
+
+class ValueNotAnObjectTests(unittest.TestCase):
+    """Azure CLI's error line doesn't name the command, so each kind of
+    --value needs its own message to be told apart in a script's log."""
+
+    def test_each_kind_of_value_has_its_own_message(self):
+        messages = {}
+        for extension_type in EXTENSION_VALUE_VALIDATORS:
+            with self.assertRaises(CLIError) as raised:
+                _encode_extension_value("[]", extension_type)
+            messages[extension_type] = str(raised.exception)
+        self.assertEqual(len(set(messages.values())), len(messages), messages)
 
 
 class ExtensionTypeEnumTests(unittest.TestCase):
