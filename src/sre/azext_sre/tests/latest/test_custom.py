@@ -1598,6 +1598,29 @@ class IncidentDataPlaneTests(unittest.TestCase):
              self.assertRaises(CLIError):
             command._handler(None)
 
+    def test_response_plan_explains_unconnected_platform(self):
+        from azext_sre.custom import ResponsePlanCreate
+        command = _bare_command(
+            ResponsePlanCreate, agent_name="a", resource_group="rg", extension_name="plan",
+            platform="AzMonitor", subagent="s", priorities=None, title_contains=None,
+            incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
+            title_not_contains=None, mode="review", disabled=None,
+            instructions=None, processing_guide=None, overwrite=None)
+        service_error = CLIError("Bad Request: The extension configuration is invalid.")
+        for config, expect_hint in ((None, True), ({"type": "AzMonitor"}, False)):
+            agent = {"properties": {"incidentManagementConfiguration": config}}
+            with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+                 patch("azext_sre.custom._incident_resource_create", side_effect=service_error), \
+                 patch("azext_sre.custom._cli_invoke", return_value=agent), \
+                 self.assertRaises(CLIError) as raised:
+                command._handler(None)
+            message = str(raised.exception)
+            if expect_hint:
+                self.assertIn("has no incident platform connected", message)
+                self.assertIn("{type:AzMonitor,connection-name:azmonitor}", message)
+            else:
+                self.assertIs(raised.exception, service_error)
+
     def test_agent_url_validation(self):
         for kwargs in (
             {"agent_url": "http://a.eastus2.azuresre.ai", "agent_name": None, "resource_group": None},
@@ -1958,6 +1981,19 @@ class SubagentCreateValidationTests(unittest.TestCase):
             with self.assertRaises(CLIError) as raised:
                 self._create(self._VALID_VALUE, overwrite=True)
         self.assertIs(raised.exception, error)
+
+    def test_invalid_configuration_without_handoff_description_explains_the_field(self):
+        error = CLIError("Bad Request: The extension configuration is invalid.")
+        for value, explained in ((self._VALID_VALUE, True),
+                                 (json.dumps({**json.loads(self._VALID_VALUE), "handoffDescription": "Use for triage."}), False)):
+            with self.subTest(explained=explained), \
+                 patch("azext_sre.custom._arm_request", side_effect=error), \
+                 self.assertRaises(CLIError) as raised:
+                self._create(value, overwrite=True)
+            if explained:
+                self.assertIn("--value.handoffDescription", str(raised.exception))
+            else:
+                self.assertIs(raised.exception, error)
 
 
 class HooksShapeValidationTests(unittest.TestCase):

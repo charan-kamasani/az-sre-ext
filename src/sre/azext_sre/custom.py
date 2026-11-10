@@ -5561,9 +5561,13 @@ class ResponsePlanCreate(AAZCommand):
         flt.update(_response_plan_criteria(args))
         _validate_incident_filters_shape(flt)
         filter_body = {"name": name, "type": "IncidentFilter", "properties": flt}
-        result = {"filter": _incident_resource_create(
-            self.cli_ctx, agent_name, resource_group, "incidentFilters", name,
-            flt, _incident_filter_path(name), filter_body, overwrite)}
+        try:
+            result = {"filter": _incident_resource_create(
+                self.cli_ctx, agent_name, resource_group, "incidentFilters", name,
+                flt, _incident_filter_path(name), filter_body, overwrite)}
+        except Exception as ex:  # pylint: disable=broad-except
+            _raise_if_platform_not_connected(self.cli_ctx, agent_name, resource_group, platform, ex)
+            raise
         handler_fields = _response_plan_handler_fields(args)
         if handler_fields:
             handler = {"id": name, "incidentFilterId": name, **handler_fields}
@@ -5584,6 +5588,29 @@ class ResponsePlanCreate(AAZCommand):
         except Exception:  # pylint: disable=broad-except
             pass  # the warning is advisory; never fail a successful create
         return result
+
+
+def _raise_if_platform_not_connected(cli_ctx, agent_name, resource_group, platform, error):
+    """The service rejects a plan for an unconnected platform with a generic error; explain it."""
+    try:
+        agent = _cli_invoke(cli_ctx, "sre", "agent", "show", "--name", agent_name,
+                            "--resource-group", resource_group)
+        config = ((agent or {}).get("properties") or {}).get("incidentManagementConfiguration") or {}
+    except Exception:  # pylint: disable=broad-except
+        return
+    connected = config.get("type")
+    if connected and str(connected).lower() == platform.lower():
+        return
+    status = f"is connected to '{connected}'" if connected else "has no incident platform connected"
+    if platform == "AzMonitor":
+        hint = (f"  az sre agent update -g {resource_group} -n {agent_name} "
+                "--incident-management-configuration '{type:AzMonitor,connection-name:azmonitor}'")
+    else:
+        hint = "  See 'az sre agent update -h' for --incident-management-configuration examples."
+    raise CLIError(
+        f"Agent '{agent_name}' {status}, so it can't route {platform} incidents. "
+        f"Connect {platform} first:\n{hint}"
+    ) from error
 
 
 def _response_plan_read_filter(cli_ctx, agent_name, resource_group, name):
@@ -6038,8 +6065,8 @@ class SubagentCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "subagents"
     _args_schema = None
     _VALUE_HELP = (
-        "Sub-agent configuration as JSON. Nonblank instructions must be at least "
-        "50 characters. Fields: instructions, handoffDescription, "
+        "Sub-agent configuration as JSON. instructions (at least 50 characters) and "
+        "handoffDescription are required. Other fields: "
         "tools, mcpTools, commonTools, allowedSkills, allowParallelToolCalls."
     )
 
@@ -6088,6 +6115,23 @@ class SubagentCreate(_PinnedExtensionCreate):
             }
         ]
         args.value = json.dumps(parsed)
+
+    def _handler(self, command_args):
+        try:
+            return super()._handler(command_args)
+        except Exception as ex:  # pylint: disable=broad-except
+            if "configuration is invalid" not in str(ex):
+                raise
+            try:
+                parsed = json.loads(_arg_value(self.ctx.args.value))
+            except (TypeError, ValueError):
+                raise ex from None
+            if isinstance(parsed, dict) and not str(parsed.get("handoffDescription") or "").strip():
+                raise CLIError(
+                    f"{ex}\nThe service needs --value.handoffDescription: one sentence telling the "
+                    "main agent when to hand work to this sub-agent."
+                ) from ex
+            raise
 
 
 @register_command("sre subagent show")
