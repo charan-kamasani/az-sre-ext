@@ -254,7 +254,7 @@ az sre response-plan show -g "$RG" --agent-name "$AGENT" --name sev1-checkout
 | --- | --- | --- |
 | Change severities, mode or other settings | CLI | `az sre response-plan update`. A list flag such as `--priority` replaces the whole list. |
 | Turn a plan off and on | CLI | `az sre response-plan disable`, `az sre response-plan enable` |
-| Delete a plan | CLI | `az sre response-plan delete -g "$RG" --agent-name "$AGENT" --name sev1-checkout --yes` when you no longer need it. It succeeds even when no plan has that name, so check the name with `az sre response-plan list`. |
+| Delete a plan | CLI | `az sre response-plan delete -g "$RG" --agent-name "$AGENT" --name sev1-checkout --yes` when you no longer need it. Check the exact name first with `az sre response-plan list`. |
 
 ```bash
 az sre response-plan update -g "$RG" --agent-name "$AGENT" \
@@ -288,8 +288,9 @@ az sre response-plan delete -g "$RG" --agent-name "$AGENT" \
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `The agent rejected the incident filter: ... Incident platform 'AzMonitor' does not match configured incident management type 'None'` | The agent has no incident platform (`'None'`), or `--platform` doesn't match the one it has. | Set the platform as above, or pass the agent's platform in `--platform`. |
-| `The agent rejected the incident filter: ... One or more configured handling agents do not exist.` | `--subagent` names a subagent that doesn't exist. | Check the name with `az sre subagent list -g "$RG" --agent-name "$AGENT"`. |
+| `Incident platform 'AzMonitor' does not match configured incident management type 'None'` | The agent has no incident platform (`'None'`), or `--platform` doesn't match the one it has. | Set the platform as above, or pass the agent's platform in `--platform`. |
+| `One or more configured handling agents do not exist.` | `--subagent` names a subagent that doesn't exist. | Check the name with `az sre subagent list -g "$RG" --agent-name "$AGENT"`. |
+| `The extension configuration is invalid.` with no reason | Azure doesn't say why, and the CLI can't ask the agent's own API because you have no SRE Agent role. The cause is usually one of the two rows above. | Give yourself an SRE Agent role, see [Prerequisites](#prerequisites), and run the command again. The error then names the cause. |
 | `Forbidden(Forbidden: Access denied by PDP)` | You have no SRE Agent role on the agent. | `az sre access grant -g "$RG" --agent-name "$AGENT" --role admin --assignee-me`, then wait about 30 seconds. |
 | `(InvalidApplicationInsightsConfiguration) The AppId and ConnectionString fields must be provided together.` from `agent update` | The agent is linked to Application Insights, and the update resends it without the connection string. | Add the same `--log-configuration` to the command, such as `--log-configuration "@log-configuration.json"`. |
 | "Response plan '...' was created, but its instructions were not saved" | The match rules were saved, then the instructions write to the agent's API failed. | Fix the access problem, then run `az sre response-plan update` with only `--instructions` or `--processing-guide`. |
@@ -328,7 +329,7 @@ connections, and resource-group permission levels.
 | Review and Deploy | CLI | `az sre agent create`. Like the wizard, it also creates a user-assigned identity. |
 | Deploy: make you SRE Agent Administrator | CLI | `--grant-access-to-me admin` |
 | Open Set up your agent | Portal | Opens after deployment. Each card is a row below. |
-| Code: GitHub with your account or a PAT | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://github.com/<org>/<repo>"`. It opens a browser sign-in, or pass `--github-token`. |
+| Code: GitHub with your account or a PAT | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://github.com/<org>/<repo>"`. It shows a one-time code and opens GitHub's sign-in page in your browser. To use a PAT instead, set `GITHUB_TOKEN` to it first. |
 | Code: Azure DevOps with your account or a managed identity | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://dev.azure.com/<org>/<project>/_git/<repo>"`. The CLI creates a PAT from your sign-in; for a managed identity, add `--devops-auth-type managed-identity --devops-identity <identity-resource-id>`. |
 | Code: GitHub App or GitLab | Portal | Code access (`/views/context/codeAccess`). `az sre repo connect` supports GitHub and Azure DevOps tokens and managed identities only. |
 | Logs: Azure Data Explorer | CLI | See [Set up Kusto connector](#set-up-kusto-connector). |
@@ -491,13 +492,13 @@ removing repositories and pull requests from chat are in the portal.
 
 | Step | Label | How |
 | --- | --- | --- |
-| Add a GitHub repository with OAuth or a PAT | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://github.com/<org>/<repo>"`. Run it once per repository. |
+| Add a GitHub repository with OAuth or a PAT | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://github.com/<org>/<repo>"`. Run it once per repository. To use a PAT, set `GITHUB_TOKEN` to it first. |
 | Add an Azure DevOps repository with your account, a managed identity or a PAT | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://dev.azure.com/<org>/<project>/_git/<repo>"`. Add `--devops-auth-type managed-identity --devops-identity <identity-resource-id>` for a managed identity. |
 | Add a repository with your GitHub App | Portal | Code access (`/views/context/codeAccess`). |
 | Set a display name | CLI | `--display-name`. A separate description needs the portal. |
 | Create a pull request from chat | Portal | New chat. |
 | Remove a repository | Portal | Code access > Delete. `az sre` can't remove repositories. |
-| Update authentication after a PAT expires | CLI | Run `az sre repo connect` again; it replaces the stored token. |
+| Update authentication after a PAT expires | CLI | Set `GITHUB_TOKEN` to the new PAT and run `az sre repo connect` again; it replaces the stored token. |
 | Use GitHub as an MCP server with a custom agent instead | CLI | See [Set up MCP connector](#set-up-mcp-connector). |
 
 ## Tutorials: Connect
@@ -982,7 +983,7 @@ tools for the main agent are in the portal.
 
 | Step | Label | How |
 | --- | --- | --- |
-| Add an MCP server with no authentication, an API key or bearer token, or a managed identity | CLI | `az sre connector create -g "$RG" --agent-name "$AGENT" --name my-mcp --data-connector-type Mcp --mcp-endpoint "https://<server>/mcp"`, plus `--bearer-token <token>` or `--managed-identity-auth true` if needed. |
+| Add an MCP server with no authentication, an API key or bearer token, or a managed identity | CLI | `az sre connector create -g "$RG" --agent-name "$AGENT" --name my-mcp --data-connector-type Mcp --mcp-endpoint "https://<server>/mcp"`, plus `--bearer-token "@token.txt"` (a file that holds the token) or `--managed-identity-auth true` if needed. |
 | Add an MCP server that signs in with OAuth | CLI, then portal | Add `--oauth-dcr true`, then finish the consent in the portal. `az sre connector show` reports `consentStatus`. |
 | Connect the GitHub MCP server | CLI | `az sre connector create -g "$RG" --agent-name "$AGENT" --name github --data-connector-type Mcp --github true` |
 | Use the SSE connection type | Portal | Connectors > Add connector > MCP server. The CLI's `--mcp-endpoint` uses the HTTP transport. |
@@ -1024,7 +1025,7 @@ GitLab are in the portal.
 | Step | Label | How |
 | --- | --- | --- |
 | GitHub with a GitHub App, required for GitHub Enterprise Cloud | Portal | Code access (`/views/context/codeAccess`) > Add repository > GitHub. |
-| GitHub with OAuth or a PAT | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://github.com/<org>/<repo>"` |
+| GitHub with OAuth or a PAT | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://github.com/<org>/<repo>"`. To use a PAT, set `GITHUB_TOKEN` to it first. |
 | Azure DevOps with a managed identity | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://dev.azure.com/<org>/<project>/_git/<repo>" --devops-auth-type managed-identity --devops-identity <identity-resource-id>` |
 | Azure DevOps with your account or a PAT | CLI | The same command without the managed identity flags. The CLI creates a PAT from your sign-in. |
 | GitLab with a PAT | Portal | Code access > Add repository > GitLab. `az sre repo connect` supports GitHub and Azure DevOps only. |
