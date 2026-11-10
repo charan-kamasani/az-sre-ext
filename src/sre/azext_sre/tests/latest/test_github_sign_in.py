@@ -6,6 +6,8 @@ browser takes focus, and how failures are reported. GitHub and ARM are faked.
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
@@ -70,6 +72,31 @@ class GithubSignInTerminalTests(unittest.TestCase):
 
         self.assertEqual(token, "gho_test")
         self.assertEqual(code_shown_when_opened, [True])
+
+    def test_says_when_the_browser_did_not_open_on_each_platform(self):
+        # open_page_in_browser returns webbrowser.open's bool on Windows and
+        # Linux, powershell.exe's exit code on WSL, and the 'open' process on
+        # macOS. The macOS cases use a real process with that exit code.
+        def process_exiting(code):
+            return lambda url: subprocess.Popen([sys.executable, "-c", f"raise SystemExit({code})"])
+
+        def no_browser(url):
+            raise OSError("no display")
+
+        cases = (
+            ("Windows or Linux, opened", lambda url: True, False),
+            ("Windows or Linux, no browser", lambda url: False, True),
+            ("WSL, opened", lambda url: 0, False),
+            ("WSL, failed", lambda url: 1, True),
+            ("macOS, opened", process_exiting(0), False),
+            ("macOS, failed", process_exiting(1), True),
+            ("launch error", no_browser, True),
+        )
+        for name, open_browser, says_so in cases:
+            with self.subTest(name):
+                stderr = _Terminal()
+                self.assertEqual(self._sign_in(stderr, open_browser), "gho_test")
+                self.assertEqual("Could not open a browser" in stderr.getvalue(), says_so)
 
     def test_transport_failures_are_reported_as_cli_errors_not_tracebacks(self):
         def failing(exception):

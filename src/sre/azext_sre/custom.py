@@ -3262,7 +3262,7 @@ def _validate_common_prompts_shape(parsed):
 def _validate_global_settings_shape(parsed):
     if not isinstance(parsed, dict):
         raise CLIError(
-            "--value must be a JSON object."
+            "--value must be a JSON object that describes the agent settings."
         )
 
     def _require_str_list(obj, key, path):
@@ -3330,7 +3330,7 @@ def _validate_plugin_marketplaces_shape(parsed):
     fails later at Kubernetes provisioning in this test environment, which
     is an infra limitation, not a shape problem)."""
     if not isinstance(parsed, dict):
-        raise CLIError("--value must be a JSON object.")
+        raise CLIError("--value must be a JSON object that describes the plugin marketplace.")
     if "sourceType" in parsed and not isinstance(parsed["sourceType"], str):
         raise CLIError("--value.sourceType must be a string (e.g. \"github\").")
     if "sourceUrl" in parsed and not isinstance(parsed["sourceUrl"], str):
@@ -3349,7 +3349,7 @@ def _validate_plugin_installations_shape(parsed):
     accepted and echoed back enriched with defaults (autoUpdate,
     mcpConnectorStatus, source.credentials/ref/sha/url)."""
     if not isinstance(parsed, dict):
-        raise CLIError("--value must be a JSON object.")
+        raise CLIError("--value must be a JSON object that describes the plugin to install.")
     if "marketplaceName" in parsed and not isinstance(parsed["marketplaceName"], str):
         raise CLIError("--value.marketplaceName must be a string.")
     if "pluginName" in parsed and not isinstance(parsed["pluginName"], str):
@@ -3367,7 +3367,7 @@ def _validate_plugin_installations_shape(parsed):
 def _validate_incident_filters_shape(parsed):
     """Validate incident-filter properties before sending them to the service."""
     if not isinstance(parsed, dict):
-        raise CLIError("--value must be a JSON object.")
+        raise CLIError("--value must be a JSON object that describes the incident filter.")
     if "incidentPlatform" in parsed and not isinstance(parsed["incidentPlatform"], str):
         raise CLIError("--value.incidentPlatform must be a string (e.g. \"Icm\", \"PagerDuty\").")
     if "incidentTypes" in parsed:
@@ -3399,7 +3399,7 @@ def _validate_incident_filters_shape(parsed):
 def _validate_incident_handlers_shape(parsed):
     """Validate the flat incident-handler document."""
     if not isinstance(parsed, dict):
-        raise CLIError("--value must be a JSON object.")
+        raise CLIError("--value must be a JSON object that describes the incident handler.")
     for str_field in ("id", "name", "description", "incidentFilterId", "customInstructions"):
         if str_field in parsed and not isinstance(parsed[str_field], str):
             raise CLIError(f"--value.{str_field} must be a string.")
@@ -3438,7 +3438,7 @@ def _require_str_list(obj, key, path):
 def _validate_tools_shape(parsed):
     if not isinstance(parsed, dict):
         raise CLIError(
-            "--value must be a JSON object."
+            "--value must be a JSON object that describes the tool."
         )
     valid_types = ("KustoTool", "LinkTool", "PythonFunctionTool", "PythonTool", "HttpClientTool")
     if "type" in parsed:
@@ -3520,7 +3520,7 @@ def _validate_tools_shape(parsed):
 def _validate_subagents_shape(parsed):
     if not isinstance(parsed, dict):
         raise CLIError(
-            "--value must be a JSON object."
+            "--value must be a JSON object that describes the sub-agent."
         )
     _require_str(parsed, "instructions", "--value")
     _require_str(parsed, "handoffDescription", "--value")
@@ -3558,7 +3558,7 @@ def _validate_subagents_shape(parsed):
 def _validate_skills_shape(parsed):
     if not isinstance(parsed, dict):
         raise CLIError(
-            "--value must be a JSON object."
+            "--value must be a JSON object that describes the skill."
         )
     _require_str(parsed, "description", "--value")
     _require_str_list(parsed, "tools", "--value")
@@ -3581,7 +3581,7 @@ def _validate_skills_shape(parsed):
 def _validate_hooks_shape(parsed):
     if not isinstance(parsed, dict):
         raise CLIError(
-            "--value must be a JSON object."
+            "--value must be a JSON object that describes the hook."
         )
     if "eventType" in parsed:
         if not isinstance(parsed["eventType"], str) or parsed["eventType"] not in (
@@ -3644,7 +3644,7 @@ def _validate_hooks_shape(parsed):
 def _validate_scheduled_tasks_shape(parsed):
     if not isinstance(parsed, dict):
         raise CLIError(
-            "--value must be a JSON object."
+            "--value must be a JSON object that describes the scheduled task."
         )
     for str_field in (
         "description", "cronExpression", "agentPrompt", "agent", "threadId",
@@ -3665,7 +3665,7 @@ def _validate_scheduled_tasks_shape(parsed):
 def _validate_repositories_shape(parsed):
     if not isinstance(parsed, dict):
         raise CLIError(
-            "--value must be a JSON object."
+            "--value must be a JSON object that describes the repository."
         )
     if "url" not in parsed or not isinstance(parsed["url"], str):
         raise CLIError("--value.url is required and must be a string.")
@@ -3697,7 +3697,7 @@ def _validate_repositories_shape(parsed):
 def _validate_github_auths_shape(parsed):
     if not isinstance(parsed, dict):
         raise CLIError(
-            "--value must be a JSON object."
+            "--value must be a JSON object that describes the GitHub credentials."
         )
     auth_type = parsed.get("authType")
     if "authType" in parsed and auth_type not in ("Pat", "GitHubApp"):
@@ -3721,7 +3721,7 @@ def _validate_github_auths_shape(parsed):
 def _validate_azure_devops_auths_shape(parsed):
     if not isinstance(parsed, dict):
         raise CLIError(
-            "--value must be a JSON object."
+            "--value must be a JSON object that describes the Azure DevOps credentials."
         )
     auth_type = parsed.get("authType")
     if "authType" in parsed and auth_type not in ("Pat", "ManagedIdentity"):
@@ -3755,7 +3755,7 @@ def _validate_azure_devops_auths_shape(parsed):
 def _validate_http_triggers_shape(parsed):
     if not isinstance(parsed, dict):
         raise CLIError(
-            "--value must be a JSON object."
+            "--value must be a JSON object that describes the HTTP trigger."
         )
     for str_field in ("name", "description", "agentPrompt", "agent", "modelTier", "threadId"):
         _require_str(parsed, str_field, "--value")
@@ -5504,7 +5504,7 @@ class SubagentCreate(_PinnedExtensionCreate):
         except (TypeError, ValueError) as ex:
             raise CLIError(f"--value must be a JSON document: {ex}") from ex
         if not isinstance(parsed, dict):
-            raise CLIError("--value must be a JSON object.")
+            raise CLIError("--value must be a JSON object that describes the sub-agent.")
         with open(script_file, "r", encoding="utf-8") as handle:
             script = handle.read()
         hooks = parsed.setdefault("hooks", {})
@@ -5961,10 +5961,10 @@ def _github_device_flow(hostname="github.com", scope=GITHUB_DEVICE_FLOW_SCOPES):
         f"The code expires in {_minutes_text(expires_in)}. Press Ctrl+C to cancel.",
     )
     try:
-        opened = open_page_in_browser(verification_uri)
+        opened = _browser_opened(open_page_in_browser(verification_uri))
     except Exception:  # pylint: disable=broad-except
         opened = False
-    if opened is False:
+    if not opened:
         _print_sign_in_text("Could not open a browser. Open the page yourself.")
     _print_sign_in_text("Waiting for you to approve access on GitHub.")
 
@@ -6058,6 +6058,27 @@ def _github_error_text(data):
 def _minutes_text(seconds):
     minutes = max(1, round(seconds / 60))
     return f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
+
+
+def _browser_opened(result):
+    """Whether Azure CLI's open_page_in_browser opened the page.
+
+    It returns webbrowser.open's bool on Windows and Linux, powershell.exe's
+    exit code on WSL, and the 'open' process on macOS, which exits as soon as
+    the request is handed off. Anything else counts as opened.
+    """
+    import subprocess
+
+    if isinstance(result, bool):
+        return result
+    if isinstance(result, int):
+        return result == 0
+    if isinstance(result, subprocess.Popen):
+        try:
+            return result.wait(timeout=5) == 0
+        except subprocess.TimeoutExpired:
+            return True
+    return True
 
 
 def _print_sign_in_text(*lines):
