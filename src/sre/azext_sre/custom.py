@@ -880,6 +880,32 @@ DATA_CONNECTOR_TYPE_ALIASES = {
     "microsoft dgrep": "Dgrep",
 }
 
+# Connector types the portal's connector picker offers, in help-list order.
+# Other accepted values (Kusto, Documentation, MonitorClient, Knowledge*, ...)
+# still work but are not advertised.
+PORTAL_CONNECTOR_NAMES = {
+    "KustoClient": "Azure Data Explorer",
+    "KustoUser": "Database query connector (user)",
+    "KustoDataIndexer": "Database indexing connector",
+    "LogAnalytics": "Log Analytics Workspace",
+    "AppInsights": "Application Insights",
+    "Mcp": "MCP server",
+    "Outlook": "Office 365 Outlook",
+    "Teams": "Microsoft Teams",
+    "Ev2Mcp": "EV2",
+    "TsgCrawler": "Documentation connector",
+    "AzureDevOpsBuiltinMcp": "Azure DevOps AI Search",
+    "Icm": "IcM connector",
+    "Dgrep": "DGrep",
+    "GenevaMetrics": "Geneva Metrics",
+    "S360": "S360 connector",
+}
+PORTAL_CONNECTOR_TYPES = tuple(PORTAL_CONNECTOR_NAMES)
+# Being retired, so still accepted but not advertised in help or errors.
+UNADVERTISED_CONNECTOR_TYPES = ("KustoDataIndexer", "TsgCrawler")
+for _value, _portal_name in PORTAL_CONNECTOR_NAMES.items():
+    DATA_CONNECTOR_TYPE_ALIASES.setdefault(_portal_name.lower(), _value)
+
 # Connector types that do not require --data-source at all (the data-plane
 # validator exempts them -- see DataConnectorValidator.cs
 # IsKnowledgeConnectorType). Used only to keep --help accurate; the CLI
@@ -1019,21 +1045,23 @@ CONNECTOR_TYPE_PORTAL_NAMES = {
 }
 
 
+def _listed_connector_types():
+    types = tuple(t for t in PORTAL_CONNECTOR_TYPES if t not in UNADVERTISED_CONNECTOR_TYPES)
+    if _show_internal_features():
+        return types
+    return tuple(t for t in types if t not in FIRST_PARTY_ONLY_CONNECTOR_TYPES and t != "Icm")
+
+
 def _normalize_data_connector_type(value):
     if value is None:
         return value
     key = str(value).strip().lower()
     normalized = DATA_CONNECTOR_TYPES.get(key) or DATA_CONNECTOR_TYPE_ALIASES.get(key)
     if normalized is None:
-        internal = _show_internal_features()
-        hidden = FIRST_PARTY_ONLY_CONNECTOR_TYPES | {"Icm"}
         raise CLIError(
             "--data-connector-type must be one of: "
-            + ", ".join(sorted(t for t in DATA_CONNECTOR_TYPES if internal or DATA_CONNECTOR_TYPES[t] not in hidden))
-            + " (friendly names like 'Azure Data Explorer', 'Custom MCP', "
-            "'Office 365 Outlook', 'Microsoft Teams'"
-            + (", 'Microsoft IcM', 'Microsoft DGrep'" if internal else "")
-            + " also accepted)"
+            + ", ".join(PORTAL_CONNECTOR_NAMES[t] for t in _listed_connector_types())
+            + ". For knowledge sources use 'az sre knowledge create'"
             + f" (got '{value}')."
         )
     return normalized
@@ -1061,15 +1089,10 @@ class _DataConnectorTypeArgMixin:
         # See _ModelProviderArgMixin above for why this must merge into the
         # existing ._help dict rather than replace it.
         if data_connector_type is not None and isinstance(getattr(data_connector_type, "_help", None), dict):
-            internal = _show_internal_features()
             data_connector_type._help["short-summary"] = (
-                "Connector type (case-insensitive; portal names also accepted). "
-                "Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, "
-                "LogAnalytics, " + ("Icm, Dgrep, " if internal else "") + "Ev2Mcp, "
-                + ("GenevaMetrics, S360, " if internal else "") + "Documentation, "
-                "AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, "
-                "KnowledgeRepository."
-                + (" Dgrep, GenevaMetrics, S360 and Icm are Microsoft-internal only." if internal else "")
+                "Connector type, by portal name (case-insensitive): "
+                + ", ".join(PORTAL_CONNECTOR_NAMES[t] for t in _listed_connector_types()) + "."
+                + " For knowledge sources use 'az sre knowledge create'."
             )
         data_source = getattr(schema, "data_source", None)
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
@@ -1080,7 +1103,7 @@ class _DataConnectorTypeArgMixin:
         for _name, _text in (
             ("endpoint", "Endpoint URL, used by endpoint-based connector types such as Mcp."),
             ("identity", "Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity."),
-            ("extended_properties", "Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository."),
+            ("extended_properties", "Type-specific settings as JSON or shorthand."),
         ):
             _arg = getattr(schema, _name, None)
             if _arg is not None and isinstance(getattr(_arg, "_help", None), dict):
@@ -1135,7 +1158,7 @@ class _ConnectorConvenienceArgsMixin:
         schema.file_path = AAZStrArg(
             options=["--file-path"],
             arg_group="Properties",
-            help="Local file to ingest. KnowledgeFile: base64-encoded and uploaded. KnowledgeText: read as UTF-8 text.",
+            help="Local file to ingest. For knowledge sources use 'az sre knowledge create'.",
         )
         schema.mcp_endpoint = AAZStrArg(
             options=["--mcp-endpoint"],
@@ -1413,7 +1436,7 @@ class ConnectorCreate(
 
     :example: Connect one Kusto cluster and database
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name kusto --data-connector-type Kusto \\
+            --name kusto --data-connector-type "Azure Data Explorer" \\
             --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"
     """
 
@@ -1431,8 +1454,7 @@ class ConnectorUpdate(_DataConnectorTypeArgMixin, _GeneratedConnectorUpdate):
 
     :example: Point a Kusto connector at a different database
         az sre connector update -g myrg --agent-name myagent -n conn-kusto \\
-            --data-connector-type Kusto \\
-            --data-source https://mycluster.kusto.windows.net/mydb
+            --data-connector-type "Azure Data Explorer" \\
     """
 
     _args_schema = None
@@ -1602,18 +1624,34 @@ class _ConnectorNameAliasMixin:
         return schema
 
 
+class _SecretHttpOperationMixin:
+    def __call__(self, *args, **kwargs):
+        kwargs["logging_enable"] = False
+        return super().__call__(*args, **kwargs)
+
+
 @register_command("sre connector list-secret")
 class ConnectorListSecret(_ConnectorNameAliasMixin, _GeneratedConnectorListSecret):
     """Show a connector with its secrets in plain text.
 
     Unlike 'sre connector show'/'sre connector list', which redact secret
-    fields server-side, this command returns them unredacted.
+    fields server-side, this command returns them unredacted. HTTP request
+    and response tracing is disabled for this command, including with --debug.
+    Store the output securely and never commit it. The service only returns
+    secrets to callers with an admin role on the agent; other callers get an
+    authorization error.
 
     :example: Read back a Kusto connector's secret after creating it
         az sre connector list-secret --agent-name myagent --resource-group myrg --name conn-kusto
     """
 
     _args_schema = None
+
+    class AgentsConnectorsListSecrets(
+        _SecretHttpOperationMixin,
+        _GeneratedConnectorListSecret.AgentsConnectorsListSecrets,
+    ):
+        pass
 
 
 # --------------------------------------------------------------------------------------------
@@ -2614,12 +2652,16 @@ class GetConnection(AAZCommand):
             try:
                 with open(_CONNECTIONS_FILE, "r", encoding="utf-8") as handle:
                     connections = json.load(handle)
-            except (OSError, json.JSONDecodeError) as ex:
-                logger.warning(
-                    "Could not read existing %s (%s); it will be overwritten.",
-                    _CONNECTIONS_FILE, ex,
+            except (OSError, ValueError) as ex:
+                raise CLIError(
+                    f"Could not read existing {_CONNECTIONS_FILE} ({ex}). "
+                    "The file was left unchanged; fix or delete it and retry."
+                ) from ex
+            if not isinstance(connections, dict):
+                raise CLIError(
+                    f"{_CONNECTIONS_FILE} does not contain a JSON object. "
+                    "The file was left unchanged; fix or delete it and retry."
                 )
-                connections = {}
         key = f"{resource_group}/{name}"
         connections[key] = {
             "name": name,
@@ -3060,25 +3102,63 @@ class UpdateNetwork(AAZCommand):
 
         updated = _arm_request(self.cli_ctx, "PUT", resource_id, NETWORK_API_VERSION, body=current)
 
-        # Trim the response to just the networking-relevant fields instead
-        # of returning the entire parent agent resource -- every other
-        # extension create/update command in this CLI returns only the
-        # scoped sub-resource, not the whole agent; this PUT targets the
-        # agent resource itself (there's no separate ARM child resource for
-        # networking), so without this it was the one inconsistent, overly
-        # verbose command in the surface (usability finding, live-graded).
-        if isinstance(updated, dict):
-            updated_properties = updated.get("properties") or {}
-            return {
-                "id": updated.get("id"),
-                "name": updated.get("name"),
-                "resourceGroup": updated.get("resourceGroup"),
-                "type": updated.get("type"),
-                "provisioningState": updated_properties.get("provisioningState"),
-                "vnetConfiguration": updated_properties.get("vnetConfiguration"),
-                "sandboxConfiguration": updated_properties.get("sandboxConfiguration"),
-            }
-        return updated
+        # The PUT targets the agent resource itself, so trim the response to the
+        # networking fields like the other extension commands do.
+        return _network_view(updated)
+
+
+def _network_view(agent):
+    if not isinstance(agent, dict):
+        return agent
+    properties = agent.get("properties") or {}
+    return {
+        "id": agent.get("id"),
+        "name": agent.get("name"),
+        "resourceGroup": agent.get("resourceGroup"),
+        "type": agent.get("type"),
+        "provisioningState": properties.get("provisioningState"),
+        "vnetConfiguration": properties.get("vnetConfiguration"),
+        "sandboxConfiguration": properties.get("sandboxConfiguration"),
+    }
+
+
+@register_command("sre network show")
+class ShowNetwork(AAZCommand):
+    """Show VNet injection and sandbox egress settings (preview).
+
+    'az sre agent show' omits these because it uses an older API version.
+
+    :example: Show an agent's networking settings
+        az sre network show --name myagent --resource-group myrg
+    """
+
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.name = AAZStrArg(
+            options=["-n", "--name", "--agent-name"],
+            help="Name of the SRE Agent to show networking settings for.",
+            required=True,
+        )
+        schema.resource_group = AAZResourceGroupNameArg(required=True)
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        name = _arg_value(self.ctx.args.name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        resource_id = _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
+        current = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION, missing_ok=True)
+        if not isinstance(current, dict):
+            raise ResourceNotFoundError(
+                f"Could not find SRE Agent '{name}' in resource group '{resource_group}' at api-version {NETWORK_API_VERSION}."
+            )
+        return _network_view(current)
 
 
 # --------------------------------------------------------------------------------------------

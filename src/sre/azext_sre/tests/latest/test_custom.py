@@ -16,6 +16,7 @@ import copy
 import json
 import os
 import tempfile
+import types
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -33,6 +34,7 @@ from azext_sre.custom import (
     GITHUB_COPILOT_MCP_ENDPOINT,
     KNOWLEDGE_TYPES,
     MANAGED_RESOURCE_ROLES,
+    PORTAL_CONNECTOR_NAMES,
     Create,
     AgentSettingsShow,
     AgentSettingsUpdate,
@@ -45,6 +47,7 @@ from azext_sre.custom import (
     ManagedResourceList,
     AccessList,
     UpdateNetwork,
+    ShowNetwork,
     RepoConnect,
     GetConnection,
     KnowledgeCreate,
@@ -116,7 +119,7 @@ from azext_sre.custom import (
     _resolve_signed_in_tenant_id,
     _IcmIncidentPlatformGateMixin,
     _show_internal_features,
-    _resolve_signed_in_user_object_id,
+    _listed_connector_types,    _resolve_signed_in_user_object_id,
     MICROSOFT_FIRST_PARTY_TENANT_IDS,
 )
 
@@ -3119,6 +3122,62 @@ class UpdateNetworkMergeTests(unittest.TestCase):
         self.assertNotIn("displayName", result)
 
 
+class ShowNetworkTests(unittest.TestCase):
+    _ID = "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"
+
+    def test_reads_at_networking_api_version_and_trims(self):
+        command = _bare_command(ShowNetwork, name="myagent", resource_group="rg")
+        calls = []
+
+        def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+            calls.append((method, resource_id, api_version))
+            return {"id": self._ID, "name": "myagent", "properties": {
+                "displayName": "hide-me", "provisioningState": "Succeeded",
+                "sandboxConfiguration": {"egress": {"mode": "Limited"}}}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
+             patch("azext_sre.custom._arm_request", fake_arm_request):
+            result = command._handler({})
+
+        self.assertEqual(calls, [("GET", self._ID, "2026-11-01-preview")])
+        self.assertEqual(result["sandboxConfiguration"], {"egress": {"mode": "Limited"}})
+        self.assertIsNone(result["vnetConfiguration"])
+        self.assertNotIn("displayName", result)
+
+    def test_missing_agent_raises(self):
+        command = _bare_command(ShowNetwork, name="myagent", resource_group="rg")
+
+        def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+            if not missing_ok:
+                raise AssertionError("a 404 must be tolerated with missing_ok=True")
+            return None
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
+             patch("azext_sre.custom._arm_request", fake_arm_request):
+            with self.assertRaises(ResourceNotFoundError):
+                command._handler({})
+
+    def test_404_on_the_get_becomes_not_found(self):
+        command = _bare_command(ShowNetwork, name="myagent", resource_group="rg")
+
+        class Http404(Exception):
+            response = type("R", (), {"status_code": 404})()
+
+        def raise_404(*args, **kwargs):
+            raise Http404()
+
+        command.cli_ctx.cloud = types.SimpleNamespace(
+            endpoints=types.SimpleNamespace(resource_manager="https://management.azure.com/"))
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
+             patch("azext_sre.custom.send_raw_request", raise_404):
+            with self.assertRaises(ResourceNotFoundError):
+                command._handler({})
+
+
 class CommandRegistrationTests(unittest.TestCase):
     """Every hand-written command in custom.py must actually be reachable
     through the loader's public 'sre ...' surface -- extends the single
@@ -3136,7 +3195,7 @@ class CommandRegistrationTests(unittest.TestCase):
             "sre agent create", "sre agent update", "sre agent show",
             "sre agent list", "sre agent delete", "sre agent start",
             "sre agent stop", "sre endpoint show", "sre usage list",
-            "sre access grant", "sre access revoke", "sre network update",
+            "sre access grant", "sre access revoke", "sre network update", "sre network show",
             "sre connector create", "sre connector show", "sre connector list",
             "sre connector update", "sre connector delete", "sre connector list-secret",
             "sre identity assign", "sre identity remove", "sre identity show",
@@ -3249,7 +3308,7 @@ class ArgSchemaHelpRegressionTests(unittest.TestCase):
     def test_connector_create_help_does_not_crash(self):
         schema = ConnectorCreate._build_arguments_schema()
         cmd_arg = schema.data_connector_type.to_cmd_arg("data_connector_type")
-        self.assertIn("Kusto", cmd_arg.type.settings.get("help"))
+        self.assertIn("Azure Data Explorer", cmd_arg.type.settings.get("help"))
 
     def test_agent_create_help_does_not_crash(self):
         schema = Create._build_arguments_schema()
@@ -3299,6 +3358,22 @@ class _TestConnectorConvenience(_ConnectorConvenienceArgsMixin, _NoOpPreOperatio
 
 class InternalFeatureHelpVisibilityTests(unittest.TestCase):
     """Help hides Microsoft-internal options for non-Microsoft tenants, like the portal."""
+
+    def test_listed_connector_types_match_portal_picker(self):
+        with patch("azext_sre.custom._show_internal_features", return_value=False):
+            third_party = _listed_connector_types()
+        with patch("azext_sre.custom._show_internal_features", return_value=True):
+            internal = _listed_connector_types()
+        for hidden in ("Icm", "Dgrep", "GenevaMetrics", "S360"):
+            self.assertNotIn(hidden, third_party)
+            self.assertIn(hidden, internal)
+        for unlisted in ("Kusto", "Documentation", "MonitorClient", "KnowledgeText"):
+            self.assertNotIn(unlisted, internal)
+        for retired in ("KustoDataIndexer", "TsgCrawler"):
+            self.assertNotIn(retired, third_party)
+            self.assertNotIn(retired, internal)
+            self.assertEqual(
+                _normalize_data_connector_type(PORTAL_CONNECTOR_NAMES[retired]), retired)
 
     def _visible_with_profile(self, profile):
         with tempfile.TemporaryDirectory() as config_dir:
@@ -3758,6 +3833,18 @@ class ConnectorListSecretAliasTests(unittest.TestCase):
         cmd_arg = schema.connector_name.to_cmd_arg("connector_name")
         self.assertEqual(cmd_arg.options_list, ["-n", "--name", "--connector-name"])
 
+    def test_http_logging_is_disabled_for_the_secret_request(self):
+        operation = ConnectorListSecret.AgentsConnectorsListSecrets.__new__(
+            ConnectorListSecret.AgentsConnectorsListSecrets
+        )
+        seen = {}
+        parent = ConnectorListSecret.AgentsConnectorsListSecrets.__mro__[2]
+        with patch.object(
+            parent, "__call__", lambda self, *a, **kw: seen.update(kw) or "ok"
+        ):
+            self.assertEqual(operation(logging_enable=True), "ok")
+        self.assertIs(seen["logging_enable"], False)
+
 
 class IdentityAndSupportedAgentModelRegistrationTests(unittest.TestCase):
     """'sre identity'/'sre agent list-models' are thin re-registrations
@@ -4127,6 +4214,27 @@ class ConnectionShowDefaultAudienceTests(unittest.TestCase):
         result = self._run(data_plane_audience="https://custom.audience.example")
         self.assertEqual(result["dataPlaneAudience"], "https://custom.audience.example")
 
+    def test_malformed_connections_file_is_not_overwritten(self):
+        command = _bare_command(
+            GetConnection, name="myagent", resource_group="rg",
+            data_plane_audience="https://azuresre.dev",
+        )
+
+        def fake_cli_invoke(cli_ctx, *cmd_args, allow_missing=False):
+            return {"properties": {"agentEndpoint": "https://myagent.example"}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+             tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "sreAgentConnections.json")
+            for bad in ("{not json", "[1, 2]"):
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(bad)
+                with patch("azext_sre.custom._CONNECTIONS_FILE", path):
+                    with self.assertRaises(CLIError):
+                        command._handler({})
+                with open(path, "r", encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), bad)
 
 class _NoOpPreOpBase2:
     def pre_operations(self):

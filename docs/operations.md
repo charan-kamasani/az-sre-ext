@@ -166,6 +166,11 @@ az sre connector list-secret -g myrg --agent-name myagent \
 az sre connector delete -g myrg --agent-name myagent --name my-kusto-connector -y
 ```
 
+`list-secret` prints secrets in plain text. It disables HTTP tracing for its
+own request, so `--debug` doesn't log them, but anything you pipe or save is
+yours to protect. Avoid `--debug` on other commands against real data: it can
+print secrets in request and response bodies.
+
 `--data-connector-type` also accepts the product's own friendly names
 (`"Azure Data Explorer"`, `"MCP server"`, `"Office 365 Outlook"`, etc. — see
 the friendly-names table below), case-insensitively, as an alias for the
@@ -281,6 +286,8 @@ cross-referenced against this CLI's `DATA_CONNECTOR_TYPES` allowlist. This is
 the authoritative tracking table for "is X implemented in the CLI yet?" —
 update it whenever a new wire value or portal card is confirmed.
 
+`az sre connector create --help` lists only the portal names in the table below that the CLI implements (Microsoft-internal ones are hidden for third-party tenants). `--data-connector-type` accepts either the portal name or the wire value.
+
 | Portal card (Title) | Portal subtitle | Wire value (`--data-connector-type`) | CLI status |
 |---|---|---|---|
 | Azure Data Explorer | Azure Data Explorer | `KustoClient` | **Implemented** — live-verified, default type |
@@ -308,8 +315,8 @@ update it whenever a new wire value or portal card is confirmed.
 | IcM connector | Microsoft IcM | `Icm` | **Implemented** — shape-confirmed; create blocked in this tenant by a real `InternalServerError` (not a CLI defect) |
 | EV2 | Ev2 (ExpressV2) | `Ev2Mcp` | **Implemented** — schema/create-level verified |
 | Database query connector (user) | Azure Data Explorer | `KustoUser` | **Implemented** — high-confidence correlation, not create-and-inspect confirmed |
-| Database indexing connector | Azure Data Explorer | `KustoDataIndexer` | **Implemented** — same caveat |
-| Documentation connector | Documentation | `Documentation` | **Implemented** — schema/create-level verified |
+| Database indexing connector | Azure Data Explorer | `KustoDataIndexer` | **Implemented** — same caveat; being retired, accepted but not listed in help |
+| Documentation connector | Documentation | `TsgCrawler` | **Implemented** — portal-confirmed 2026-11-08 (card saves as `TsgCrawler`); being retired, accepted but not listed in help |
 | Azure DevOps AI Search | Azure DevOps | `AzureDevOpsBuiltinMcp` | **Implemented** — high-confidence correlation, not create-and-inspect confirmed |
 | Microsoft Security Copilot | Microsoft Security Copilot | *(none)* | **Not implemented** — Connector Gateway/"Additional connectors" platform |
 | Notion | Notion | *(none)* | **Not implemented** — same |
@@ -336,7 +343,7 @@ update it whenever a new wire value or portal card is confirmed.
 | EV2 *(shown again under "Other")* | Ev2 (ExpressV2) | `Ev2Mcp` | **Implemented** — duplicate portal listing, same as above |
 | Database query connector (user) *(shown again under "Other")* | Azure Data Explorer | `KustoUser` | **Implemented** — duplicate portal listing, same as above |
 | Database indexing connector *(shown again under "Other")* | Azure Data Explorer | `KustoDataIndexer` | **Implemented** — duplicate portal listing, same as above |
-| Documentation connector *(shown again under "Other")* | Documentation | `Documentation` | **Implemented** — duplicate portal listing, same as above |
+| Documentation connector *(shown again under "Other")* | Documentation | `TsgCrawler` | **Implemented** — duplicate portal listing, same as above |
 | Azure DevOps AI Search *(shown again under "Other")* | Azure DevOps | `AzureDevOpsBuiltinMcp` | **Implemented** — duplicate portal listing, same as above |
 | Azure Managed Grafana | Azure Managed Grafana | *(none)* | **Not implemented** — no confirmed wire value; do not assume `Mcp` + endpoint without backend confirmation |
 
@@ -510,7 +517,7 @@ and a full catalog text export):**
 | `Ev2Mcp` | "EV2" | Confirmed — Title; subtitle is "Ev2 (ExpressV2)" |
 | `GenevaMetrics` | "Geneva Metrics" | Confirmed — Title; subtitle is "Geneva Metrics (MDM)" (gated, see above) |
 | `S360` | "S360 connector" | Confirmed — Title; subtitle is "S360" |
-| `Documentation` | "Documentation connector" | Confirmed — Title; subtitle is "Documentation" |
+| `Documentation` | *(none)* | Not the Documentation connector card. **Confirmed 2026-11-08:** that card saves as `TsgCrawler` (see below) |
 | `Mcp` | "MCP server" | **Corrected 2026-11-04**: the real Title is "MCP server" (subtitle "User provided connector"), not "Custom MCP" as previously (incorrectly) documented/coded — "Custom MCP" does not appear anywhere in the real catalog |
 | `Icm` | "IcM connector" | **Corrected 2026-11-04**: the real Title is "IcM connector" (subtitle "Microsoft IcM") — previously had Title/subtitle swapped |
 | `Dgrep` | "DGrep" | **Corrected 2026-11-04**: the real Title is "DGrep" (subtitle "Microsoft DGrep") — previously had Title/subtitle swapped |
@@ -518,7 +525,7 @@ and a full catalog text export):**
 | `KustoUser` | "Database query connector (user)" *(high-confidence, unconfirmed)* | Subtitle "Azure Data Explorer"; description "Query Azure Data Explorer using your own identity via OAuth sign-in" matches the wire value's name/purpose closely, but no create-and-inspect test has confirmed the mapping |
 | `KustoDataIndexer` | "Database indexing connector" *(high-confidence, unconfirmed)* | Subtitle "Azure Data Explorer"; description "The agent generates queries by learning about your logs, telemetry, and time series data" matches closely, same caveat as above |
 | `AzureDevOpsBuiltinMcp` | "Azure DevOps AI Search" *(high-confidence, unconfirmed)* | Subtitle "Azure DevOps"; description "AI-powered remote code search across Azure DevOps repositories without local cloning" matches closely, same caveat as above |
-| `TsgCrawler` | *(none)* | Confirmed **not** present as a picker card (empty search, and absent from the full catalog export) |
+| `TsgCrawler` | "Documentation connector" | **Confirmed 2026-11-08** by creating the card in the portal and reading it back with `az sre connector show`: `dataConnectorType` is `TsgCrawler` |
 | `ConnectorGateway` | *(none)* | Confirmed **not** present as a picker card — consistent with it needing separate `Microsoft.Web/connectorGateways` infrastructure, not a direct picker entry |
 | `AzureMonitor` / `MonitorClient` | *(none)* | Confirmed **not** present as their own cards anywhere in the full catalog — no "Azure Monitor" card exists; Azure Monitor's constituent signals are reached via the dedicated Log Analytics Workspace / Application Insights cards instead |
 
