@@ -997,10 +997,10 @@ something this extension adds.
 az sre repo connect --agent-name myagent --resource-group myrg \
   --repo-url https://github.com/contoso/my-service
 
-# Or pass a token explicitly (required in CI, where no browser is
-# available -- device flow cannot run unattended):
+# In CI, where no browser is available, set GITHUB_TOKEN first. The command
+# reads it directly, so the token never appears on the command line:
 az sre repo connect --agent-name myagent --resource-group myrg \
-  --repo-url https://github.com/contoso/my-service --github-token $env:GITHUB_TOKEN
+  --repo-url https://github.com/contoso/my-service
 ```
 
 ### `az sre automation`: group for scheduled tasks, HTTP triggers, and incident filters

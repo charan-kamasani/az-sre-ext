@@ -442,9 +442,9 @@ Create an Agent Connector.
 - Connect the GitHub MCP server
 
   `az sre connector create --agent-name myagent --resource-group myrg \ --name github --data-connector-type Mcp --github true`
-- Connect a custom MCP server with a bearer token
+- Connect a custom MCP server with a bearer token read from a file
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name mcp --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --bearer-token "$MY_SERVER_TOKEN"`
+  `az sre connector create --agent-name myagent --resource-group myrg \ --name mcp --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --bearer-token @token.txt`
 - Connect a custom MCP server with the agent's managed identity
 
   `az sre connector create --agent-name myagent --resource-group myrg \ --name mcp --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --managed-identity-auth true`
@@ -1195,9 +1195,9 @@ Connect a GitHub or Azure DevOps repo to an agent.
 - Connect a GitHub repo
 
   `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service`
-- Connect a GitHub repo with a token
+- Connect a GitHub repo in CI, with the token in GITHUB_TOKEN
 
-  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service \ --github-token $env:GITHUB_TOKEN`
+  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service`
 - Connect an Azure DevOps repo
 
   `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo`
