@@ -126,6 +126,15 @@ def _snake_to_camel(key):
     return head + "".join(part.capitalize() for part in rest)
 
 
+def _drop_nulls(value):
+    """Recursively remove dict entries whose value is None."""
+    if isinstance(value, dict):
+        return {k: _drop_nulls(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_drop_nulls(v) for v in value]
+    return value
+
+
 def _camelize_keys(value):
     """Recursively rewrite snake_case dict keys to camelCase.
 
@@ -2986,7 +2995,7 @@ class UpdateNetwork(AAZCommand):
         )
         vnet_configuration = schema.vnet_configuration
         vnet_configuration.subnet_resource_id = AAZStrArg(
-            options=["subnet-resource-id"],
+            nullable=True, options=["subnet-resource-id"],
             help="Resource ID of a delegated subnet (Microsoft.Network/virtualNetworks/subnets) for the agent.",
         )
 
@@ -2998,63 +3007,63 @@ class UpdateNetwork(AAZCommand):
         )
         sandbox_configuration = schema.sandbox_configuration
         sandbox_configuration.egress = AAZObjectArg(
-            options=["egress"],
+            nullable=True, options=["egress"],
             help="Egress configuration for the agent's sandbox.",
         )
         sandbox_configuration.packages = AAZListArg(
-            options=["packages"],
+            nullable=True, options=["packages"],
             help="Packages to pre-install in the sandbox.",
         )
         sandbox_configuration.packages.Element = AAZObjectArg()
         package_element = sandbox_configuration.packages.Element
-        package_element.name = AAZStrArg(options=["name"], help="Package name.")
-        package_element.version = AAZStrArg(options=["version"], help="Package version.")
+        package_element.name = AAZStrArg(nullable=True, options=["name"], help="Package name.")
+        package_element.version = AAZStrArg(nullable=True, options=["version"], help="Package version.")
         package_element.package_manager = AAZStrArg(
-            options=["package-manager"],
+            nullable=True, options=["package-manager"],
             help="Package manager: pip, npm, or nuget.",
         )
 
         egress = sandbox_configuration.egress
         egress.mode = AAZStrArg(
-            options=["mode"],
+            nullable=True, options=["mode"],
             help="Sandbox egress mode.",
             enum={"Unrestricted": "Unrestricted", "Limited": "Limited", "AzureVNet": "AzureVNet"},
         )
         egress.allow_http_mcp_server_network_access = AAZBoolArg(
-            options=["allow-http-mcp-server-network-access"],
+            nullable=True, options=["allow-http-mcp-server-network-access"],
             help="Allow the sandbox to reach HTTP MCP servers over the network.",
         )
         egress.allowed_hosts = AAZListArg(
-            options=["allowed-hosts"],
+            nullable=True, options=["allowed-hosts"],
             help="Hosts the sandbox is allowed to reach when in Limited mode.",
         )
         egress.allowed_hosts.Element = AAZStrArg()
         egress.allowed_registries = AAZListArg(
-            options=["allowed-registries"],
+            nullable=True, options=["allowed-registries"],
             help="Package registries the sandbox is allowed to reach (e.g. pypi, npmjs, nuget-org, ubuntu).",
         )
         egress.allowed_registries.Element = AAZStrArg()
         egress.allowed_code_repositories = AAZListArg(
-            options=["allowed-code-repositories"],
+            nullable=True, options=["allowed-code-repositories"],
             help="Code repository hosts the sandbox is allowed to reach (e.g. Github, GithubEnterprise, AzureDevOps, GitLab).",
         )
         egress.allowed_code_repositories.Element = AAZStrArg()
         egress.vnet_configuration = AAZObjectArg(
-            options=["vnet-configuration"],
+            nullable=True, options=["vnet-configuration"],
             help="VNet-specific egress configuration (distinct from the top-level --vnet-configuration, which is for the agent itself).",
         )
         egress.vnet_configuration.use_private_dns_resolution = AAZBoolArg(
-            options=["use-private-dns-resolution"],
+            nullable=True, options=["use-private-dns-resolution"],
             help="Use private DNS resolution for sandbox VNet egress.",
         )
         egress.http_proxy = AAZObjectArg(
-            options=["http-proxy"],
+            nullable=True, options=["http-proxy"],
             help="Forward-proxy endpoints for sandbox outbound HTTP/HTTPS traffic.",
         )
-        egress.http_proxy.http_url = AAZStrArg(options=["http-url"], help="Proxy URL for plain HTTP.")
-        egress.http_proxy.https_url = AAZStrArg(options=["https-url"], help="Proxy URL for HTTPS.")
+        egress.http_proxy.http_url = AAZStrArg(nullable=True, options=["http-url"], help="Proxy URL for plain HTTP.")
+        egress.http_proxy.https_url = AAZStrArg(nullable=True, options=["https-url"], help="Proxy URL for HTTPS.")
         egress.http_proxy.no_proxy = AAZListArg(
-            options=["no-proxy"],
+            nullable=True, options=["no-proxy"],
             help="Hosts excluded from the proxy.",
         )
         egress.http_proxy.no_proxy.Element = AAZStrArg()
@@ -3096,10 +3105,12 @@ class UpdateNetwork(AAZCommand):
                 f"Could not re-resolve SRE Agent '{name}' at api-version {NETWORK_API_VERSION}."
             )
         properties = current.setdefault("properties", {})
+        # `network show` prints unset fields as null; drop them so its output
+        # can be passed back here unchanged.
         if vnet_configuration is not None:
-            properties["vnetConfiguration"] = _camelize_keys(vnet_configuration)
+            properties["vnetConfiguration"] = _drop_nulls(_camelize_keys(vnet_configuration))
         if sandbox_configuration is not None:
-            properties["sandboxConfiguration"] = _camelize_keys(sandbox_configuration)
+            properties["sandboxConfiguration"] = _drop_nulls(_camelize_keys(sandbox_configuration))
 
         updated = _arm_request(self.cli_ctx, "PUT", resource_id, NETWORK_API_VERSION, body=current)
 

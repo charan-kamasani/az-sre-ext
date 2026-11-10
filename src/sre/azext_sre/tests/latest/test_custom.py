@@ -3236,6 +3236,44 @@ class UpdateNetworkMergeTests(unittest.TestCase):
         self.assertEqual(result["sandboxConfiguration"], {"egress": {"mode": "Unrestricted"}})
         self.assertNotIn("displayName", result)
 
+    def test_accepts_network_show_output_with_nulls(self):
+        # Shape of `network show --query sandboxConfiguration` on a new agent.
+        shown = {
+            "egress": {
+                "mode": "Limited", "allowedHosts": ["a.example.com"],
+                "allowedRegistries": ["pypi"], "allowHttpMcpServerNetworkAccess": True,
+                "httpProxy": None, "vnetConfiguration": None,
+            },
+            "packages": None,
+        }
+        puts = []
+
+        def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+            if method == "PUT":
+                puts.append(body)
+                return body
+            return {"id": self._AGENT["id"], "properties": {}}
+
+        from azure.cli.core import get_default_cli
+
+        with patch("azext_sre.custom._cli_invoke", lambda *a, **k: self._AGENT), \
+             patch("azext_sre.custom._arm_request", fake_arm_request):
+            try:
+                code = get_default_cli().invoke([
+                    "sre", "network", "update", "-g", "rg", "-n", "myagent",
+                    "--sandbox-configuration", json.dumps(shown), "-o", "none",
+                ])
+            except SystemExit as ex:
+                code = ex.code
+
+        self.assertEqual(code, 0)
+        self.assertEqual(puts[0]["properties"]["sandboxConfiguration"], {
+            "egress": {
+                "mode": "Limited", "allowedHosts": ["a.example.com"],
+                "allowedRegistries": ["pypi"], "allowHttpMcpServerNetworkAccess": True,
+            },
+        })
+
 
 class ShowNetworkTests(unittest.TestCase):
     _ID = "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"

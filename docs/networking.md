@@ -39,8 +39,8 @@ start from the current settings:
 
 ```bash
 az sre network show -g myrg --agent-name myagent --query sandboxConfiguration > sandbox.json
-# Edit sandbox.json: add your hosts and remove the fields whose value is
-# null (network update can't parse "httpProxy": null).
+# Edit sandbox.json to add your hosts. Fields left as null are ignored.
+# Don't commit the file: it holds any proxy URLs set on the agent.
 az sre network update -g myrg --agent-name myagent --sandbox-configuration @sandbox.json
 ```
 
