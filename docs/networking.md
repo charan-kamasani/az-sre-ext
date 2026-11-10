@@ -29,10 +29,31 @@ az sre network update -g myrg --agent-name myagent \
 
 ## Configure VNet injection
 
+Use a dedicated subnet prepared for this agent, delegated to
+`Microsoft.App/environments`. The example assumes an existing VNet and
+subnet in the agent's region; replace the network resource names with your
+approved resources. Do not change the delegation of a shared or in-use
+subnet.
+
 ```bash
+NETWORK_RG="network-rg"
+VNET="agent-vnet"
+SUBNET="agent-subnet"
+
+az network vnet subnet update -g "$NETWORK_RG" --vnet-name "$VNET" \
+  --name "$SUBNET" --delegations Microsoft.App/environments
+
+SUBNET_ID=$(az network vnet subnet show -g "$NETWORK_RG" --vnet-name "$VNET" \
+  --name "$SUBNET" --query id -o tsv)
+
 az sre network update -g myrg --agent-name myagent \
-  --vnet-configuration "{subnet-resource-id:/subscriptions/.../subnets/mysubnet}"
+  --vnet-configuration "{subnet-resource-id:$SUBNET_ID}" \
+  --sandbox-configuration "{egress:{mode:AzureVNet}}"
 ```
+
+The VNet configuration and `AzureVNet` sandbox egress mode must be applied
+together; the subnet ID alone is not sufficient. Subnet delegation is a
+separate prerequisite and is not performed by `az sre network update`.
 
 ## Important sequencing note
 

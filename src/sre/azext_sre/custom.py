@@ -744,30 +744,29 @@ class Create(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GrantAccess
 class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GeneratedUpdate):
     """Update an SRE Agent.
 
+    PagerDuty matches the portal's Incidents > Connect an incident platform
+    > PagerDuty workflow. It uses an ARM PATCH on the agent resource, not
+    the separate Connector Gateway used by Jira, Slack and SharePoint.
+    --connection-key is the PagerDuty REST API access key; --obo-user is
+    the identity the agent acts under when resolving or commenting on incidents.
+
+    ServiceNow uses Basic Auth: set --connection-url to the instance URL
+    and --connection-key to the credentials.
+
+    Azure Monitor needs no configuration here -- it connects automatically
+    when the agent is created, with AzMonitor as the enum's implicit default.
+
     :example: Switch an agent's default model to MicrosoftFoundry
         az sre agent update --name myagent --resource-group myrg \\
             --default-model "{provider:MicrosoftFoundry,name:gpt-5}"
 
-    :example: Connect PagerDuty as the incident platform (portal: Incidents
-        > Connect an incident platform > PagerDuty). This is a plain ARM
-        PATCH on the agent resource -- confirmed via the control plane's own
-        AgentDocument.cs model and real E2E fixtures (PagerDutySetupFixture.cs)
-        -- not the separate, portal-only Connector Gateway (which Jira/Slack/
-        SharePoint/etc. use). --connection-key is the PagerDuty REST API
-        access key from the tutorial; --obo-user is the user whose identity
-        the agent acts under when resolving/commenting on incidents.
+    :example: Connect PagerDuty as the incident platform
         az sre agent update --name myagent --resource-group myrg \\
             --incident-management-configuration "{type:PagerDuty,connection-name:pagerduty,connection-key:<api-key>,obo-user:oncall@contoso.com}"
 
-    :example: Connect ServiceNow as the incident platform (Basic Auth; set
-        --connection-url to the instance URL and --connection-key to the
-        credentials, per the tutorial's "instance URL and credentials" step)
+    :example: Connect ServiceNow as the incident platform with Basic Auth
         az sre agent update --name myagent --resource-group myrg \\
             --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:https://contoso.service-now.com,connection-key:<credentials>}"
-
-    Azure Monitor needs no configuration here -- it connects automatically
-    when the agent is created (confirmed by the tutorial and by AzMonitor
-    being the enum's implicit default).
     """
 
     _args_schema = None
@@ -1736,8 +1735,8 @@ class SupportedAgentModelList(_GeneratedSupportedAgentModelList):
     Use this before 'sre agent create' to confirm --default-model is
     supported in the region you're deploying to.
 
-    :example: See which models are available in East US
-        az sre agent list-models --location eastus
+    :example: See which models are available in East US 2
+        az sre agent list-models --location eastus2
     """
 
     _args_schema = None
@@ -1867,6 +1866,7 @@ class AgentSettingsUpdate(AAZCommand):
             --value '{"customInstructions": "Always cite the runbook section you used."}'
 
     :example: Allow, ask for approval, or deny specific tools
+        az sre agent settings update -g myrg --agent-name myagent \\
         --value '{"toolPermissions": {"allow": ["kusto-query"], "ask": [], "deny": ["run-shell"]}}'
     """
 
@@ -5605,16 +5605,22 @@ class HookCreate(_PinnedExtensionCreate):
     """Create or update a hook.
 
     :example: Run a prompt after every Bash tool call
-        az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check \\
-            --value @hook.json
-
-        hook.json:
+        cat > hook.json <<'JSON'
         {"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands",
          "hook": {"type": "prompt", "prompt": "Warn if the last tool call looks destructive.",
                   "matcher": "Bash.*", "failMode": "Allow"}}
+        JSON
+        az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check \\
+            --value @hook.json
 
     :example: Run a command instead of a prompt
-        --value @hook.json, with "hook": {"type": "command", "command": "echo ok", "matcher": "Bash.*", "timeout": 30}
+        cat > command-hook.json <<'JSON'
+        {"eventType": "PostToolUse", "activationMode": "always",
+         "hook": {"type": "command", "script": "#!/usr/bin/env python3\\nimport json\\nprint(json.dumps({'decision': 'allow'}))",
+                  "matcher": "Bash.*", "timeout": 30}}
+        JSON
+        az sre hook create --agent-name myagent --resource-group myrg --name post-tool-command \\
+            --value @command-hook.json
     """
 
     _EXTENSION_TYPE = "hooks"
@@ -5685,24 +5691,19 @@ class InstructionsCreate(_PinnedExtensionCreate):
     Use the same --name (e.g. "default") each time to update a given
     snippet in place, or pass --overwrite to replace an existing one.
 
-    :example: Set an agent's global custom instructions (the portal's real
-        singleton text box -- NOT this command; shown here to avoid the
-        mix-up)
+    :example: Set the portal's global custom instructions with agent settings
         az sre agent settings update -g myrg --agent-name myagent \\
             --value '{"customInstructions": "Always cite the runbook section you used."}'
 
-    :example: Create a named, reusable prompt snippet instead (what this
-        command actually does)
+    :example: Create a named, reusable prompt snippet
         az sre instructions create -g myrg --agent-name myagent --name default \\
             --value '{"prompt": "Always cite the runbook section you used."}'
 
-    :example: Windows PowerShell -- same --value @file pattern as 'sre hook
-        create' (live-verified, recommended; see 'sre hook create -h' for why)
+    :example: Windows PowerShell -- pass a JSON file
         '{"prompt": "Be concise."}' | Set-Content -Path "$env:TEMP\\instructions.json"
         az sre instructions create -g myrg --agent-name myagent --name default --value "@$env:TEMP\\instructions.json" --overwrite true
 
-    :example: Windows PowerShell -- alternative 'cmd /c' wrapper, if you'd
-        rather not write a temp file (live-verified, also works)
+    :example: Windows PowerShell -- pass inline JSON through cmd /c
         cmd /c 'az sre instructions create --agent-name myagent --resource-group myrg --name default --value "{\\"prompt\\": \\"Be concise.\\"}" --overwrite true'
     """
 
