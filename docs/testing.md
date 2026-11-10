@@ -9,14 +9,17 @@
    extension-value codec, model-provider and data-connector-type
    normalization (including that invalid values raise `CLIError`, not a
    bare `ValueError`), extension-type enum completeness, command
-   registration, arg-schema help regressions (`to_cmd_arg()` must not
-   crash — see [docs/source-code.md](source-code.md)), and CLI-level
-   argument enforcement.
+   registration, and arg-schema help regressions (`to_cmd_arg()` must not
+   crash — see [docs/source-code.md](source-code.md)).
    `test_managed_resource_identity.py` exercises grant/list/revoke through the
    real extension loader and Azure CLI parser with isolated identity and RBAC
    state. It covers SAMI defaults, explicit assigned UAMIs, invalid selections,
    unchanged runtime settings, and preservation of unrelated role assignments;
    network requests are blocked.
+   `test_cli_arguments.py` uses the same offline loader to prove argument
+   enforcement for `access grant`/`revoke` and `knowledge create`. Each
+   rejected argument list has an accepted twin that reaches the command, so a
+   retired or renamed command fails instead of passing as unrecognized.
    The documented test dependencies include `msrest` and `azure-common`
    because Azure CLI's real error formatter imports them even for local
    argument-validation errors.
