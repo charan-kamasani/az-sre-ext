@@ -1066,8 +1066,12 @@ Remaining control-plane bug: some downstream validation errors are still
 masked by the generic message, which is why create replays on the data plane.
 
 Configure `incidentManagementConfiguration.type` to match the filter's
-`incidentPlatform` first. For Azure Monitor, PagerDuty, and ServiceNow,
-set `handlingAgent` to an existing subagent name. The plural
+`incidentPlatform` first. A new agent has no incident platform, including
+Azure Monitor, so run
+`az sre agent update --incident-management-configuration "{type:AzMonitor}"`
+before creating an Azure Monitor plan. For Azure Monitor, PagerDuty, and ServiceNow,
+set `handlingAgent` to an existing subagent name. When the service rejects
+a plan, `response-plan create` checks both and names the one that failed. The plural
 `handlingAgents` field is IcM-specific. Both create commands refuse to
 replace existing resources unless `--overwrite` is supplied.
 Creating and reading configuration does not prove that a real alert has

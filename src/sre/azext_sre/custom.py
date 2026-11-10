@@ -763,12 +763,16 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GeneratedUp
     ServiceNow uses Basic Auth: set --connection-url to the instance URL
     and --connection-key to the credentials.
 
-    Azure Monitor needs no configuration here -- it connects automatically
-    when the agent is created, with AzMonitor as the enum's implicit default.
+    Azure Monitor must also be connected before a response plan can use it.
+    A new agent has no incident platform set.
 
     :example: Switch an agent's default model to MicrosoftFoundry
         az sre agent update --name myagent --resource-group myrg \\
             --default-model "{provider:MicrosoftFoundry,name:gpt-5}"
+
+    :example: Connect Azure Monitor as the incident platform
+        az sre agent update --name myagent --resource-group myrg \\
+            --incident-management-configuration "{type:AzMonitor}"
 
     :example: Connect PagerDuty as the incident platform
         az sre agent update --name myagent --resource-group myrg \\
@@ -4990,6 +4994,34 @@ def _response_plan_handler_fields(args):
     return handler
 
 
+def _response_plan_rejection_reasons(cli_ctx, agent_name, resource_group, platform, subagent):
+    """Explain a rejected plan. ARM only says "The extension configuration is invalid"
+    when the agent has no matching incident platform or the subagent doesn't exist."""
+    reasons = []
+    try:
+        agent = _arm_request(cli_ctx, "GET", _resolve_agent_resource_id(cli_ctx, agent_name, resource_group),
+                             API_VERSION) or {}
+        config = (agent.get("properties") or {}).get("incidentManagementConfiguration") or {}
+        configured = config.get("type") or "None"
+        if configured.lower() != platform.lower():
+            if platform == "AzMonitor":
+                fix = (f"az sre agent update -g {resource_group} -n {agent_name} "
+                       "--incident-management-configuration \"{type:AzMonitor}\"")
+            else:
+                fix = "az sre agent update --incident-management-configuration (see 'az sre agent update -h')"
+            reasons.append(
+                f"The agent's incident platform is '{configured}', not '{platform}'. Connect it first: {fix}")
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.debug("Could not read the agent's incident platform: %s", ex)
+    try:
+        _extension_resource_show(cli_ctx, agent_name, resource_group, "subagents", subagent)
+    except ResourceNotFoundError:
+        reasons.append(f"Subagent '{subagent}' doesn't exist. Create it first with 'az sre subagent create'.")
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.debug("Could not check subagent '%s': %s", subagent, ex)
+    return reasons
+
+
 @register_command("sre response-plan create")
 class ResponsePlanCreate(AAZCommand):
     """Create or update an incident response plan.
@@ -5071,9 +5103,20 @@ class ResponsePlanCreate(AAZCommand):
         flt.update(_response_plan_criteria(args))
         _validate_incident_filters_shape(flt)
         filter_body = {"name": name, "type": "IncidentFilter", "properties": flt}
-        result = {"filter": _incident_resource_create(
-            self.cli_ctx, agent_name, resource_group, "incidentFilters", name,
-            flt, _incident_filter_path(name), filter_body, overwrite)}
+        try:
+            result = {"filter": _incident_resource_create(
+                self.cli_ctx, agent_name, resource_group, "incidentFilters", name,
+                flt, _incident_filter_path(name), filter_body, overwrite)}
+        except ResourceExistsError:
+            raise
+        except Exception as ex:  # pylint: disable=broad-except
+            reasons = _response_plan_rejection_reasons(
+                self.cli_ctx, agent_name, resource_group, platform, flt["handlingAgent"])
+            if not reasons:
+                raise
+            raise CLIError(
+                f"Response plan '{name}' was not created. " + " ".join(reasons)
+                + f" Service error: {ex}") from ex
         handler_fields = _response_plan_handler_fields(args)
         if handler_fields:
             handler = {"id": name, "incidentFilterId": name, **handler_fields}

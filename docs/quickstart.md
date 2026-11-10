@@ -146,6 +146,18 @@ az sre skill create \
 Send high-severity Azure Monitor incidents to a subagent. Start in review mode, so the
 agent proposes actions and you approve each one. The subagent must already exist.
 
+A new agent has no incident platform set. Connect Azure Monitor first:
+
+```bash
+az sre agent update \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --name "$AGENT" \
+  --incident-management-configuration "{type:AzMonitor}"
+```
+
+Then create the plan:
+
 ```bash
 az sre response-plan create \
   --subscription "$SUBSCRIPTION_ID" \
