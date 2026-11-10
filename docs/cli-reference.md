@@ -1748,7 +1748,7 @@ Create or update a named sub-agent.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Sub-agent configuration as JSON. Required: instructions, handoffDescription, tools, mcpTools, commonTools, allowedSkills, allowParallelToolCalls. |
+| `--value` | String | Yes |  |  | Sub-agent configuration as JSON. Nonblank instructions must be at least 50 characters. Fields: instructions, handoffDescription, tools, mcpTools, commonTools, allowedSkills, allowParallelToolCalls. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 | `--pre-tool-use-script-file` | String | No |  |  | Path to a script file to run before every tool call this sub-agent makes (the portal's "Manage Hooks" > "Pre Tool Use" button inside the subagent dialog). Merged into --value.hooks.PreToolUse with matcher "(?s:.*)" (every tool), timeout 30s, failMode "block" -- pass --value.hooks directly instead for other matchers/timeouts. |
 
