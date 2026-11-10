@@ -1157,6 +1157,7 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
     def setUp(self):
         self.filters = {}
         self.handlers = {}
+        self.filter_error = None
         self.handler_error = None
         self.handler_path = "/api/v2/extendedAgent/incidentHandlers"
         for replacement in (
@@ -1173,12 +1174,16 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
     def _arm_create(self, cli_ctx, agent, group, extension_type, name, value, overwrite=False):
         if extension_type != "incidentFilters":
             raise ResourceNotFoundError("The ARM handler proxy is unavailable.")
+        if self.filter_error:
+            raise self.filter_error
         self.filters[name] = json.loads(value)
         return self._arm_show(cli_ctx, agent, group, extension_type, name)
 
     def _arm_show(self, cli_ctx, agent, group, extension_type, name):
         if extension_type != "incidentFilters":
             raise ResourceNotFoundError("The ARM handler proxy is unavailable.")
+        if name not in self.filters:
+            raise ResourceNotFoundError(f"Extension '{name}' not found.")
         return {"name": name, "properties": {"value": copy.deepcopy(self.filters[name])}}
 
     def _arm_list(self, cli_ctx, agent, group, extension_type):
@@ -1226,6 +1231,13 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
                 "disabled": True, "instructions": "Check logs", **overrides,
             })
 
+    @staticmethod
+    def _forbidden():
+        response = Response()
+        response.status_code = 403
+        response._content = b"Forbidden"
+        return HTTPError("Forbidden", response=response)
+
     def test_create_persists_instructions_and_default_show_reads_the_linked_handler(self):
         from azext_sre.custom import ResponsePlanShow
         self._create(processing_guide=["Read metrics"])
@@ -1262,6 +1274,41 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
         self.assertEqual(
             self._command(ResponsePlanShow)["handlers"][0]["customInstructions"], "Check dependencies")
 
+    def test_instructions_only_update_succeeds_without_writing_the_filter(self):
+        from azext_sre.custom import ResponsePlanUpdate
+        self._create(instructions=None)
+        self.filter_error = self._forbidden()
+        result = self._command(ResponsePlanUpdate, instructions="Check dependencies")
+        self.assertEqual(self.handlers["plan"]["customInstructions"], "Check dependencies")
+        self.assertEqual(result["filter"]["properties"], self.filters["plan"])
+
+    def test_instructions_only_update_of_a_missing_plan_saves_nothing(self):
+        from azext_sre.custom import ResponsePlanUpdate
+        with self.assertRaises(ResourceNotFoundError):
+            self._command(ResponsePlanUpdate, instructions="Check dependencies")
+        self.assertEqual(self.handlers, {})
+
+    def test_update_leaves_the_filter_unchanged_when_reading_instructions_fails(self):
+        from azext_sre.custom import ResponsePlanUpdate
+        self._create(instructions=None)
+        saved_filter = copy.deepcopy(self.filters["plan"])
+        with patch("azext_sre.custom._data_plane_request", side_effect=self._forbidden()), \
+             self.assertRaises(HTTPError):
+            self._command(ResponsePlanUpdate, mode="autonomous", instructions="Check dependencies")
+        self.assertEqual(self.filters["plan"], saved_filter)
+
+    def test_failed_instruction_save_reports_only_filter_changes_that_were_saved(self):
+        from azext_sre.custom import ResponsePlanUpdate
+        self._create(instructions=None)
+        self.handler_error = self._forbidden()
+        with self.subTest("mixed update"), \
+             self.assertRaisesRegex(CLIError, r"\(agentMode, priorities\) were saved"):
+            self._command(
+                ResponsePlanUpdate, mode="autonomous", priorities=["Sev0"], instructions="Check dependencies")
+        self.assertEqual(self.filters["plan"]["agentMode"], "autonomous")
+        with self.subTest("instructions only"), self.assertRaises(HTTPError):
+            self._command(ResponsePlanUpdate, instructions="Check dependencies")
+
     def test_delete_removes_all_linked_handlers_without_touching_another_plan(self):
         from azext_sre.custom import ResponsePlanDelete
         self._create()
@@ -1284,10 +1331,7 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
         self.assertEqual(self.handlers["plan"], existing)
 
     def test_create_reports_partial_failure_when_the_agent_rejects_instructions(self):
-        response = Response()
-        response.status_code = 403
-        response._content = b"Forbidden"
-        self.handler_error = HTTPError("Forbidden", response=response)
+        self.handler_error = self._forbidden()
         with self.assertRaisesRegex(CLIError, "created, but its instructions were not saved"):
             self._create()
         self.assertIn("plan", self.filters)

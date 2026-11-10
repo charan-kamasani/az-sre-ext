@@ -1056,6 +1056,14 @@ token for `https://azuresre.dev`. The caller needs the appropriate SRE Agent
 data-plane role as well as ARM read access. Filter lists return a `value`
 collection; handler lists return an array.
 
+`response-plan update` saves the filter and the instructions as two separate,
+non-atomic writes. It finishes every read and check first, writes the filter
+only when a filter option is passed, and then writes the instructions. An
+instructions-only update still reads the filter, so a missing plan fails
+before anything is saved. If the instructions write fails after the filter
+was saved, the command fails and names the saved filter fields; re-run it
+with only `--instructions` or `--processing-guide` to retry.
+
 Earlier filter ARM requests returned "The extension configuration is invalid".
 Live testing showed the filter ARM routes work. The failures came from agents with
 no incident platform configured, or a `handlingAgent` that did not exist, with
