@@ -3883,7 +3883,7 @@ class ConnectorListSecretAliasTests(unittest.TestCase):
             operation_class = command.AgentsConnectorsCreateOrUpdate
             operation = operation_class.__new__(operation_class)
             seen = {}
-            parent = operation_class.__mro__[2]
+            parent = operation_class.__bases__[1]
             with patch.object(
                 parent, "__call__", lambda self, *a, **kw: seen.update(kw) or "ok"
             ):
@@ -3902,6 +3902,7 @@ class ConnectorListSecretAliasTests(unittest.TestCase):
         ):
             custom._extension_resource_create(None, "a", "rg", "pluginMarketplaces", "m", "{}")
         self.assertEqual(levels, [logging.CRITICAL])
+
 
 class IdentityAndSupportedAgentModelRegistrationTests(unittest.TestCase):
     """'sre identity'/'sre agent list-models' are thin re-registrations
