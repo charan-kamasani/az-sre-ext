@@ -363,6 +363,38 @@ class ConnectorConsentStatusTests(unittest.TestCase):
         self.assertIn("conn-mcp", message)
 
 
+class HttpTraceSuppressionTests(unittest.TestCase):
+    def _logged_body(self, secret):
+        import logging
+        from azext_sre import custom
+        from azure.cli.core import util
+
+        request = SimpleNamespace(url="https://x", method="PUT", headers={}, body=secret)
+        logger = logging.getLogger("cli.azure.cli.core.util")
+        records = []
+        handler = logging.Handler()
+        handler.emit = records.append
+        logger.addHandler(handler)
+        previous = logger.level
+        logger.setLevel(logging.DEBUG)
+        try:
+            with custom._no_http_trace():
+                util._log_request(request)
+            inside = [r.getMessage() for r in records]
+            records.clear()
+            util._log_request(request)
+            after = [r.getMessage() for r in records]
+            return inside, after
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous)
+
+    def test_body_not_logged_inside_and_logged_after(self):
+        inside, after = self._logged_body("ghp_secret")
+        self.assertFalse(any("ghp_secret" in m for m in inside))
+        self.assertTrue(any("ghp_secret" in m for m in after))
+
+
 class ArgValueTests(unittest.TestCase):
     def test_undefined_becomes_none(self):
         from azure.cli.core.aaz import AAZUndefined

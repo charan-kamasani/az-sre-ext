@@ -28,7 +28,9 @@
 # pylint: disable=protected-access
 
 import base64
+import contextlib
 import json
+import logging
 import os
 import re
 import uuid
@@ -324,6 +326,20 @@ def _redact_auth_result(auth_result):
             if value.get(secret_key):
                 value[secret_key] = "******"
     return redacted
+
+
+@contextlib.contextmanager
+def _no_http_trace():
+    """Keep --debug from printing request and response bodies that carry a
+    token. Azure CLI logs them from send_raw_request, so silence that logger
+    for the duration of the call."""
+    http_logger = logging.getLogger("cli.azure.cli.core.util")
+    previous = http_logger.level
+    http_logger.setLevel(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        http_logger.setLevel(previous)
 
 
 # Local file the data-plane `sre` CLI (separate deliverable, not an az
@@ -6197,10 +6213,11 @@ class RepoConnect(AAZCommand):
                 auth_value = json.dumps({"authType": "Pat", "pat": token})
             finally:
                 token = None
-            auth_result = _extension_resource_create(
-                self.cli_ctx, agent_name, resource_group, "githubAuths", "github_com",
-                auth_value, overwrite=True,
-            )
+            with _no_http_trace():
+                auth_result = _extension_resource_create(
+                    self.cli_ctx, agent_name, resource_group, "githubAuths", "github_com",
+                    auth_value, overwrite=True,
+                )
             repo_type = "GitHub"
         else:
             from urllib.parse import urlparse
@@ -6230,7 +6247,8 @@ class RepoConnect(AAZCommand):
                 auth_value = json.dumps(auth_dict)
             else:
                 try:
-                    pat = _devops_pat_token(self.cli_ctx, organization, f"sre-agent-{agent_name}")
+                    with _no_http_trace():
+                        pat = _devops_pat_token(self.cli_ctx, organization, f"sre-agent-{agent_name}")
                 except Exception as ex:
                     if "DisablePatCreationPolicyViolation" in str(ex):
                         raise CLIError(
@@ -6244,10 +6262,11 @@ class RepoConnect(AAZCommand):
                     auth_value = json.dumps({"authType": "Pat", "pat": pat})
                 finally:
                     pat = None
-            auth_result = _extension_resource_create(
-                self.cli_ctx, agent_name, resource_group, "azureDevOpsAuths", organization,
-                auth_value, overwrite=True,
-            )
+            with _no_http_trace():
+                auth_result = _extension_resource_create(
+                    self.cli_ctx, agent_name, resource_group, "azureDevOpsAuths", organization,
+                    auth_value, overwrite=True,
+                )
             repo_type = "AzureDevOps"
 
         repo_body = {"url": repo_url, "type": repo_type, "description": display_name}

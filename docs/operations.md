@@ -168,7 +168,8 @@ az sre connector delete -g myrg --agent-name myagent --name my-kusto-connector -
 
 `list-secret` prints secrets in plain text. It disables HTTP tracing for its
 own request, so `--debug` doesn't log them, but anything you pipe or save is
-yours to protect. Avoid `--debug` on other commands against real data: it can
+yours to protect. `repo connect` also keeps the token it sends out of the
+`--debug` logs. Avoid `--debug` on other commands against real data: it can
 print secrets in request and response bodies.
 
 `--data-connector-type` also accepts the product's own friendly names
