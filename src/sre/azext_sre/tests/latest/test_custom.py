@@ -3143,6 +3143,8 @@ class ShowNetworkTests(unittest.TestCase):
         self.assertEqual(calls, [("GET", self._ID, "2026-11-01-preview")])
         self.assertEqual(result["sandboxConfiguration"], {"egress": {"mode": "Limited"}})
         self.assertIsNone(result["vnetConfiguration"])
+        # The live ARM response has no resourceGroup field; it comes from the ID.
+        self.assertEqual(result["resourceGroup"], "rg")
         self.assertNotIn("displayName", result)
 
     def test_missing_agent_raises(self):
