@@ -129,6 +129,7 @@ from azext_sre.custom import (
     _IcmIncidentPlatformGateMixin,
     _show_internal_features,
     _listed_connector_types,    _resolve_signed_in_user_object_id,
+    _ExperimentalSettingsOnCreateMixin,
     MICROSOFT_FIRST_PARTY_TENANT_IDS,
 )
 
@@ -1487,6 +1488,40 @@ class IncidentDataPlaneTests(unittest.TestCase):
                 with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
                      self.assertRaises(CLIError):
                     command._handler(None)
+
+    def test_max_investigation_attempts_is_sent_and_validated(self):
+        from azext_sre.custom import ResponsePlanCreate, ResponsePlanUpdate
+        base = dict(
+            agent_name="a", resource_group="rg", extension_name="plan", platform="AzMonitor",
+            subagent="meta_agent", priorities=None, title_contains=None, title_not_contains=None,
+            incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None,
+            merge_window_hours=None, mode="autonomous", disabled=None, instructions=None,
+            processing_guide=None, overwrite=None)
+        command = _bare_command(ResponsePlanCreate, **base, max_investigation_attempts=2)
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._incident_resource_create", return_value={}) as create, \
+             patch("azext_sre.custom._extension_resource_list", return_value={"value": []}):
+            command._handler(None)
+        flt = create.call_args.args[5]
+        self.assertEqual((flt["handlingAgent"], flt["maxAutomatedInvestigationAttempts"]), ("meta_agent", 2))
+
+        existing = {"name": "plan", "properties": {"value": {"handlingAgent": "s"}}}
+        command = _bare_command(ResponsePlanUpdate, **{**base, "platform": None, "subagent": None,
+                                                       "mode": None}, max_investigation_attempts=5)
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._extension_resource_show", return_value=existing), \
+             patch("azext_sre.custom._incident_resource_create", return_value={}) as create:
+            command._handler(None)
+        self.assertEqual(create.call_args.args[5], {"handlingAgent": "s", "maxAutomatedInvestigationAttempts": 5})
+
+        for cls in (ResponsePlanCreate, ResponsePlanUpdate):
+            with self.subTest(cls=cls.__name__):
+                command = _bare_command(cls, **base, max_investigation_attempts=0)
+                with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+                     patch("azext_sre.custom._incident_resource_create") as create, \
+                     self.assertRaises(CLIError):
+                    command._handler(None)
+                create.assert_not_called()
 
     def test_list_table_format_mirrors_portal_columns(self):
         from azext_sre._transformers import response_plan_list_table_format
@@ -3001,7 +3036,7 @@ class HttpToolCreationPolicyTests(unittest.TestCase):
         shown = self._invoke(ToolShow, extension_name="mytool")
         listed = self._invoke(ToolList)
         self.assertEqual(shown["properties"]["value"], self._HTTP_TOOL)
-        self.assertEqual(listed["value"][0]["properties"]["value"], self._HTTP_TOOL)
+        self.assertEqual(listed[0]["properties"]["value"], self._HTTP_TOOL)
         self.assertEqual(self.resources, before)
         self.assertEqual(self.puts, [])
 
@@ -3053,7 +3088,7 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
     """
 
     def _assert_forwards(self, command_cls, extension_type, expected_call,
-                          args_kwargs, fake_result=None):
+                          args_kwargs, fake_result=None, expected_result=None):
         calls = {"create": [], "show": [], "list": [], "delete": []}
 
         def make_fake(name, *, needs_name=True):
@@ -3078,7 +3113,7 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
         self.assertEqual(actual[2], extension_type)
         self.assertEqual(actual[3:], call_args)
         self.assertEqual(sum(len(v) for v in calls.values()), 1)
-        self.assertEqual(result, fake_result)
+        self.assertEqual(result, fake_result if expected_result is None else expected_result)
 
     def test_tool_create_pins_extension_type_tools(self):
         self._assert_forwards(
@@ -3123,7 +3158,17 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
             SubagentList, "subagents",
             ("list", ({},)),
             {"agent_name": "myagent", "resource_group": "rg"},
-            fake_result={"value": []},
+            fake_result={"value": [{"name": "app-investigator"}]},
+            expected_result=[{"name": "app-investigator"}],
+        )
+
+    def test_skill_list_returns_a_bare_array(self):
+        self._assert_forwards(
+            SkillList, "skills",
+            ("list", ({},)),
+            {"agent_name": "myagent", "resource_group": "rg"},
+            fake_result={"value": [{"name": "triage"}]},
+            expected_result=[{"name": "triage"}],
         )
 
     def test_subagent_delete_pins_extension_type_subagents(self):
@@ -3139,7 +3184,15 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
             ("list", ({},)),
             {"agent_name": "myagent", "resource_group": "rg"},
             fake_result={"value": []},
+            expected_result=[],
         )
+
+    def test_hook_delete_prints_nothing(self):
+        command = _bare_command(HookDelete, agent_name="myagent", resource_group="rg", extension_name="h")
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._extension_resource_delete", return_value={}) as delete:
+            self.assertIsNone(command._handler({}))
+        delete.assert_called_once()
 
     def test_instructions_delete_pins_extension_type_common_prompts(self):
         self._assert_forwards(
@@ -3354,10 +3407,8 @@ class KnowledgeFacadeTests(unittest.TestCase):
 
 
 class UpdateNetworkMergeTests(unittest.TestCase):
-    """UpdateNetwork does a real read-modify-write at NETWORK_API_VERSION:
-    GET current properties, merge in only the networking fields the caller
-    supplied, PUT the whole object back -- proving unrelated existing
-    properties on the resource are preserved, not clobbered.
+    """UpdateNetwork PATCHes only the networking properties at
+    NETWORK_API_VERSION, so nothing else on the agent is written back.
     """
 
     _AGENT = {"id": "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"}
@@ -3372,16 +3423,22 @@ class UpdateNetworkMergeTests(unittest.TestCase):
             with self.assertRaises(CLIError):
                 command._handler({})
 
-    def test_merges_sandbox_configuration_preserving_unrelated_properties(self):
+    def test_patches_only_networking_properties_on_app_insights_agent(self):
         command = _bare_command(
             UpdateNetwork,
             name="myagent", resource_group="rg",
             vnet_configuration=None,
-            sandbox_configuration={"egress": {"mode": "Unrestricted"}},
+            sandbox_configuration={"egress": {"mode": "Limited"}},
         )
+        # Reads redact the connection string; writing this back fails with
+        # InvalidApplicationInsightsConfiguration.
         current = {
             "id": self._AGENT["id"],
-            "properties": {"displayName": "keep-me", "provisioningState": "Succeeded"},
+            "properties": {
+                "displayName": "keep-me", "provisioningState": "Succeeded",
+                "logConfiguration": {"applicationInsightsConfiguration": {
+                    "appId": "app-id", "connectionString": None}},
+            },
         }
         arm_calls = []
 
@@ -3389,29 +3446,46 @@ class UpdateNetworkMergeTests(unittest.TestCase):
             return self._AGENT
 
         def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
-            arm_calls.append({"method": method, "body": body})
-            return current if method == "GET" else body
+            arm_calls.append({"method": method, "body": body, "api_version": api_version})
+            if method == "PATCH":
+                return {**current, "properties": {**current["properties"], **body["properties"]}}
+            return current
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
              patch("azext_sre.custom._arm_request", fake_arm_request):
             result = command._handler({})
 
-        self.assertEqual(arm_calls[0]["method"], "GET")
-        put_body = arm_calls[1]["body"]
-        self.assertEqual(put_body["properties"]["displayName"], "keep-me")
-        self.assertEqual(
-            put_body["properties"]["sandboxConfiguration"], {"egress": {"mode": "Unrestricted"}},
-        )
-        self.assertNotIn("vnetConfiguration", put_body["properties"])
-        # Result is trimmed to the networking-relevant fields, not the
-        # entire parent agent object the PUT actually returns (usability
-        # fix -- every other extension command returns only its own scoped
-        # sub-resource).
+        self.assertEqual(arm_calls, [{
+            "method": "PATCH", "api_version": "2026-11-01-preview",
+            "body": {"properties": {"sandboxConfiguration": {"egress": {"mode": "Limited"}}}},
+        }])
+        # Result is trimmed to the networking-relevant fields.
         self.assertEqual(result["id"], self._AGENT["id"])
         self.assertEqual(result["provisioningState"], "Succeeded")
-        self.assertEqual(result["sandboxConfiguration"], {"egress": {"mode": "Unrestricted"}})
+        self.assertEqual(result["sandboxConfiguration"], {"egress": {"mode": "Limited"}})
         self.assertNotIn("displayName", result)
+
+    def test_reads_the_agent_back_when_patch_returns_no_body(self):
+        command = _bare_command(
+            UpdateNetwork,
+            name="myagent", resource_group="rg",
+            vnet_configuration={"subnet_resource_id": "/subnets/s"}, sandbox_configuration=None,
+        )
+        current = {"id": self._AGENT["id"], "properties": {"vnetConfiguration": {"subnetResourceId": "/subnets/s"}}}
+        methods = []
+
+        def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+            methods.append(method)
+            return {} if method == "PATCH" else current
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", lambda *a, **k: self._AGENT), \
+             patch("azext_sre.custom._arm_request", fake_arm_request):
+            result = command._handler({})
+
+        self.assertEqual(methods, ["PATCH", "GET"])
+        self.assertEqual(result["vnetConfiguration"], {"subnetResourceId": "/subnets/s"})
 
 
 class NetworkUpdateCliTests(unittest.TestCase):
@@ -3452,12 +3526,12 @@ class NetworkUpdateCliTests(unittest.TestCase):
             },
             "packages": None,
         }
-        puts = []
+        patches = []
 
         def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
-            if method == "PUT":
-                puts.append(body)
-                return body
+            if method == "PATCH":
+                patches.append(body)
+                return {"id": self._AGENT["id"], **body}
             return {"id": self._AGENT["id"], "properties": {}}
 
         with patch("azext_sre.custom._cli_invoke", lambda *a, **k: self._AGENT), \
@@ -3471,12 +3545,151 @@ class NetworkUpdateCliTests(unittest.TestCase):
                 code = ex.code
 
         self.assertEqual(code, 0)
-        self.assertEqual(puts[0]["properties"]["sandboxConfiguration"], {
+        self.assertEqual(patches[0]["properties"]["sandboxConfiguration"], {
             "egress": {
                 "mode": "Limited", "allowedHosts": ["a.example.com"],
                 "allowedRegistries": ["pypi"], "allowHttpMcpServerNetworkAccess": True,
             },
         })
+
+class ExperimentalSettingsOnCreateTests(unittest.TestCase):
+
+    class _Base:
+        def pre_operations(self):
+            pass
+
+        def post_operations(self):
+            pass
+
+    class _Command(_ExperimentalSettingsOnCreateMixin, _Base):
+        pass
+
+    def _command(self, **args):
+        cmd = self._Command()
+        cmd.cli_ctx = object()
+        cmd.ctx = SimpleNamespace(subscription_id="sub", args=SimpleNamespace(
+            resource_group="rg", agent_name="myagent", **args))
+        return cmd
+
+    def test_settings_are_patched_after_create(self):
+        cmd = self._command(experimental_settings={"EnableWorkspaceTools": True}, no_wait=False)
+        cmd.pre_operations()
+        with patch("azext_sre.custom._arm_request") as arm:
+            cmd.post_operations()
+        arm.assert_called_once_with(
+            cmd.cli_ctx, "PATCH", "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/agents/myagent",
+            ANY, body={"properties": {"experimentalSettings": {"EnableWorkspaceTools": True}}})
+
+    def test_no_request_without_settings_and_no_wait_is_rejected(self):
+        with patch("azext_sre.custom._arm_request") as arm:
+            self._command(experimental_settings=None, no_wait=False).post_operations()
+        arm.assert_not_called()
+        with self.assertRaisesRegex(CLIError, "--no-wait"):
+            self._command(experimental_settings={"A": True}, no_wait=True).pre_operations()
+
+
+class AgentUpdateCliTests(unittest.TestCase):
+    """Runs `agent update` through the real CLI with ARM faked at the HTTP layer."""
+
+    _ID = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg/providers/Microsoft.App/agents/myagent"
+
+    def setUp(self):
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        config_dir = stack.enter_context(tempfile.TemporaryDirectory())
+        stack.enter_context(patch.dict(os.environ, {
+            "AZURE_CONFIG_DIR": config_dir,
+            "AZURE_CORE_COLLECT_TELEMETRY": "no",
+            "AZURE_CORE_USE_COMMAND_INDEX": "no",
+            "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "no",
+        }))
+        stack.enter_context(patch("azure.cli.core._config.GLOBAL_CONFIG_DIR", config_dir))
+        extension = DevExtension("sre", str(Path(__file__).resolve().parents[3]))
+        stack.enter_context(patch.object(extension, "get_metadata", return_value={"version": "1.0.0b1"}))
+        stack.enter_context(patch("azure.cli.core.extension.get_extensions", return_value=[extension]))
+        stack.enter_context(patch("azure.cli.core.MainCommandsLoader._load_modules", return_value=[]))
+        stack.enter_context(patch("azure.cli.core.util.handle_version_update"))
+        stack.enter_context(patch("azure.cli.core.util.show_updates_available"))
+        token = SimpleNamespace(token="t", expires_on=4102444800)
+        credential = SimpleNamespace(get_token=lambda *a, **k: token, get_token_info=lambda *a, **k: token)
+        stack.enter_context(patch(
+            "azure.cli.core.aaz._command_ctx.AAZCommandCtx.get_login_credential", return_value=credential))
+        stack.enter_context(patch(
+            "azure.cli.core.commands.client_factory.get_subscription_id",
+            return_value="00000000-0000-0000-0000-000000000000"))
+        self.requests = []
+        self.agent = {
+            "id": self._ID, "name": "myagent", "location": "swedencentral", "tags": {},
+            "identity": {"type": "SystemAssigned"},
+            "properties": {
+                "provisioningState": "Succeeded", "upgradeChannel": "Stable",
+                "logConfiguration": {"applicationInsightsConfiguration": {
+                    "appId": "app-id", "connectionString": None}},
+            },
+        }
+        stack.enter_context(patch("requests.sessions.Session.request", self._fake_request))
+
+    def _fake_request(self, method, url, data=None, **kwargs):
+        body = json.loads(data) if data else None
+        self.requests.append((method, body))
+        if method in ("PUT", "PATCH"):
+            app_insights = ((body.get("properties") or {}).get("logConfiguration") or {}).get(
+                "applicationInsightsConfiguration")
+            if app_insights and not app_insights.get("connectionString"):
+                return self._response(400, {"error": {
+                    "code": "InvalidApplicationInsightsConfiguration",
+                    "message": "The AppId and ConnectionString fields must be provided together."}}, url)
+            self.agent["tags"] = body.get("tags", self.agent["tags"])
+        return self._response(200, self.agent, url)
+
+    @staticmethod
+    def _response(status, payload, url):
+        response = Response()
+        response.status_code = status
+        response._content = json.dumps(payload).encode()
+        response.raw = io.BytesIO(response._content)
+        response.headers["Content-Type"] = "application/json"
+        response.url = url
+        response.request = SimpleNamespace(method="GET", url=url, headers={})
+        return response
+
+    def _invoke(self, *arguments):
+        errors = io.StringIO()
+        try:
+            from contextlib import redirect_stderr
+            with redirect_stderr(errors):
+                code = get_default_cli().invoke([
+                    "sre", "agent", "update", "-g", "rg", "-n", "myagent", *arguments, "-o", "none",
+                ], out_file=io.StringIO())
+        except SystemExit as ex:
+            code = ex.code
+        return code, errors.getvalue()
+
+    def test_update_on_app_insights_agent_patches_without_the_redacted_link(self):
+        code, errors = self._invoke("--tags", "env=test")
+        self.assertEqual(code, 0, errors)
+        method, body = self.requests[-1]
+        self.assertEqual(method, "PATCH")
+        self.assertEqual(body["tags"], {"env": "test"})
+        self.assertNotIn("logConfiguration", body["properties"])
+
+    def test_new_log_configuration_is_sent_with_a_put(self):
+        code, errors = self._invoke(
+            "--log-configuration", "{application-insights-configuration:{app-id:new,connection-string:cs}}")
+        self.assertEqual(code, 0, errors)
+        method, body = self.requests[-1]
+        self.assertEqual(method, "PUT")
+        self.assertEqual(body["properties"]["logConfiguration"], {
+            "applicationInsightsConfiguration": {"appId": "new", "connectionString": "cs"}})
+
+    def test_experimental_settings_are_patched_in(self):
+        del self.agent["properties"]["logConfiguration"]
+        code, errors = self._invoke("--experimental-settings", '{"EnableWorkspaceTools": true}')
+        self.assertEqual(code, 0, errors)
+        method, body = self.requests[-1]
+        self.assertEqual(method, "PATCH")
+        self.assertEqual(body["properties"]["experimentalSettings"], {"EnableWorkspaceTools": True})
+
 
 class ShowNetworkTests(unittest.TestCase):
     _ID = "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"
@@ -3680,8 +3893,10 @@ class InternalFeatureHelpVisibilityTests(unittest.TestCase):
         for hidden in ("Icm", "Dgrep", "GenevaMetrics", "S360"):
             self.assertNotIn(hidden, third_party)
             self.assertIn(hidden, internal)
-        for unlisted in ("Kusto", "Documentation", "MonitorClient", "KnowledgeText"):
+        for unlisted in ("Kusto", "Documentation", "KnowledgeText"):
             self.assertNotIn(unlisted, internal)
+        self.assertIn("MonitorClient", third_party)
+        self.assertEqual(_normalize_data_connector_type(PORTAL_CONNECTOR_NAMES["MonitorClient"]), "MonitorClient")
         for retired in ("KustoDataIndexer", "TsgCrawler"):
             self.assertNotIn(retired, third_party)
             self.assertNotIn(retired, internal)

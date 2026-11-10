@@ -4,11 +4,10 @@
 egress for an SRE Agent. It is **hand-written, not generated** — there is
 no public Swagger for the api-version that actually supports these fields
 in production (`2026-11-01-preview`; see `NETWORK_API_VERSION` in
-`custom.py`). It performs a real ARM read-modify-write (GET then full PUT,
-matching the pattern the generated `agent update` command itself uses for
-every other property), replacing only the networking objects the caller
-supplied (`vnetConfiguration` or `sandboxConfiguration`, each as a whole)
-and leaving everything else on the resource untouched.
+`custom.py`). It sends an ARM PATCH carrying only the networking objects the
+caller supplied (`vnetConfiguration` or `sandboxConfiguration`), so the rest
+of the agent, including an Application Insights link whose connection string
+the service never returns, is left untouched.
 
 ## Inspect current networking configuration
 
@@ -30,12 +29,12 @@ az sre network update -g myrg --agent-name myagent \
   --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}"
 ```
 
-`--sandbox-configuration` replaces the agent's whole `sandboxConfiguration`.
-Any field you leave out is cleared, and the service doesn't restore its
-defaults. For example, the `Limited` command above leaves `example.com` as
-the only allowed host and clears the default registries, code repositories
-and `allowHttpMcpServerNetworkAccess`. To add a host and keep the rest,
-start from the current settings:
+The service merges `--sandbox-configuration` into the existing settings:
+fields you leave out keep their current values, and a list you pass, such as
+`allowed-hosts`, replaces that list. So the `Limited` command above makes
+`example.com` the only allowed host but keeps the default registries, code
+repositories and `allowHttpMcpServerNetworkAccess`. To add a host to the
+current list, start from the current settings:
 
 ```bash
 az sre network show -g myrg --agent-name myagent --query sandboxConfiguration > sandbox.json
