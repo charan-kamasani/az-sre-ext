@@ -92,20 +92,26 @@ the labels below.
 
 - **Your role on the agent.** The portal's Create agent wizard makes you SRE Agent
   Administrator on the new agent. `az sre agent create` does that only when you pass
-  `--grant-access-to-me admin`. Without an SRE Agent role, commands that call the agent's own
-  API fail with 403 "Access denied by PDP", even for a subscription Owner. To give yourself the
-  role later:
+  `--grant-access-to-me admin`. As in the portal, creating the agent and that role assignment
+  needs Owner, or Contributor plus User Access Administrator. Without an SRE Agent role,
+  commands that call the agent's own API fail with
+  `Forbidden(Forbidden: Access denied by PDP)`, even for a subscription Owner. To give yourself
+  the role later:
 
   ```bash
   az sre access grant -g "$RG" --agent-name "$AGENT" --role admin --assignee-me
   ```
 
-  A new role assignment took about 30 seconds to apply in testing.
+  A new role assignment took 10 to 30 seconds to apply in testing.
 - **The incident platform.** Learn says Azure Monitor connects automatically when you create an
-  agent in the portal. An agent created with `az sre agent create` had no incident platform in
-  testing, and `az sre response-plan create` failed with "The extension configuration is
-  invalid." until one was set. See
+  agent in the portal. An agent created with `az sre agent create` has no incident platform,
+  and `az sre response-plan create` fails until one is set. See
   [Connect your incident platform](#connect-your-incident-platform).
+- **The agent's identities.** The portal's wizard sets the agent's knowledge-graph and action
+  identities (`properties.knowledgeGraphConfiguration.identity` and
+  `properties.actionConfiguration.identity`) to the user-assigned identity it creates.
+  `az sre agent create` also creates a user-assigned identity, but sets neither unless you pass
+  `--knowledge-graph-configuration` and `--action-configuration`.
 - **Azure resource access.** When you add a subscription, resource group or management group,
   the portal assigns roles to the agent's identity and also adds the scope to the agent's
   managed resources (`properties.knowledgeGraphConfiguration.managedResources`).
@@ -123,9 +129,11 @@ This is the worked example for
 [Set up an incident trigger](https://learn.microsoft.com/azure/sre-agent/response-plan) cover the
 same flow, and their extra fields are included here.
 
-**Summary:** with Azure Monitor, every step works from the CLI except previewing matching
-incidents. With PagerDuty or ServiceNow, connect the platform in the portal, then create and
-manage response plans from the CLI.
+**Summary:** with Azure Monitor, every setup step works from the CLI except previewing matching
+incidents, and you follow incidents in the portal. With PagerDuty or ServiceNow, connect the
+platform in the portal, then create and manage response plans from the CLI.
+
+The commands below were tested on a new agent on 2026-11-10.
 
 ### Prerequisites
 
@@ -154,13 +162,14 @@ az sre subagent create -g "$RG" --agent-name "$AGENT" \
 | Step | Label | How |
 | --- | --- | --- |
 | Azure Monitor | CLI | Set the platform with the commands below. |
-| Azure Monitor: Monitoring Contributor for the agent's knowledge-graph identity | CLI | The portal does this when that identity is set. Command below. |
+| Azure Monitor: Monitoring Contributor for the agent's knowledge-graph identity | CLI | The portal does this when that identity is set. Agents created with `az sre agent create` don't have one. Command below. |
 | PagerDuty: enter the REST API access key | Portal | Incidents > Connect an incident platform > PagerDuty (`/views/incidents`). |
 | ServiceNow: enter the instance URL and credentials | Portal | Incidents > Connect an incident platform > ServiceNow (`/views/incidents`). |
 | Disconnect the current platform before you switch | Portal | Incidents, the platform's **...** menu > Disconnect. Response plans are kept. |
 | Quickstart response plan option | Portal | Offered when you connect a platform in the portal. Leave it off if you manage plans from the CLI, see [Remove the quickstart plan](#remove-the-quickstart-plan). |
 
-Set Azure Monitor as the incident platform, then check it:
+Set Azure Monitor as the incident platform, then check it. The second command prints
+`{"type": "AzMonitor"}`:
 
 ```bash
 az sre agent update -g "$RG" --agent-name "$AGENT" \
@@ -170,10 +179,17 @@ az sre agent show -g "$RG" --agent-name "$AGENT" \
   --query properties.incidentManagementConfiguration
 ```
 
+If the agent is linked to Application Insights, add the `--log-configuration` you linked it
+with, such as `--log-configuration "@log-configuration.json"`, to the `agent update` command.
+Without it, the command fails with `(InvalidApplicationInsightsConfiguration) The AppId and
+ConnectionString fields must be provided together.` because the update resends the whole agent,
+and Azure never returns the stored connection string.
+
 When Azure Monitor is the platform, the portal also gives the agent's knowledge-graph identity
-Monitoring Contributor on the agent's subscription, if that identity is set. Find it with the
-first command. If it prints an identity, grant the role with the second command, which assigns
-Reader and Monitoring Contributor:
+Monitoring Contributor on the agent's subscription. Check for that identity with the first
+command below. On an agent created with `az sre agent create`, it prints nothing, so skip the
+grant. If it prints an identity, grant the role with the second command, which assigns Reader
+and Monitoring Contributor:
 
 ```bash
 az sre agent show -g "$RG" --agent-name "$AGENT" \
@@ -215,7 +231,8 @@ az sre response-plan create -g "$RG" --agent-name "$AGENT" \
   --instructions "Check deployments from the last 24 hours before anything else."
 ```
 
-For PagerDuty, match priorities instead:
+An agent has one incident platform at a time, and `--platform` must match it. If your agent is
+connected to PagerDuty instead, match PagerDuty priorities:
 
 ```bash
 az sre response-plan create -g "$RG" --agent-name "$AGENT" \
@@ -237,7 +254,7 @@ az sre response-plan show -g "$RG" --agent-name "$AGENT" --name sev1-checkout
 | --- | --- | --- |
 | Change severities, mode or other settings | CLI | `az sre response-plan update`. A list flag such as `--priority` replaces the whole list. |
 | Turn a plan off and on | CLI | `az sre response-plan disable`, `az sre response-plan enable` |
-| Delete a plan | CLI | `az sre response-plan delete` |
+| Delete a plan | CLI | `az sre response-plan delete -g "$RG" --agent-name "$AGENT" --name sev1-checkout --yes` when you no longer need it. It succeeds even when no plan has that name, so check the name with `az sre response-plan list`. |
 
 ```bash
 az sre response-plan update -g "$RG" --agent-name "$AGENT" \
@@ -247,16 +264,14 @@ az sre response-plan update -g "$RG" --agent-name "$AGENT" \
 
 az sre response-plan disable -g "$RG" --agent-name "$AGENT" --name sev1-checkout
 az sre response-plan enable -g "$RG" --agent-name "$AGENT" --name sev1-checkout
-
-az sre response-plan delete -g "$RG" --agent-name "$AGENT" --name p1-pagerduty --yes
 ```
 
 ### Remove the quickstart plan
 
 If you turned on the quickstart response plan while connecting a platform, it runs alongside
 your own plans and can send incidents to the wrong subagent or process them twice. The portal
-names it `quickstart_response_plan`, and `az sre response-plan create` warns when it's there.
-Delete it from the CLI, or in the portal on Triggers & response plans:
+names it `quickstart_response_plan`, and `az sre response-plan list` and `create` warn when
+it's there. Delete it from the CLI, or in the portal on Triggers & response plans:
 
 ```bash
 az sre response-plan delete -g "$RG" --agent-name "$AGENT" \
@@ -273,8 +288,10 @@ az sre response-plan delete -g "$RG" --agent-name "$AGENT" \
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `response-plan create` fails with "The extension configuration is invalid." | The agent has no incident platform, the platform doesn't match `--platform`, or `--subagent` doesn't exist. | Set the platform as above and check the subagent with `az sre subagent list -g "$RG" --agent-name "$AGENT"`. |
-| 403 "Access denied by PDP" | You have no SRE Agent role on the agent. | `az sre access grant -g "$RG" --agent-name "$AGENT" --role admin --assignee-me`, then wait about 30 seconds. |
+| `The agent rejected the incident filter: ... Incident platform 'AzMonitor' does not match configured incident management type 'None'` | The agent has no incident platform (`'None'`), or `--platform` doesn't match the one it has. | Set the platform as above, or pass the agent's platform in `--platform`. |
+| `The agent rejected the incident filter: ... One or more configured handling agents do not exist.` | `--subagent` names a subagent that doesn't exist. | Check the name with `az sre subagent list -g "$RG" --agent-name "$AGENT"`. |
+| `Forbidden(Forbidden: Access denied by PDP)` | You have no SRE Agent role on the agent. | `az sre access grant -g "$RG" --agent-name "$AGENT" --role admin --assignee-me`, then wait about 30 seconds. |
+| `(InvalidApplicationInsightsConfiguration) The AppId and ConnectionString fields must be provided together.` from `agent update` | The agent is linked to Application Insights, and the update resends it without the connection string. | Add the same `--log-configuration` to the command, such as `--log-configuration "@log-configuration.json"`. |
 | "Response plan '...' was created, but its instructions were not saved" | The match rules were saved, then the instructions write to the agent's API failed. | Fix the access problem, then run `az sre response-plan update` with only `--instructions` or `--processing-guide`. |
 
 ## Get started
@@ -307,7 +324,7 @@ connections, and resource-group permission levels.
 | Step | Label | How |
 | --- | --- | --- |
 | Open the wizard and fill in Basics: subscription, resource group, name, region, model provider | CLI | Commands below. |
-| Basics: Application Insights, Create new | CLI | Create it with `az monitor app-insights component create`, then link it with `--log-configuration`. Without it the agent works, but has no trace view. |
+| Basics: Application Insights, Create new | CLI | Create a Log Analytics workspace and Application Insights, then link Application Insights with `--log-configuration`, below. Without it the agent works, but has no trace view. |
 | Review and Deploy | CLI | `az sre agent create`. Like the wizard, it also creates a user-assigned identity. |
 | Deploy: make you SRE Agent Administrator | CLI | `--grant-access-to-me admin` |
 | Open Set up your agent | Portal | Opens after deployment. Each card is a row below. |
@@ -334,12 +351,17 @@ az sre agent create -g "$RG" --agent-name "$AGENT" --location eastus2 \
   --grant-access-to-me admin
 ```
 
-To link Application Insights, as the wizard's Create new option does, create it first. Then
-pass its app ID and connection string in a file, because the connection string contains
-characters that inline values can't hold:
+To link Application Insights, as the wizard's Create new option does, create a Log Analytics
+workspace and Application Insights in the agent's resource group. Pass `--workspace`: without
+it, Azure creates a managed workspace in a separate resource group. The `az monitor app-insights`
+commands come from the `application-insights` extension, which the CLI offers to install the
+first time. Then pass the app ID and connection string in a file, because the connection string
+contains characters that inline values can't hold:
 
 ```bash
-az monitor app-insights component create -g "$RG" --app "$AGENT-insights" --location eastus2
+az monitor log-analytics workspace create -g "$RG" --workspace-name "$AGENT-logs" --location eastus2
+az monitor app-insights component create -g "$RG" --app "$AGENT-insights" --location eastus2 \
+  --workspace "$AGENT-logs"
 
 APP_ID="$(az monitor app-insights component show -g "$RG" --app "$AGENT-insights" --query appId -o tsv)"
 CONNECTION_STRING="$(az monitor app-insights component show -g "$RG" --app "$AGENT-insights" --query connectionString -o tsv)"
@@ -350,6 +372,9 @@ JSON
 az sre agent create -g "$RG" --agent-name "$AGENT" --location eastus2 \
   --log-configuration "@log-configuration.json" --grant-access-to-me admin
 ```
+
+Keep `log-configuration.json`. Later `az sre agent update` commands on a linked agent need the
+same `--log-configuration`; see [Connect your incident platform](#connect-your-incident-platform).
 
 ### Team onboarding
 
