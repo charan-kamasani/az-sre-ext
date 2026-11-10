@@ -1764,7 +1764,7 @@ class SubagentCreateValidationTests(unittest.TestCase):
         )._handler(None)
 
     def test_short_instructions_report_the_limit_without_mutating_resources(self):
-        for instructions in ("You are a helpful assistant. Be concise.", "private-prompt-" + "x" * 35):
+        for instructions in ("You are a helpful assistant. Be concise.", "private-prompt-" + "x" * 34):
             for overwrite in (False, True):
                 with self.subTest(length=len(instructions), overwrite=overwrite):
                     self.resources.clear()
@@ -1775,12 +1775,12 @@ class SubagentCreateValidationTests(unittest.TestCase):
                         self._create(json.dumps({"instructions": instructions}), overwrite=overwrite)
                     message = str(raised.exception)
                     self.assertIn("--value.instructions", message)
-                    self.assertRegex(message, r"longer than 50|at least 51")
+                    self.assertIn("at least 50 characters", message)
                     self.assertNotIn(instructions, message)
                     self.assertEqual(self.resources, before)
 
     def test_valid_instructions_and_stop_hooks_are_sent_without_rewriting(self):
-        for instructions in ("x" * 51, " " + "x" * 49 + " ", json.loads(self._VALID_VALUE)["instructions"]):
+        for instructions in ("x" * 50, " " + "x" * 48 + " ", json.loads(self._VALID_VALUE)["instructions"]):
             for overwrite in (False, True):
                 with self.subTest(length=len(instructions), overwrite=overwrite):
                     self.resources.clear()
