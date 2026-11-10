@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import re
+import sys
 import uuid
 from functools import partial
 from urllib.parse import quote
@@ -340,6 +341,25 @@ def _no_http_trace():
         yield
     finally:
         http_logger.setLevel(previous)
+
+
+def _warn_if_secret_typed(flag, safer):
+    """Warn when a secret was typed on the command line instead of read from
+    @file. Azure CLI loads @file after echoing the arguments, so sys.argv
+    still shows the raw form."""
+    argv = sys.argv[1:]
+    for index, arg in enumerate(argv):
+        if arg == flag and index + 1 < len(argv):
+            value = argv[index + 1]
+        elif arg.startswith(flag + "="):
+            value = arg[len(flag) + 1:]
+        else:
+            continue
+        if not value.startswith("@"):
+            logger.warning(
+                "%s was typed on the command line, so it shows up in --debug "
+                "output and shell history. Next time, %s.", flag, safer)
+        return
 
 
 # Local file the data-plane `sre` CLI (separate deliverable, not an az
@@ -1309,6 +1329,8 @@ class _ConnectorConvenienceArgsMixin:
             self._file_path_used = True
 
         bearer_token = _arg_value(getattr(args, "bearer_token", None))
+        if bearer_token:
+            _warn_if_secret_typed("--bearer-token", "read it from a file with --bearer-token @token.txt")
         managed_identity_auth = _arg_value(getattr(args, "managed_identity_auth", None))
         mi_token_scope = _arg_value(getattr(args, "mi_token_scope", None))
         oauth_dcr = _arg_value(getattr(args, "oauth_dcr", None))
@@ -6220,6 +6242,9 @@ class RepoConnect(AAZCommand):
         devops_federated_tenant_id = _arg_value(self.ctx.args.devops_federated_tenant_id)
 
         if provider == "GitHub":
+            if github_token:
+                _warn_if_secret_typed(
+                    "--github-token", "set GITHUB_TOKEN and leave the flag off, or use the browser sign-in")
             token = _github_token(explicit_token=github_token)
             try:
                 auth_value = json.dumps({"authType": "Pat", "pat": token})

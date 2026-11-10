@@ -173,7 +173,8 @@ tool, skill and plugin create commands also keep the secrets they send out of
 the `--debug` logs. `--debug` still echoes the command line, though, so a secret
 typed into a flag (`--github-token`, `--bearer-token`, `--value`) shows up there.
 Read it from a file instead (`--bearer-token @token.txt`, `--value @tool.json`),
-or for `repo connect` use `GITHUB_TOKEN` or the browser sign-in. Avoid `--debug` on
+or for `repo connect` use `GITHUB_TOKEN` or the browser sign-in. The CLI warns
+when `--github-token` or `--bearer-token` is typed directly. Avoid `--debug` on
 other commands against real data: it can print secrets in request and response
 bodies.
 

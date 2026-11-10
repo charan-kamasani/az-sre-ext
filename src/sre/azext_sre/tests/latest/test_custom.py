@@ -395,6 +395,24 @@ class HttpTraceSuppressionTests(unittest.TestCase):
         self.assertFalse(any("ghp_secret" in m for m in inside))
         self.assertTrue(any("ghp_secret" in m for m in after))
 
+    def test_warns_only_when_secret_is_typed(self):
+        from azext_sre import custom
+
+        cases = [
+            (["az", "--github-token", "ghp_x"], True),
+            (["az", "--github-token=ghp_x"], True),
+            (["az", "--github-token", "@token.txt"], False),
+            (["az", "--github-token=@token.txt"], False),
+            (["az", "--other", "x"], False),
+        ]
+        for argv, should_warn in cases:
+            with self.subTest(argv=argv), patch.object(custom.sys, "argv", argv), \
+                    patch.object(custom.logger, "warning") as warning:
+                custom._warn_if_secret_typed("--github-token", "use GITHUB_TOKEN")
+            self.assertEqual(warning.called, should_warn)
+            if should_warn:
+                self.assertNotIn("ghp_x", str(warning.call_args))
+
 
 class ArgValueTests(unittest.TestCase):
     def test_undefined_becomes_none(self):
