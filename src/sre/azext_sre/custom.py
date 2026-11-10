@@ -5076,10 +5076,15 @@ class ResponsePlanCreate(AAZCommand):
         return result
 
 
-def _response_plan_apply_filter_changes(cli_ctx, agent_name, resource_group, name, changes):
-    """Read the plan's filter through ARM, apply changes, write it back through ARM."""
-    existing = _incident_unwrap("filter", _extension_resource_show(
+def _response_plan_read_filter(cli_ctx, agent_name, resource_group, name):
+    return _incident_unwrap("filter", _extension_resource_show(
         cli_ctx, agent_name, resource_group, "incidentFilters", name))
+
+
+def _response_plan_apply_filter_changes(cli_ctx, agent_name, resource_group, name, changes, existing=None):
+    """Apply changes to the plan's filter, read through ARM unless given, and write it back through ARM."""
+    if existing is None:
+        existing = _response_plan_read_filter(cli_ctx, agent_name, resource_group, name)
     # ARM echoes unset fields as null, which the service rejects on write.
     properties = {k: v for k, v in (existing.get("properties") or {}).items() if v is not None}
     properties.update(changes)
@@ -5153,17 +5158,38 @@ class ResponsePlanUpdate(AAZCommand):
         handler_fields = _response_plan_handler_fields(args)
         if not changes and not handler_fields:
             raise CLIError("Nothing to update. Pass at least one option to change.")
-        result = {"filter": _response_plan_apply_filter_changes(
-            self.cli_ctx, agent_name, resource_group, name, changes)}
+        # The filter (ARM) and the instructions (agent API) are separate, non-atomic
+        # writes, so finish every read and check before the first one.
+        existing = _response_plan_read_filter(self.cli_ctx, agent_name, resource_group, name)
+        handler = None
         if handler_fields:
             handlers = _response_plan_handlers_for(self.cli_ctx, agent_name, resource_group, name)
             handler = dict(handlers[0]) if handlers else {"id": name, "incidentFilterId": name}
             handler.update(handler_fields)
             _validate_incident_handlers_shape(handler)
-            result["handler"] = _incident_resource_create(
-                self.cli_ctx, agent_name, resource_group, "incidentHandlers",
-                handler.get("id") or name, handler,
-                _incident_handler_path(handler.get("id") or name), handler, True)
+        result = {"filter": existing}
+        if changes:
+            result["filter"] = _response_plan_apply_filter_changes(
+                self.cli_ctx, agent_name, resource_group, name, changes, existing)
+        if handler is not None:
+            handler_id = handler.get("id") or name
+            try:
+                result["handler"] = _incident_resource_create(
+                    self.cli_ctx, agent_name, resource_group, "incidentHandlers", handler_id, handler,
+                    _incident_handler_path(handler_id), handler, True)
+            except Exception as ex:  # pylint: disable=broad-except
+                if not changes:
+                    raise
+                retry_flags = " and ".join(
+                    flag for flag, key in (
+                        ("--instructions", "customInstructions"),
+                        ("--processing-guide", "incidentProcessingGuide"))
+                    if key in handler_fields)
+                raise CLIError(
+                    f"Response plan '{name}' was only partly updated: its filter changes "
+                    f"({', '.join(sorted(changes))}) were saved, but saving its instructions failed. "
+                    f"Re-run the update with only {retry_flags} to retry them. Error: {ex}"
+                ) from ex
         return result
 
 
