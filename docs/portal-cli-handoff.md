@@ -179,11 +179,11 @@ az sre agent show -g "$RG" --agent-name "$AGENT" \
   --query properties.incidentManagementConfiguration
 ```
 
-If the agent is linked to Application Insights, add the `--log-configuration` you linked it
-with, such as `--log-configuration "@log-configuration.json"`, to the `agent update` command.
-Without it, the command fails with `(InvalidApplicationInsightsConfiguration) The AppId and
-ConnectionString fields must be provided together.` because the update resends the whole agent,
-and Azure never returns the stored connection string.
+If the agent is linked to Application Insights and `agent update` fails with
+`(InvalidApplicationInsightsConfiguration) The AppId and ConnectionString fields must be provided
+together.`, run it again with the `--log-configuration` you linked it with, such as
+`--log-configuration "@log-configuration.json"`. Azure never returns the stored connection
+string, so the CLI can't resend it for you.
 
 When Azure Monitor is the platform, the portal also gives the agent's knowledge-graph identity
 Monitoring Contributor on the agent's subscription. Check for that identity with the first
@@ -292,7 +292,7 @@ az sre response-plan delete -g "$RG" --agent-name "$AGENT" \
 | `One or more configured handling agents do not exist.` | `--subagent` names a subagent that doesn't exist. | Check the name with `az sre subagent list -g "$RG" --agent-name "$AGENT"`. |
 | `The extension configuration is invalid.` with no reason | Azure doesn't say why, and the CLI can't ask the agent's own API because you have no SRE Agent role. The cause is usually one of the two rows above. | Give yourself an SRE Agent role, see [Prerequisites](#prerequisites), and run the command again. The error then names the cause. |
 | `Forbidden(Forbidden: Access denied by PDP)` | You have no SRE Agent role on the agent. | `az sre access grant -g "$RG" --agent-name "$AGENT" --role admin --assignee-me`, then wait about 30 seconds. |
-| `(InvalidApplicationInsightsConfiguration) The AppId and ConnectionString fields must be provided together.` from `agent update` | The agent is linked to Application Insights, and the update resends it without the connection string. | Add the same `--log-configuration` to the command, such as `--log-configuration "@log-configuration.json"`. |
+| `(InvalidApplicationInsightsConfiguration) The AppId and ConnectionString fields must be provided together.` from `agent update` | The agent is linked to Application Insights, and the update sent the link without its connection string, which Azure never returns. | Add the same `--log-configuration` to the command, such as `--log-configuration "@log-configuration.json"`. |
 | "Response plan '...' was created, but its instructions were not saved" | The match rules were saved, then the instructions write to the agent's API failed. | Fix the access problem, then run `az sre response-plan update` with only `--instructions` or `--processing-guide`. |
 
 ## Get started

@@ -841,17 +841,12 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
     ServiceNow uses Basic Auth: set --connection-url to the instance URL
     and --connection-key to the credentials.
 
-    Agents created in the portal connect Azure Monitor automatically. An
-    agent created with 'az sre agent create' has no incident platform until
-    you set one, and 'az sre response-plan create' fails until then.
+    Azure Monitor needs no configuration here. It connects automatically
+    when the agent is created, and AzMonitor is the enum's implicit default.
 
     :example: Switch an agent's default model to MicrosoftFoundry
         az sre agent update --name myagent --resource-group myrg \\
             --default-model "{provider:MicrosoftFoundry,name:gpt-5}"
-
-    :example: Connect Azure Monitor as the incident platform
-        az sre agent update --name myagent --resource-group myrg \\
-            --incident-management-configuration "{type:AzMonitor}"
 
     :example: Connect PagerDuty as the incident platform
         az sre agent update --name myagent --resource-group myrg \\
