@@ -168,8 +168,15 @@ az sre connector delete -g myrg --agent-name myagent --name my-kusto-connector -
 
 `list-secret` prints secrets in plain text. It disables HTTP tracing for its
 own request, so `--debug` doesn't log them, but anything you pipe or save is
-yours to protect. Avoid `--debug` on other commands against real data: it can
-print secrets in request and response bodies.
+yours to protect. `repo connect`, `connector create`, `connector update` and the
+tool, skill and plugin create commands also keep the secrets they send out of
+the `--debug` logs. `--debug` still echoes the command line, though, so a secret
+typed into a flag (`--github-token`, `--bearer-token`, `--value`) shows up there.
+Read it from a file instead (`--bearer-token @token.txt`, `--value @tool.json`),
+or for `repo connect` use `GITHUB_TOKEN` or the browser sign-in. The CLI warns
+when `--github-token` or `--bearer-token` is typed directly. Avoid `--debug` on
+other commands against real data: it can print secrets in request and response
+bodies.
 
 `--data-connector-type` also accepts the product's own friendly names
 (`"Azure Data Explorer"`, `"MCP server"`, `"Office 365 Outlook"`, etc. — see
@@ -996,10 +1003,10 @@ something this extension adds.
 az sre repo connect --agent-name myagent --resource-group myrg \
   --repo-url https://github.com/contoso/my-service
 
-# Or pass a token explicitly (required in CI, where no browser is
-# available -- device flow cannot run unattended):
+# In CI, where no browser is available, set GITHUB_TOKEN first. The command
+# reads it directly, so the token never appears on the command line:
 az sre repo connect --agent-name myagent --resource-group myrg \
-  --repo-url https://github.com/contoso/my-service --github-token $env:GITHUB_TOKEN
+  --repo-url https://github.com/contoso/my-service
 ```
 
 ### `az sre automation`: group for scheduled tasks, HTTP triggers, and incident filters

@@ -28,9 +28,12 @@
 # pylint: disable=protected-access
 
 import base64
+import contextlib
 import json
+import logging
 import os
 import re
+import sys
 import uuid
 from functools import partial
 from urllib.parse import quote
@@ -334,6 +337,43 @@ def _redact_auth_result(auth_result):
             if value.get(secret_key):
                 value[secret_key] = "******"
     return redacted
+
+
+@contextlib.contextmanager
+def _no_http_trace():
+    """Keep Azure CLI's HTTP trace logging from printing bodies that carry a
+    secret. send_raw_request logs them on one logger and the AAZ pipeline logs
+    them on another, including on a retried request, so silence both for the
+    duration of the call."""
+    http_loggers = [logging.getLogger(name) for name in (
+        "cli.azure.cli.core.util", "cli.azure.cli.core.sdk.policies")]
+    previous = [http_logger.level for http_logger in http_loggers]
+    for http_logger in http_loggers:
+        http_logger.setLevel(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        for http_logger, level in zip(http_loggers, previous):
+            http_logger.setLevel(level)
+
+
+def _warn_if_secret_typed(flag, safer):
+    """Warn when a secret was typed on the command line instead of read from
+    @file. Azure CLI loads @file after echoing the arguments, so sys.argv
+    still shows the raw form."""
+    argv = sys.argv[1:]
+    for index, arg in enumerate(argv):
+        if arg == flag and index + 1 < len(argv):
+            value = argv[index + 1]
+        elif arg.startswith(flag + "="):
+            value = arg[len(flag) + 1:]
+        else:
+            continue
+        if not value.startswith("@"):
+            logger.warning(
+                "%s was typed on the command line, so it shows up in --debug "
+                "output and shell history. Next time, %s.", flag, safer)
+        return
 
 
 # Local file the data-plane `sre` CLI (separate deliverable, not an az
@@ -1302,6 +1342,8 @@ class _ConnectorConvenienceArgsMixin:
             self._file_path_used = True
 
         bearer_token = _arg_value(getattr(args, "bearer_token", None))
+        if bearer_token:
+            _warn_if_secret_typed("--bearer-token", "read it from a file with --bearer-token @token.txt")
         managed_identity_auth = _arg_value(getattr(args, "managed_identity_auth", None))
         mi_token_scope = _arg_value(getattr(args, "mi_token_scope", None))
         oauth_dcr = _arg_value(getattr(args, "oauth_dcr", None))
@@ -1415,6 +1457,13 @@ class _ConnectorExistenceGuardMixin:
         super().pre_operations()
 
 
+class _SecretHttpOperationMixin:
+    def __call__(self, *args, **kwargs):
+        kwargs["logging_enable"] = False
+        with _no_http_trace():
+            return super().__call__(*args, **kwargs)
+
+
 @register_command("sre connector create")
 class ConnectorCreate(
     _DataConnectorTypeArgMixin,
@@ -1432,11 +1481,11 @@ class ConnectorCreate(
         az sre connector create --agent-name myagent --resource-group myrg \\
             --name github --data-connector-type Mcp --github true
 
-    :example: Connect a custom MCP server with a bearer token
+    :example: Connect a custom MCP server with a bearer token read from a file
         az sre connector create --agent-name myagent --resource-group myrg \\
             --name mcp --data-connector-type Mcp \\
             --mcp-endpoint "https://myserver.contoso.com/mcp" \\
-            --bearer-token "$MY_SERVER_TOKEN"
+            --bearer-token @token.txt
 
     :example: Connect a custom MCP server with the agent's managed identity
         az sre connector create --agent-name myagent --resource-group myrg \\
@@ -1451,6 +1500,12 @@ class ConnectorCreate(
     """
 
     _args_schema = None
+
+    class AgentsConnectorsCreateOrUpdate(
+        _SecretHttpOperationMixin,
+        _GeneratedConnectorCreate.AgentsConnectorsCreateOrUpdate,
+    ):
+        pass
 
     def _output(self, *args, **kwargs):
         result = super()._output(*args, **kwargs)
@@ -1468,6 +1523,12 @@ class ConnectorUpdate(_DataConnectorTypeArgMixin, _GeneratedConnectorUpdate):
     """
 
     _args_schema = None
+
+    class AgentsConnectorsCreateOrUpdate(
+        _SecretHttpOperationMixin,
+        _GeneratedConnectorUpdate.AgentsConnectorsCreateOrUpdate,
+    ):
+        pass
 
     def _output(self, *args, **kwargs):
         result = super()._output(*args, **kwargs)
@@ -1632,12 +1693,6 @@ class _ConnectorNameAliasMixin:
         if connector_name is not None:
             connector_name._options = ["-n", "--name", "--connector-name"]
         return schema
-
-
-class _SecretHttpOperationMixin:
-    def __call__(self, *args, **kwargs):
-        kwargs["logging_enable"] = False
-        return super().__call__(*args, **kwargs)
 
 
 @register_command("sre connector list-secret")
@@ -4281,9 +4336,10 @@ def _with_direct_fallback(arm_func, direct_func, cli_ctx, agent_name, resource_g
 
 
 def _extension_resource_create(cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False):
-    return _with_direct_fallback(
-        _arm_extension_create, _direct_extension_create, cli_ctx, agent_name, resource_group,
-        extension_type, extension_name, raw_value, overwrite=overwrite)
+    with _no_http_trace():
+        return _with_direct_fallback(
+            _arm_extension_create, _direct_extension_create, cli_ctx, agent_name, resource_group,
+            extension_type, extension_name, raw_value, overwrite=overwrite)
 
 
 def _extension_resource_show(cli_ctx, agent_name, resource_group, extension_type, extension_name):
@@ -6153,10 +6209,9 @@ class RepoConnect(AAZCommand):
         az sre repo connect --agent-name myagent --resource-group myrg \\
             --repo-url https://github.com/contoso/my-service
 
-    :example: Connect a GitHub repo with a token
+    :example: Connect a GitHub repo in CI, with the token in GITHUB_TOKEN
         az sre repo connect --agent-name myagent --resource-group myrg \\
-            --repo-url https://github.com/contoso/my-service \\
-            --github-token $env:GITHUB_TOKEN
+            --repo-url https://github.com/contoso/my-service
 
     :example: Connect an Azure DevOps repo
         az sre repo connect --agent-name myagent --resource-group myrg \\
@@ -6244,6 +6299,9 @@ class RepoConnect(AAZCommand):
         devops_federated_tenant_id = _arg_value(self.ctx.args.devops_federated_tenant_id)
 
         if provider == "GitHub":
+            if github_token:
+                _warn_if_secret_typed(
+                    "--github-token", "set GITHUB_TOKEN and leave the flag off, or use the browser sign-in")
             token = _github_token(explicit_token=github_token)
             try:
                 auth_value = json.dumps({"authType": "Pat", "pat": token})
@@ -6282,7 +6340,8 @@ class RepoConnect(AAZCommand):
                 auth_value = json.dumps(auth_dict)
             else:
                 try:
-                    pat = _devops_pat_token(self.cli_ctx, organization, f"sre-agent-{agent_name}")
+                    with _no_http_trace():
+                        pat = _devops_pat_token(self.cli_ctx, organization, f"sre-agent-{agent_name}")
                 except Exception as ex:
                     if "DisablePatCreationPolicyViolation" in str(ex):
                         raise CLIError(
