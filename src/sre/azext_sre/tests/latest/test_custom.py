@@ -1437,6 +1437,43 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
         with self.subTest("instructions only"), self.assertRaises(HTTPError):
             self._command(ResponsePlanUpdate, instructions="Check dependencies")
 
+    def test_show_skips_instructions_when_the_agent_has_no_handler_route(self):
+        from azext_sre.custom import ResponsePlanShow, DataPlaneRouteUnavailableError
+        self._create()
+        with patch("azext_sre.custom._data_plane_request",
+                   side_effect=DataPlaneRouteUnavailableError("web page")):
+            shown = self._command(ResponsePlanShow)
+        self.assertEqual(shown["handlers"], [])
+        self.assertIn("plan", self.filters)
+
+    def test_delete_falls_back_to_the_agent_api_when_arm_forbids_it(self):
+        from azext_sre.custom import ResponsePlanDelete
+        self._create(instructions=None)
+        with patch("azext_sre.custom._extension_resource_delete", side_effect=self._forbidden()), \
+             patch("azext_sre.custom._direct_extension_delete", return_value=None) as direct:
+            self._command(ResponsePlanDelete)
+        self.assertEqual(direct.call_args.args[1:], ("agent", "rg", "incidentFilters", "plan"))
+
+    def test_delete_does_not_fall_back_on_other_arm_errors(self):
+        from azext_sre.custom import ResponsePlanDelete
+        self._create(instructions=None)
+        error = self._forbidden()
+        error.response.status_code = 500
+        with patch("azext_sre.custom._extension_resource_delete", side_effect=error), \
+             patch("azext_sre.custom._direct_extension_delete") as direct, \
+             self.assertRaises(HTTPError):
+            self._command(ResponsePlanDelete)
+        direct.assert_not_called()
+
+    def test_icm_plan_requires_an_incident_type_and_sends_the_portal_field(self):
+        with patch("azext_sre.custom._require_first_party"):
+            with self.assertRaisesRegex(CLIError, "--incident-type is required"):
+                self._create(platform="Icm")
+            self.assertEqual(self.filters, {})
+            self._create(platform="Icm", incident_types=["LiveSite"])
+        self.assertEqual(self.filters["plan"]["incidentTypes"], ["LiveSite"])
+        self.assertEqual(self.filters["plan"]["incidentType"], "LiveSite")
+
     def test_delete_removes_all_linked_handlers_without_touching_another_plan(self):
         from azext_sre.custom import ResponsePlanDelete
         self._create()
@@ -1692,6 +1729,17 @@ class IncidentDataPlaneTests(unittest.TestCase):
         self.assertEqual(request.call_args.args, (None, "PUT", "https://agent.example/api/plan"))
         self.assertEqual(request.call_args.kwargs["resource"], "https://azuresre.dev")
         self.assertEqual(json.loads(request.call_args.kwargs["body"]), {"id": "plan"})
+
+    def test_html_response_raises_a_clear_route_error(self):
+        from azext_sre.custom import DataPlaneRouteUnavailableError
+        response = Response()
+        response.status_code = 200
+        response.headers["Content-Type"] = "text/html; charset=utf-8"
+        response._content = b"<!doctype html><html></html>"
+        with patch("azext_sre.custom._resolve_agent_endpoint", return_value="https://agent.example"), \
+             patch("azext_sre.custom.send_raw_request", return_value=response), \
+             self.assertRaisesRegex(DataPlaneRouteUnavailableError, "web page"):
+            _data_plane_request(None, "agent", "rg", "GET", "/api/plan")
 
     def test_only_optional_404_is_suppressed(self):
         for code, missing_ok in ((404, True), (404, False), (403, True), (500, True)):

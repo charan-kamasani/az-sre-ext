@@ -1417,10 +1417,10 @@ Routes matching incidents to a subagent. Connect the incident platform and creat
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of the response plan. |
 | `--platform` | String | Yes |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. Icm is Microsoft-internal only. |
 | `--subagent` | String | Yes |  |  | Name of the existing subagent that handles matched incidents. |
-| `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all. |
+| `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2; IcM severities are plain numbers such as 3 4). Default: all. |
 | `--title-contains` | String | No |  |  | Only match incidents whose title contains this text. |
 | `--title-not-contains` | List | No |  |  | Space-separated texts; skip incidents whose title contains any of them. |
-| `--incident-type` | List | No |  |  | Space-separated incident types to match (for example LiveSite). Portal: Incident type. |
+| `--incident-type` | List | No |  |  | Space-separated incident types to match (for example LiveSite). Required with --platform Icm. Portal: Incident type. |
 | `--impacted-service` | String | No |  |  | Only match incidents for this service. Portal: Owning service. |
 | `--owning-team` | List | No |  |  | Space-separated owning team IDs (IcM team IDs are numeric). Portal: Owning team. |
 | `--merge-enabled` | Boolean | No |  | `false`, `true` | Merge related incidents into one investigation thread. Service default: true. |
@@ -1584,10 +1584,10 @@ Passing a list flag (for example --priority) replaces that whole list. Use 'enab
 | `--platform` | String | No |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. |
 | `--subagent` | String | No |  |  | Name of the existing subagent that handles matched incidents. |
 | `--mode` | String | No |  |  | Agent autonomy: autonomous or review. |
-| `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all. |
+| `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2; IcM severities are plain numbers such as 3 4). Default: all. |
 | `--title-contains` | String | No |  |  | Only match incidents whose title contains this text. |
 | `--title-not-contains` | List | No |  |  | Space-separated texts; skip incidents whose title contains any of them. |
-| `--incident-type` | List | No |  |  | Space-separated incident types to match (for example LiveSite). Portal: Incident type. |
+| `--incident-type` | List | No |  |  | Space-separated incident types to match (for example LiveSite). Required with --platform Icm. Portal: Incident type. |
 | `--impacted-service` | String | No |  |  | Only match incidents for this service. Portal: Owning service. |
 | `--owning-team` | List | No |  |  | Space-separated owning team IDs (IcM team IDs are numeric). Portal: Owning team. |
 | `--merge-enabled` | Boolean | No |  | `false`, `true` | Merge related incidents into one investigation thread. Service default: true. |
