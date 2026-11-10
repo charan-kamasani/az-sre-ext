@@ -12,19 +12,24 @@ rebuilt one.
 """
 
 import base64
+import io
 import copy
 import json
 import os
 import tempfile
 import types
 import unittest
+from contextlib import ExitStack
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from requests import HTTPError, Response
 
+from azure.cli.core import get_default_cli
 from azure.cli.core.aaz import AAZCommand, AAZUndefined
 from azure.cli.core.azclierror import CLIError, ResourceNotFoundError
+from azure.cli.core.extension import DevExtension
 from azure.cli.core.mock import DummyCli
 from azure.core.exceptions import ResourceExistsError
 
@@ -3236,6 +3241,35 @@ class UpdateNetworkMergeTests(unittest.TestCase):
         self.assertEqual(result["sandboxConfiguration"], {"egress": {"mode": "Unrestricted"}})
         self.assertNotIn("displayName", result)
 
+
+class NetworkUpdateCliTests(unittest.TestCase):
+    """Runs `network update` through the real Azure CLI parser, loading the
+    extension from source so CI doesn't need it installed."""
+
+    _AGENT = {"id": "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"}
+
+    def setUp(self):
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        config_dir = stack.enter_context(tempfile.TemporaryDirectory())
+        stack.enter_context(patch.dict(os.environ, {
+            "AZURE_CONFIG_DIR": config_dir,
+            "AZURE_CORE_COLLECT_TELEMETRY": "no",
+            "AZURE_CORE_USE_COMMAND_INDEX": "no",
+            "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "no",
+        }))
+        stack.enter_context(patch("azure.cli.core._config.GLOBAL_CONFIG_DIR", config_dir))
+        extension = DevExtension("sre", str(Path(__file__).resolve().parents[3]))
+        stack.enter_context(patch.object(extension, "get_metadata", return_value={"version": "1.0.0b1"}))
+        stack.enter_context(patch("azure.cli.core.extension.get_extensions", return_value=[extension]))
+        stack.enter_context(patch("azure.cli.core.MainCommandsLoader._load_modules", return_value=[]))
+        stack.enter_context(patch("azure.cli.core.util.handle_version_update"))
+        stack.enter_context(patch("azure.cli.core.util.show_updates_available"))
+        stack.enter_context(patch(
+            "requests.sessions.Session.request",
+            side_effect=AssertionError("This test must not use the network."),
+        ))
+
     def test_accepts_network_show_output_with_nulls(self):
         # Shape of `network show --query sandboxConfiguration` on a new agent.
         shown = {
@@ -3254,15 +3288,13 @@ class UpdateNetworkMergeTests(unittest.TestCase):
                 return body
             return {"id": self._AGENT["id"], "properties": {}}
 
-        from azure.cli.core import get_default_cli
-
         with patch("azext_sre.custom._cli_invoke", lambda *a, **k: self._AGENT), \
              patch("azext_sre.custom._arm_request", fake_arm_request):
             try:
                 code = get_default_cli().invoke([
                     "sre", "network", "update", "-g", "rg", "-n", "myagent",
                     "--sandbox-configuration", json.dumps(shown), "-o", "none",
-                ])
+                ], out_file=io.StringIO())
             except SystemExit as ex:
                 code = ex.code
 
@@ -3273,7 +3305,6 @@ class UpdateNetworkMergeTests(unittest.TestCase):
                 "allowedRegistries": ["pypi"], "allowHttpMcpServerNetworkAccess": True,
             },
         })
-
 
 class ShowNetworkTests(unittest.TestCase):
     _ID = "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"
