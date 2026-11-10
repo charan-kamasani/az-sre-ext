@@ -331,16 +331,20 @@ def _redact_auth_result(auth_result):
 
 @contextlib.contextmanager
 def _no_http_trace():
-    """Keep --debug from printing request and response bodies that carry a
-    token. Azure CLI logs them from send_raw_request, so silence that logger
-    for the duration of the call."""
-    http_logger = logging.getLogger("cli.azure.cli.core.util")
-    previous = http_logger.level
-    http_logger.setLevel(logging.CRITICAL)
+    """Keep Azure CLI's HTTP trace logging from printing bodies that carry a
+    secret. send_raw_request logs them on one logger and the AAZ pipeline logs
+    them on another, including on a retried request, so silence both for the
+    duration of the call."""
+    http_loggers = [logging.getLogger(name) for name in (
+        "cli.azure.cli.core.util", "cli.azure.cli.core.sdk.policies")]
+    previous = [http_logger.level for http_logger in http_loggers]
+    for http_logger in http_loggers:
+        http_logger.setLevel(logging.CRITICAL)
     try:
         yield
     finally:
-        http_logger.setLevel(previous)
+        for http_logger, level in zip(http_loggers, previous):
+            http_logger.setLevel(level)
 
 
 def _warn_if_secret_typed(flag, safer):
@@ -1447,7 +1451,8 @@ class _ConnectorExistenceGuardMixin:
 class _SecretHttpOperationMixin:
     def __call__(self, *args, **kwargs):
         kwargs["logging_enable"] = False
-        return super().__call__(*args, **kwargs)
+        with _no_http_trace():
+            return super().__call__(*args, **kwargs)
 
 
 @register_command("sre connector create")

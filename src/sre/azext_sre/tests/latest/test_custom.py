@@ -395,6 +395,57 @@ class HttpTraceSuppressionTests(unittest.TestCase):
         self.assertFalse(any("ghp_secret" in m for m in inside))
         self.assertTrue(any("ghp_secret" in m for m in after))
 
+    def test_retried_request_body_not_logged(self):
+        import logging
+        from unittest.mock import MagicMock
+        from azext_sre import custom
+        from azure.cli.core.sdk.policies import SafeNetworkTraceLoggingPolicy
+        from azure.core.pipeline import Pipeline
+        from azure.core.pipeline.policies import RetryPolicy
+        from azure.core.pipeline.transport import HttpTransport
+        from azure.core.rest import HttpRequest
+
+        statuses = [503, 200]
+
+        class _Transport(HttpTransport):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def open(self):
+                pass
+
+            def close(self):
+                pass
+
+            def send(self, request, **kwargs):
+                response = MagicMock(status_code=statuses.pop(0), headers={"Retry-After": "0"},
+                                     request=request)
+                response.text.return_value = "body"
+                return response
+
+        logger = logging.getLogger("cli.azure.cli.core.sdk.policies")
+        records = []
+        handler = logging.Handler()
+        handler.emit = records.append
+        logger.addHandler(handler)
+        previous = logger.level
+        logger.setLevel(logging.DEBUG)
+        try:
+            pipeline = Pipeline(_Transport(), [RetryPolicy(retry_backoff_factor=0),
+                                               SafeNetworkTraceLoggingPolicy()])
+            request = HttpRequest("PUT", "https://x", content="ghp_secret")
+            with custom._no_http_trace():
+                pipeline.run(request, logging_enable=False)
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous)
+        self.assertEqual(statuses, [])
+        self.assertFalse(any("ghp_secret" in r.getMessage() for r in records))
+        self.assertEqual(logger.level, previous)
+
     def test_warns_only_when_secret_is_typed(self):
         from azext_sre import custom
 
