@@ -39,6 +39,7 @@ from azext_sre.custom import (
     AgentSettingsShow,
     AgentSettingsUpdate,
     ConnectorCreate,
+    ConnectorUpdate,
     ConnectorList,
     GrantAccess,
     RevokeAccess,
@@ -3877,6 +3878,30 @@ class ConnectorListSecretAliasTests(unittest.TestCase):
             self.assertEqual(operation(logging_enable=True), "ok")
         self.assertIs(seen["logging_enable"], False)
 
+    def test_connector_create_and_update_writes_disable_tracing(self):
+        for command in (ConnectorCreate, ConnectorUpdate):
+            operation_class = command.AgentsConnectorsCreateOrUpdate
+            operation = operation_class.__new__(operation_class)
+            seen = {}
+            parent = operation_class.__mro__[2]
+            with patch.object(
+                parent, "__call__", lambda self, *a, **kw: seen.update(kw) or "ok"
+            ):
+                operation(logging_enable=True)
+            self.assertIs(seen["logging_enable"], False, command.__name__)
+
+    def test_extension_create_silences_http_trace(self):
+        import logging
+
+        from azext_sre import custom
+
+        logger = logging.getLogger("cli.azure.cli.core.util")
+        levels = []
+        with patch.object(
+            custom, "_with_direct_fallback", lambda *a, **kw: levels.append(logger.level) or "ok"
+        ):
+            custom._extension_resource_create(None, "a", "rg", "pluginMarketplaces", "m", "{}")
+        self.assertEqual(levels, [logging.CRITICAL])
 
 class IdentityAndSupportedAgentModelRegistrationTests(unittest.TestCase):
     """'sre identity'/'sre agent list-models' are thin re-registrations

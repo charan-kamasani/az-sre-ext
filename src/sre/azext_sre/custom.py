@@ -1422,6 +1422,12 @@ class _ConnectorExistenceGuardMixin:
         super().pre_operations()
 
 
+class _SecretHttpOperationMixin:
+    def __call__(self, *args, **kwargs):
+        kwargs["logging_enable"] = False
+        return super().__call__(*args, **kwargs)
+
+
 @register_command("sre connector create")
 class ConnectorCreate(
     _DataConnectorTypeArgMixin,
@@ -1459,6 +1465,12 @@ class ConnectorCreate(
 
     _args_schema = None
 
+    class AgentsConnectorsCreateOrUpdate(
+        _SecretHttpOperationMixin,
+        _GeneratedConnectorCreate.AgentsConnectorsCreateOrUpdate,
+    ):
+        pass
+
     def _output(self, *args, **kwargs):
         result = super()._output(*args, **kwargs)
         _connector_access_reminder(result)
@@ -1475,6 +1487,12 @@ class ConnectorUpdate(_DataConnectorTypeArgMixin, _GeneratedConnectorUpdate):
     """
 
     _args_schema = None
+
+    class AgentsConnectorsCreateOrUpdate(
+        _SecretHttpOperationMixin,
+        _GeneratedConnectorUpdate.AgentsConnectorsCreateOrUpdate,
+    ):
+        pass
 
     def _output(self, *args, **kwargs):
         result = super()._output(*args, **kwargs)
@@ -1639,12 +1657,6 @@ class _ConnectorNameAliasMixin:
         if connector_name is not None:
             connector_name._options = ["-n", "--name", "--connector-name"]
         return schema
-
-
-class _SecretHttpOperationMixin:
-    def __call__(self, *args, **kwargs):
-        kwargs["logging_enable"] = False
-        return super().__call__(*args, **kwargs)
 
 
 @register_command("sre connector list-secret")
@@ -4277,9 +4289,10 @@ def _with_direct_fallback(arm_func, direct_func, cli_ctx, agent_name, resource_g
 
 
 def _extension_resource_create(cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False):
-    return _with_direct_fallback(
-        _arm_extension_create, _direct_extension_create, cli_ctx, agent_name, resource_group,
-        extension_type, extension_name, raw_value, overwrite=overwrite)
+    with _no_http_trace():
+        return _with_direct_fallback(
+            _arm_extension_create, _direct_extension_create, cli_ctx, agent_name, resource_group,
+            extension_type, extension_name, raw_value, overwrite=overwrite)
 
 
 def _extension_resource_show(cli_ctx, agent_name, resource_group, extension_type, extension_name):
@@ -6213,11 +6226,10 @@ class RepoConnect(AAZCommand):
                 auth_value = json.dumps({"authType": "Pat", "pat": token})
             finally:
                 token = None
-            with _no_http_trace():
-                auth_result = _extension_resource_create(
-                    self.cli_ctx, agent_name, resource_group, "githubAuths", "github_com",
-                    auth_value, overwrite=True,
-                )
+            auth_result = _extension_resource_create(
+                self.cli_ctx, agent_name, resource_group, "githubAuths", "github_com",
+                auth_value, overwrite=True,
+            )
             repo_type = "GitHub"
         else:
             from urllib.parse import urlparse
@@ -6262,11 +6274,10 @@ class RepoConnect(AAZCommand):
                     auth_value = json.dumps({"authType": "Pat", "pat": pat})
                 finally:
                     pat = None
-            with _no_http_trace():
-                auth_result = _extension_resource_create(
-                    self.cli_ctx, agent_name, resource_group, "azureDevOpsAuths", organization,
-                    auth_value, overwrite=True,
-                )
+            auth_result = _extension_resource_create(
+                self.cli_ctx, agent_name, resource_group, "azureDevOpsAuths", organization,
+                auth_value, overwrite=True,
+            )
             repo_type = "AzureDevOps"
 
         repo_body = {"url": repo_url, "type": repo_type, "description": display_name}
