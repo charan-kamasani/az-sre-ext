@@ -326,6 +326,9 @@ def render_reference(reference=None) -> str:
         "",
         "## Important caveats",
         "",
+        "- Some setup steps need the SRE Agent portal. The [portal and CLI handoff "
+        "guide](portal-cli-handoff.md) goes through each Microsoft Learn tutorial step "
+        "by step and gives the `az sre` command or the portal page for each one.",
         "- This CLI uses both the control plane (`Microsoft.App/agents` ARM "
         "resource) and the agent's own data plane (`*.azuresre.ai`). The route "
         "depends on the operation and tenant. See the [operations guide](operations.md).",

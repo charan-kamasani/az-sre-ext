@@ -754,21 +754,28 @@ class Create(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GrantAccess
 class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GeneratedUpdate):
     """Update an SRE Agent.
 
-    PagerDuty matches the portal's Incidents > Connect an incident platform
-    > PagerDuty workflow. It uses an ARM PATCH on the agent resource, not
-    the separate Connector Gateway used by Jira, Slack and SharePoint.
-    --connection-key is the PagerDuty REST API access key; --obo-user is
-    the identity the agent acts under when resolving or commenting on incidents.
+    PagerDuty and ServiceNow set the same agent property as the portal's
+    Incidents > Connect an incident platform workflow, not the separate
+    Connector Gateway used by Jira, Slack and SharePoint. The portal also
+    saves which PagerDuty services or ServiceNow assignment group to index;
+    set that in the portal. --connection-key is the PagerDuty REST API
+    access key; --obo-user is the identity the agent acts under when
+    resolving or commenting on incidents.
 
     ServiceNow uses Basic Auth: set --connection-url to the instance URL
     and --connection-key to the credentials.
 
-    Azure Monitor needs no configuration here -- it connects automatically
-    when the agent is created, with AzMonitor as the enum's implicit default.
+    Agents created in the portal connect Azure Monitor automatically. An
+    agent created with 'az sre agent create' has no incident platform until
+    you set one, and 'az sre response-plan create' fails until then.
 
     :example: Switch an agent's default model to MicrosoftFoundry
         az sre agent update --name myagent --resource-group myrg \\
             --default-model "{provider:MicrosoftFoundry,name:gpt-5}"
+
+    :example: Connect Azure Monitor as the incident platform
+        az sre agent update --name myagent --resource-group myrg \\
+            --incident-management-configuration "{type:AzMonitor}"
 
     :example: Connect PagerDuty as the incident platform
         az sre agent update --name myagent --resource-group myrg \\

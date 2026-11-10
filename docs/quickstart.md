@@ -144,9 +144,19 @@ az sre skill create \
 ## Route incidents to the agent
 
 Send high-severity Azure Monitor incidents to a subagent. Start in review mode, so the
-agent proposes actions and you approve each one. The subagent must already exist.
+agent proposes actions and you approve each one. The subagent must already exist; to create
+one, see the [portal and CLI handoff guide](portal-cli-handoff.md#prerequisites).
+
+An agent created with `az sre agent create` has no incident platform, and
+`az sre response-plan create` fails until it has one. Connect Azure Monitor first:
 
 ```bash
+az sre agent update \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --name "$AGENT" \
+  --incident-management-configuration "{type:AzMonitor}"
+
 az sre response-plan create \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
@@ -158,7 +168,9 @@ az sre response-plan create \
   --mode review
 ```
 
-Pause the plan without deleting it with `az sre response-plan disable`.
+Pause the plan without deleting it with `az sre response-plan disable`. For PagerDuty or
+ServiceNow, and for the steps that still need the portal, see
+[Step 4: Set up incident response](portal-cli-handoff.md#step-4-set-up-incident-response).
 
 ## Clean up
 
@@ -180,6 +192,8 @@ az group delete \
 ## Next steps
 
 - [CLI reference](cli-reference.md): every command, option and example
+- [Portal and CLI handoff guide](portal-cli-handoff.md): each Microsoft Learn tutorial step, with
+  the command to run or the portal page to use
 - [Connector types](connector-types.md): the values for `--data-connector-type`
 - [Operations guide](operations.md): connectors, networking, RBAC and incident handling in depth
 - Questions or bugs: [open an issue](https://github.com/charan-kamasani/az-sre-ext/issues)

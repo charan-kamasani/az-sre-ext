@@ -14,6 +14,7 @@ Public surface: **24 groups** and **78 commands**.
 
 ## Important caveats
 
+- Some setup steps need the SRE Agent portal. The [portal and CLI handoff guide](portal-cli-handoff.md) goes through each Microsoft Learn tutorial step by step and gives the `az sre` command or the portal page for each one.
 - This CLI uses both the control plane (`Microsoft.App/agents` ARM resource) and the agent's own data plane (`*.azuresre.ai`). The route depends on the operation and tenant. See the [operations guide](operations.md).
 - This reference includes the complete command surface, including Microsoft-internal options where documented. Interactive help can hide those options for other tenants; generation does not depend on your signed-in account.
 - The overall noun/verb shape (why `agent` isn't a wrapper for every other noun, why there's one dedicated noun per runbook-extension type instead of a generic `extension --type`) is a deliberate decision with alternatives considered -- see the [shape design doc](shape-design.md).
@@ -355,7 +356,7 @@ Stop a running SRE Agent.
 
 Update an SRE Agent.
 
-PagerDuty matches the portal's Incidents > Connect an incident platform > PagerDuty workflow. It uses an ARM PATCH on the agent resource, not the separate Connector Gateway used by Jira, Slack and SharePoint. --connection-key is the PagerDuty REST API access key; --obo-user is the identity the agent acts under when resolving or commenting on incidents. ServiceNow uses Basic Auth: set --connection-url to the instance URL and --connection-key to the credentials. Azure Monitor needs no configuration here -- it connects automatically when the agent is created, with AzMonitor as the enum's implicit default.
+PagerDuty and ServiceNow set the same agent property as the portal's Incidents > Connect an incident platform workflow, not the separate Connector Gateway used by Jira, Slack and SharePoint. The portal also saves which PagerDuty services or ServiceNow assignment group to index; set that in the portal. --connection-key is the PagerDuty REST API access key; --obo-user is the identity the agent acts under when resolving or commenting on incidents. ServiceNow uses Basic Auth: set --connection-url to the instance URL and --connection-key to the credentials. Agents created in the portal connect Azure Monitor automatically. An agent created with 'az sre agent create' has no incident platform until you set one, and 'az sre response-plan create' fails until then.
 
 **Syntax**
 
@@ -386,6 +387,12 @@ PagerDuty matches the portal's Incidents > Connect an incident platform > PagerD
   ```bash
   az sre agent update --name myagent --resource-group myrg \
   --default-model "{provider:MicrosoftFoundry,name:gpt-5}"
+  ```
+- Connect Azure Monitor as the incident platform
+
+  ```bash
+  az sre agent update --name myagent --resource-group myrg \
+  --incident-management-configuration "{type:AzMonitor}"
   ```
 - Connect PagerDuty as the incident platform
 
