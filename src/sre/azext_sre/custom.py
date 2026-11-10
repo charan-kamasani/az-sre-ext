@@ -53,6 +53,7 @@ from urllib.parse import quote
 import requests
 
 from azure.cli.core.aaz import (
+    AAZArgEnum,
     AAZBoolArg,
     AAZCommand,
     AAZCommandGroup,
@@ -68,7 +69,7 @@ from azure.cli.core.aaz import (
     register_command_group,
 )
 from azure.cli.core.aaz._operation import AAZHttpOperation
-from azure.cli.core.azclierror import CLIError, ResourceNotFoundError
+from azure.cli.core.azclierror import CLIError, InvalidArgumentValueError, ResourceNotFoundError
 from azure.core.exceptions import ResourceExistsError
 from azure.cli.core.util import send_raw_request
 from azure.mgmt.core.tools import parse_resource_id
@@ -709,8 +710,43 @@ class _IcmIncidentPlatformGateMixin:
         super().pre_operations()
 
 
+class _ActionModeEnum(AAZArgEnum):
+    """The generated --action-configuration mode enum without 'ReadOnly'."""
+
+    def __init__(self, generated):
+        super().__init__({key: value for key, value in generated.items.items() if key.lower() != "readonly"})
+
+    def __getitem__(self, data):
+        if isinstance(data, str) and data.lower() == "readonly":
+            raise InvalidArgumentValueError(
+                f"--action-configuration mode '{data}' is not supported: the service rejects it "
+                "with (InvalidActionMode) even though the API specification lists it. "
+                f"Use one of: {', '.join(self.to_choices())}."
+            )
+        return super().__getitem__(data)
+
+
+class _ActionModeArgMixin:
+    """Rejects mode ReadOnly in --action-configuration on agent create/update.
+
+    WHY: the generated enum (from Swagger) lists Autonomous/ReadOnly/Review,
+    but the live service accepts only Autonomous and Review and rejects
+    ReadOnly with (InvalidActionMode) -- see docs/operations.md. Dropping it
+    from the choices fails while arguments are parsed, before 'agent create'
+    auto-creates a managed identity and before any request is sent. Remove
+    this mixin if the service starts accepting ReadOnly.
+    """
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        mode = schema.action_configuration.mode
+        mode.enum = _ActionModeEnum(mode.enum)
+        return schema
+
+
 @register_command("sre agent create")
-class Create(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
+class Create(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
     :example: Create an agent with an Anthropic default model
@@ -751,7 +787,7 @@ class Create(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GrantAccess
 
 
 @register_command("sre agent update")
-class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GeneratedUpdate):
+class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeArgMixin, _GeneratedUpdate):
     """Update an SRE Agent.
 
     PagerDuty matches the portal's Incidents > Connect an incident platform
