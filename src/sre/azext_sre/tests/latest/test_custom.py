@@ -45,6 +45,7 @@ from azext_sre.custom import (
     AgentSettingsUpdate,
     ConnectorCreate,
     ConnectorList,
+    _ConnectorPartnerTypeMixin,
     GrantAccess,
     RevokeAccess,
     ManagedResourceGrant,
@@ -1260,6 +1261,16 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
         response.status_code = 403
         response._content = b"Forbidden"
         return HTTPError("Forbidden", response=response)
+
+    def test_azure_monitor_criteria_are_sent_and_merged_on_update(self):
+        from azext_sre.custom import ResponsePlanUpdate
+        self._create(alert_id="/subscriptions/s/alertRules/r", target_resource_type="Microsoft.App/containerApps")
+        self.assertEqual(self.filters["plan"]["alertId"], "/subscriptions/s/alertRules/r")
+        self.assertEqual(self.filters["plan"]["azMonitorFilterSettings"],
+                         {"targetResourceType": "Microsoft.App/containerApps"})
+        self._command(ResponsePlanUpdate, target_resource="ca-api")
+        self.assertEqual(self.filters["plan"]["azMonitorFilterSettings"],
+                         {"targetResourceType": "Microsoft.App/containerApps", "targetResource": "ca-api"})
 
     def test_create_persists_instructions_and_default_show_reads_the_linked_handler(self):
         from azext_sre.custom import ResponsePlanShow
@@ -2583,6 +2594,98 @@ class HttpTriggersShapeValidationTests(unittest.TestCase):
             _encode_extension_value(raw, "httpTriggers")
         self.assertIn("--value.agentMode must be", str(raised.exception))
 
+    def test_agent_mode_is_case_insensitive_and_sent_lowercase(self):
+        encoded = _encode_extension_value(json.dumps({"agentPrompt": "x", "agentMode": "Review"}), "httpTriggers")
+        self.assertEqual(json.loads(base64.b64decode(encoded))["agentMode"], "review")
+
+
+class ScheduledTaskStatusTests(unittest.TestCase):
+
+    def _sent(self, value):
+        return json.loads(base64.b64decode(_encode_extension_value(json.dumps(value), "scheduledTasks")))
+
+    def test_is_enabled_false_is_sent_as_paused_status(self):
+        sent = self._sent({"cronExpression": "0 9 * * *", "agentPrompt": "x", "isEnabled": False})
+        self.assertEqual(sent["status"], "Paused")
+        self.assertNotIn("isEnabled", sent)
+        self.assertEqual(self._sent({"agentPrompt": "x", "isEnabled": True})["status"], "Active")
+
+    def test_conflicting_or_unknown_status_is_rejected(self):
+        with self.assertRaisesRegex(CLIError, "disagree"):
+            self._sent({"isEnabled": False, "status": "Active"})
+        with self.assertRaisesRegex(CLIError, "status must be one of"):
+            self._sent({"status": "Disabled"})
+
+    def test_pause_and_resume_write_back_the_task_with_the_new_status(self):
+        from azext_sre.custom import AutomationScheduledTaskPause, AutomationScheduledTaskResume
+
+        current = {"name": "t", "properties": {"value": {
+            "cronExpression": "0 9 * * *", "agentPrompt": "x", "agent": None, "status": "Active"}}}
+        for cls, status in ((AutomationScheduledTaskPause, "Paused"), (AutomationScheduledTaskResume, "Active")):
+            command = _bare_command(cls, agent_name="a", resource_group="rg", extension_name="t")
+            with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+                 patch("azext_sre.custom._extension_resource_show", return_value=json.loads(json.dumps(current))), \
+                 patch("azext_sre.custom._extension_resource_create", return_value={}) as create:
+                command._handler({})
+            args, kwargs = create.call_args
+            self.assertEqual(args[3:5], ("scheduledTasks", "t"))
+            self.assertEqual(json.loads(args[5]), {"cronExpression": "0 9 * * *", "agentPrompt": "x", "status": status})
+            self.assertTrue(kwargs["overwrite"])
+
+
+class EmptyExtensionListWarningTests(unittest.TestCase):
+
+    def _run(self, command):
+        with patch.dict(os.environ, {"AZSRE_EXTENSION_ROUTE": "arm"}), \
+             patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._resolve_agent_resource_id", return_value="/agents/a"), \
+             patch("azext_sre.custom._extension_arm_request", return_value={"value": []}), \
+             self.assertLogs("cli.azext_sre.custom", level="WARNING") as logs:
+            self.assertEqual(command._handler({}), [])
+        return logs.output
+
+    def test_empty_response_plan_list_warns_once(self):
+        from azext_sre.custom import ResponsePlanList
+        output = self._run(_bare_command(ResponsePlanList, agent_name="a", resource_group="rg", agent_url=None))
+        self.assertEqual(len(output), 1, output)
+        self.assertIn("No response plans found", output[0])
+
+    def test_empty_pinned_list_still_warns(self):
+        from azext_sre.custom import AutomationScheduledTaskList
+        output = self._run(_bare_command(AutomationScheduledTaskList, agent_name="a", resource_group="rg"))
+        self.assertEqual(len(output), 1, output)
+        self.assertIn("scheduledTasks", output[0])
+
+
+class HttpTriggerInvokeTests(unittest.TestCase):
+
+    def _invoke(self, value, payload=None):
+        from azext_sre.custom import AutomationHttpTriggerInvoke
+
+        command = _bare_command(AutomationHttpTriggerInvoke, agent_name="a", resource_group="rg",
+                                extension_name="hook", payload=payload)
+        response = SimpleNamespace(content=b"{}", json=lambda: {"success": True, "threadId": "t1"})
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._extension_resource_show",
+                   return_value={"name": "hook", "properties": {"value": value}}), \
+             patch("azext_sre.custom.send_raw_request", return_value=response) as send:
+            return command._handler({}), send
+
+    def test_posts_the_payload_to_the_trigger_url_with_the_agent_audience(self):
+        url = "https://a--1.x.swedencentral.azuresre.ai/api/v1/httptriggers/trigger/hook"
+        result, send = self._invoke({"triggerUrl": url, "triggerEnabled": True}, payload='{"alert": "x"}')
+        self.assertEqual(result["threadId"], "t1")
+        args, kwargs = send.call_args
+        self.assertEqual(args[1:3], ("POST", url))
+        self.assertEqual(kwargs["body"], '{"alert": "x"}')
+        self.assertEqual(kwargs["resource"], "https://azuresre.dev")
+
+    def test_refuses_unexpected_hosts_and_bad_payloads(self):
+        with self.assertRaisesRegex(CLIError, "unexpected"):
+            self._invoke({"triggerUrl": "https://evil.example.com/hook"})
+        with self.assertRaisesRegex(CLIError, "JSON"):
+            self._invoke({"triggerUrl": "https://a.azuresre.ai/hook"}, payload="not json")
+
 
 class ExtensionTypeEnumTests(unittest.TestCase):
     """Mirrors AgentExtensionsApiService.GetExtensionTypes() exactly (the
@@ -3587,6 +3690,15 @@ class ExperimentalSettingsOnCreateTests(unittest.TestCase):
         with self.assertRaisesRegex(CLIError, "--no-wait"):
             self._command(experimental_settings={"A": True}, no_wait=True).pre_operations()
 
+    def test_monthly_unit_limit_is_patched_after_create(self):
+        cmd = self._command(experimental_settings=None, monthly_unit_limit=1000, no_wait=False)
+        cmd.pre_operations()
+        with patch("azext_sre.custom._arm_request") as arm:
+            cmd.post_operations()
+        self.assertEqual(arm.call_args.kwargs["body"], {"properties": {"monthlyAgentUnitLimit": 1000}})
+        with self.assertRaisesRegex(CLIError, "negative"):
+            self._command(experimental_settings=None, monthly_unit_limit=-1, no_wait=False).pre_operations()
+
 
 class AgentUpdateCliTests(unittest.TestCase):
     """Runs `agent update` through the real CLI with ARM faked at the HTTP layer."""
@@ -3689,6 +3801,23 @@ class AgentUpdateCliTests(unittest.TestCase):
         method, body = self.requests[-1]
         self.assertEqual(method, "PATCH")
         self.assertEqual(body["properties"]["experimentalSettings"], {"EnableWorkspaceTools": True})
+
+    def test_monthly_unit_limit_is_patched_in(self):
+        del self.agent["properties"]["logConfiguration"]
+        code, errors = self._invoke("--monthly-unit-limit", "2000")
+        self.assertEqual(code, 0, errors)
+        method, body = self.requests[-1]
+        self.assertEqual(method, "PATCH")
+        self.assertEqual(body["properties"]["monthlyAgentUnitLimit"], 2000)
+
+    def test_put_keeps_the_existing_monthly_unit_limit(self):
+        del self.agent["properties"]["logConfiguration"]
+        self.agent["properties"]["monthlyAgentUnitLimit"] = 700
+        code, errors = self._invoke("--tags", "env=test")
+        self.assertEqual(code, 0, errors)
+        method, body = self.requests[-1]
+        self.assertEqual(method, "PUT")
+        self.assertEqual(body["properties"]["monthlyAgentUnitLimit"], 700)
 
 
 class ShowNetworkTests(unittest.TestCase):
@@ -4090,6 +4219,37 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
             _require_first_party(None, "a", "rg", "Something internal")
 
 
+class ConnectorPartnerTypeTests(unittest.TestCase):
+
+    class _Base:
+        def pre_operations(self):
+            pass
+
+        def post_instance_update(self, instance):
+            pass
+
+    class _Command(_ConnectorPartnerTypeMixin, _Base):
+        pass
+
+    def test_partner_type_is_merged_into_extended_properties_on_create(self):
+        command = _bare_command(self._Command, data_connector_type="Mcp", partner_type="DynatraceMcp",
+                                extended_properties={"authType": "BearerToken"})
+        command.pre_operations()
+        self.assertEqual(command.ctx.args.extended_properties,
+                         {"authType": "BearerToken", "partnerType": "DynatraceMcp"})
+        with self.assertRaisesRegex(CLIError, "Mcp"):
+            _bare_command(self._Command, data_connector_type="Kusto", partner_type="DynatraceMcp",
+                          extended_properties=None).pre_operations()
+
+    def test_partner_type_is_set_on_the_existing_connector_on_update(self):
+        command = _bare_command(self._Command, partner_type="DynatraceMcp")
+        extended = {"endpoint": "https://x"}
+        instance = SimpleNamespace(properties=SimpleNamespace(
+            data_connector_type=SimpleNamespace(to_serialized_data=lambda: "Mcp"), extended_properties=extended))
+        command.post_instance_update(instance)
+        self.assertEqual(extended, {"endpoint": "https://x", "partnerType": "DynatraceMcp"})
+
+
 class ConnectorConvenienceArgsTests(unittest.TestCase):
     """--file-path/--mcp-endpoint/--github on 'connector create' build the
     real nested extended-properties/data-source shapes confirmed live this
@@ -4435,7 +4595,7 @@ class SkillCreateFilePathTests(unittest.TestCase):
     def test_prepare_value_builds_expected_json_with_tools(self):
         path = self._write("---\ndescription: Desc\n---\nBody text\n")
         command = _bare_command(
-            SkillCreate, file_path=path, value=None, description=None,
+            SkillCreate, extension_name="my-skill", file_path=path, value=None, description=None,
             tools=["kusto-query", "log-search"],
         )
         command._prepare_value()
@@ -4447,36 +4607,59 @@ class SkillCreateFilePathTests(unittest.TestCase):
     def test_prepare_value_explicit_description_overrides_frontmatter(self):
         path = self._write("---\ndescription: From frontmatter\n---\nBody\n")
         command = _bare_command(
-            SkillCreate, file_path=path, value=None, description="From flag", tools=None,
+            SkillCreate, extension_name="my-skill", file_path=path, value=None, description="From flag", tools=None,
         )
         command._prepare_value()
         self.assertEqual(json.loads(command.ctx.args.value)["description"], "From flag")
 
     def test_prepare_value_no_description_anywhere_raises(self):
         path = self._write("Body with no frontmatter at all\n")
-        command = _bare_command(SkillCreate, file_path=path, value=None, description=None, tools=None)
+        command = _bare_command(SkillCreate, extension_name="my-skill", file_path=path, value=None, description=None, tools=None)
         with self.assertRaises(CLIError):
             command._prepare_value()
 
     def test_prepare_value_both_file_path_and_value_raises(self):
         path = self._write("---\ndescription: D\n---\nBody\n")
         command = _bare_command(
-            SkillCreate, file_path=path, value='{"description": "x"}', description=None, tools=None,
+            SkillCreate, extension_name="my-skill", file_path=path, value='{"description": "x"}', description=None, tools=None,
         )
         with self.assertRaises(CLIError):
             command._prepare_value()
 
     def test_prepare_value_neither_file_path_nor_value_raises(self):
-        command = _bare_command(SkillCreate, file_path=None, value=None, description=None, tools=None)
+        command = _bare_command(SkillCreate, extension_name="my-skill", file_path=None, value=None, description=None, tools=None)
         with self.assertRaises(CLIError):
             command._prepare_value()
 
     def test_prepare_value_noop_when_only_value_given(self):
         command = _bare_command(
-            SkillCreate, file_path=None, value='{"description": "x"}', description=None, tools=None,
+            SkillCreate, extension_name="my-skill", file_path=None, value='{"description": "x"}', description=None, tools=None,
         )
         command._prepare_value()
         self.assertEqual(command.ctx.args.value, '{"description": "x"}')
+
+    def test_frontmatter_name_is_used_when_name_is_omitted(self):
+        path = self._write("---\nname: azure-monitor-rca\ndescription: D\n---\nBody\n")
+        command = _bare_command(
+            SkillCreate, extension_name=None, file_path=path, value=None, description=None, tools=None)
+        command._prepare_value()
+        self.assertEqual(command.ctx.args.extension_name, "azure-monitor-rca")
+
+    def test_name_flag_wins_over_frontmatter_name_with_a_warning(self):
+        path = self._write("---\nname: from-file\ndescription: D\n---\nBody\n")
+        command = _bare_command(
+            SkillCreate, extension_name="from-flag", file_path=path, value=None, description=None, tools=None)
+        with self.assertLogs("cli.azext_sre.custom", level="WARNING") as logs:
+            command._prepare_value()
+        self.assertEqual(command.ctx.args.extension_name, "from-flag")
+        self.assertIn("from-file", logs.output[0])
+
+    def test_no_name_anywhere_raises(self):
+        path = self._write("---\ndescription: D\n---\nBody\n")
+        command = _bare_command(
+            SkillCreate, extension_name=None, file_path=path, value=None, description=None, tools=None)
+        with self.assertRaisesRegex(CLIError, "name:"):
+            command._prepare_value()
 
 
 class SubagentCreatePreToolUseScriptFileTests(unittest.TestCase):
