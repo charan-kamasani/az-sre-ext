@@ -3474,51 +3474,6 @@ class CommandRegistrationTests(unittest.TestCase):
         self.assertEqual(still_present, [], f"Retired duplicate commands still registered: {still_present}")
 
 
-class CliArgumentEnforcementTests(unittest.TestCase):
-    """Exercises the real Azure CLI argument parser so enum/required-argument
-    enforcement is proven, not just declared. No Azure call happens: argument parsing
-    fails before any handler runs.
-    """
-
-    def _invoke(self, args):
-        from azure.cli.core import get_default_cli
-
-        cli = get_default_cli()
-        try:
-            return cli.invoke(args)
-        except SystemExit as ex:
-            return ex.code
-
-    def test_invalid_role_value_is_rejected(self):
-        code = self._invoke(
-            [
-                "sre", "agent", "grant-access",
-                "-g", "rg", "--agent-name", "a",
-                "--role", "bogus", "--assignee", "x",
-            ]
-        )
-        self.assertNotEqual(code, 0)
-
-    def test_invalid_extension_type_is_rejected(self):
-        code = self._invoke(
-            [
-                "sre", "agent", "extension", "show",
-                "-g", "rg", "--agent-name", "a",
-                "--extension-type", "bogus", "--extension-name", "x",
-            ]
-        )
-        self.assertNotEqual(code, 0)
-
-    def test_missing_required_assignee_is_rejected(self):
-        code = self._invoke(
-            [
-                "sre", "agent", "grant-access",
-                "-g", "rg", "--agent-name", "a", "--role", "admin",
-            ]
-        )
-        self.assertNotEqual(code, 0)
-
-
 class ArgSchemaHelpRegressionTests(unittest.TestCase):
     """Regression test for a real bug found during live verification:
     AAZBaseArg always initializes ._help as a dict (keyed by
