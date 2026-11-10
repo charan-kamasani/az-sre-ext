@@ -98,10 +98,10 @@ Context > Managed resources page):
 
 ```bash
 az sre managed-resource grant -g myrg --agent-name myagent \
-  --target-subscription <sub-id> --target-resource-group monitored-rg
+  --target-subscription <sub-id> --target-rg monitored-rg
 az sre managed-resource list -g myrg --agent-name myagent
 az sre managed-resource revoke -g myrg --agent-name myagent \
-  --target-subscription <sub-id> --target-resource-group monitored-rg
+  --target-subscription <sub-id> --target-rg monitored-rg
 ```
 
 All three commands default to the agent's **system-assigned managed identity
@@ -114,10 +114,10 @@ UAMI_ID="/subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.
 
 az sre identity show -g myrg --agent-name myagent
 az sre managed-resource grant -g myrg --agent-name myagent \
-  --identity "$UAMI_ID" --target-subscription <sub-id> --target-resource-group monitored-rg
+  --identity "$UAMI_ID" --target-subscription <sub-id> --target-rg monitored-rg
 az sre managed-resource list -g myrg --agent-name myagent --identity "$UAMI_ID"
 az sre managed-resource revoke -g myrg --agent-name myagent \
-  --identity "$UAMI_ID" --target-subscription <sub-id> --target-resource-group monitored-rg
+  --identity "$UAMI_ID" --target-subscription <sub-id> --target-rg monitored-rg
 ```
 
 `--identity system` explicitly selects the default SAMI. UAMI resource IDs

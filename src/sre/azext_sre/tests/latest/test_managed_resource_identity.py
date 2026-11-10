@@ -292,7 +292,7 @@ class ManagedResourceIdentityCliTests(unittest.TestCase):
     def test_existing_scope_forms_work_with_selected_uami(self):
         for arguments, expected_scope in (
             (["--target-subscription", "target-sub"], f"/subscriptions/{self.SUBSCRIPTION}"),
-            (["--target-subscription", "target-sub", "--target-resource-group", "monitored-rg"], self.SCOPE),
+            (["--target-subscription", "target-sub", "--target-rg", "monitored-rg"], self.SCOPE),
             (["--management-group", "my-mg"], "/providers/Microsoft.Management/managementGroups/my-mg"),
             (["--scope", self.SCOPE + "/providers/Microsoft.Storage/storageAccounts/store"],
              self.SCOPE + "/providers/Microsoft.Storage/storageAccounts/store"),
@@ -315,7 +315,7 @@ class ManagedResourceIdentityCliTests(unittest.TestCase):
         for arguments in (
             [],
             ["--scope", self.SCOPE, "--target-subscription", "target-sub"],
-            ["--target-resource-group", "monitored-rg"],
+            ["--target-rg", "monitored-rg"],
             ["--management-group", "my-mg", "--target-subscription", "target-sub"],
         ):
             for action in ("grant", "revoke"):

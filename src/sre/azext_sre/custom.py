@@ -26,6 +26,8 @@
 # pylint: disable=too-many-lines
 # pylint: disable=too-many-statements
 # pylint: disable=protected-access
+# AAZ command/group subclasses intentionally expose only framework hooks.
+# pylint: disable=too-few-public-methods
 
 import base64
 import json
@@ -86,10 +88,12 @@ from .aaz.latest.app.agent.connector import Update as _GeneratedConnectorUpdate
 from .aaz.latest.app.agent.connector import Show as _GeneratedConnectorShow
 from .aaz.latest.app.agent.connector import List as _GeneratedConnectorList
 from .aaz.latest.app.agent.connector import Delete as _GeneratedConnectorDelete
+from .aaz.latest.app.agent.connector import Wait as _GeneratedConnectorWait
 from .aaz.latest.app.agent.connector import ListSecret as _GeneratedConnectorListSecret
 from .aaz.latest.app.agent.identity import Assign as _GeneratedIdentityAssign
 from .aaz.latest.app.agent.identity import Remove as _GeneratedIdentityRemove
 from .aaz.latest.app.agent.identity import Show as _GeneratedIdentityShow
+from .aaz.latest.app.agent.identity import Wait as _GeneratedIdentityWait
 from .aaz.latest.app.supported_agent_model import List as _GeneratedSupportedAgentModelList
 
 logger = get_logger(__name__)
@@ -238,7 +242,7 @@ def _add_read_target_args(schema, short_name=True):
     schema.resource_group = AAZResourceGroupNameArg()
     schema.agent_url = AAZStrArg(
         options=["--agent-url"],
-        help="Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared "
+        help="Agent endpoint URL (`https://<agent>.<hash>.<region>.azuresre.ai`) for a shared "
              "agent that is not in your subscription. Read-only commands only.",
     )
 
@@ -274,7 +278,6 @@ def _cli_invoke(cli_ctx, *args, allow_missing=False):
     import io
 
     from azure.cli.core import get_default_cli
-    from azure.cli.core.azclierror import ResourceNotFoundError as _RNFE
 
     args = list(args)
     # The nested CLI starts fresh, so pass along the caller's --subscription.
@@ -287,7 +290,7 @@ def _cli_invoke(cli_ctx, *args, allow_missing=False):
     cli.out_file = io.StringIO()
     try:
         exit_code = cli.invoke(list(args), out_file=io.StringIO())
-    except (_RNFE, SystemExit) as ex:
+    except (ResourceNotFoundError, SystemExit) as ex:
         if allow_missing:
             return None
         raise CLIError(f"'{' '.join(args)}' failed: {ex}") from ex
@@ -409,6 +412,14 @@ class _ModelProviderArgMixin:
                     "portal), but the API never accepts those friendly "
                     "strings. Case-insensitive."
                 )
+        # azdev linter requires an option of 22 characters or fewer.
+        for arg_name, alias in (
+            ("incident_management_configuration", "--incident-config"),
+            ("knowledge_graph_configuration", "--knowledge-graph"),
+        ):
+            arg = getattr(schema, arg_name, None)
+            if arg is not None and alias not in arg._options:
+                arg._options = [*arg._options, alias]
         return schema
 
     def pre_operations(self):
@@ -500,7 +511,6 @@ def _show_internal_features():
     if not tenant_id:
         return True
     return _is_microsoft_first_party_tenant(tenant_id) or tenant_id.lower() in ICM_MANAGED_IDENTITY_TENANT_IDS
-
 
 
 def _resolve_signed_in_user_object_id(cli_ctx):
@@ -710,7 +720,9 @@ class _IcmIncidentPlatformGateMixin:
 
 
 @register_command("sre agent create")
-class Create(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
+class Create(  # pylint: disable=too-many-ancestors
+        _IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GrantAccessToMeMixin,
+        _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
     :example: Create an agent with an Anthropic default model
@@ -962,6 +974,7 @@ def _connector_access_reminder(connector):
             connector.get("name"),
         )
 
+
 # Wire value -> real portal display name, for the subset of types with a
 # confirmed portal picker entry. Confirmed live against the portal's
 # "Connectors" dialog (screenshots reviewed 2026-11-03, plus a full catalog
@@ -1108,7 +1121,7 @@ class _DataConnectorTypeArgMixin:
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
             data_source._help["short-summary"] = (
                 "Connection string or endpoint. For Kusto, include the database: "
-                "https://cluster.kusto.windows.net/database."
+                "`https://cluster.kusto.windows.net/database`."
             )
         for _name, _text in (
             ("endpoint", "Endpoint URL, used by endpoint-based connector types such as Mcp."),
@@ -1178,7 +1191,7 @@ class _ConnectorConvenienceArgsMixin:
         schema.github = AAZBoolArg(
             options=["--github"],
             arg_group="MCP",
-            help="For Mcp: connect the public GitHub Copilot MCP server (https://api.githubcopilot.com/mcp/).",
+            help="For Mcp: connect the public GitHub Copilot MCP server (`https://api.githubcopilot.com/mcp/`).",
         )
         schema.tool_access = AAZBoolArg(
             options=["--tool-access"],
@@ -1209,7 +1222,7 @@ class _ConnectorConvenienceArgsMixin:
         schema.mi_token_scope = AAZStrArg(
             options=["--mi-token-scope"],
             arg_group="MCP",
-            help="For Mcp with --managed-identity-auth: token scope to request. Default: https://management.azure.com/.default.",
+            help="For Mcp with --managed-identity-auth: token scope to request. Default: `https://management.azure.com/.default`.",
         )
         schema.oauth_dcr = AAZBoolArg(
             options=["--oauth-dcr"],
@@ -1241,7 +1254,7 @@ class _ConnectorConvenienceArgsMixin:
     # the file silently never got sent.
     _file_path_used = False
 
-    def pre_operations(self):
+    def pre_operations(self):  # pylint: disable=too-many-branches
         args = self.ctx.args
         connector_type = _arg_value(getattr(args, "data_connector_type", None))
         file_path = _arg_value(getattr(args, "file_path", None))
@@ -1616,6 +1629,17 @@ class ConnectorDelete(_GeneratedConnectorDelete):
     _args_schema = None
 
 
+@register_command("sre connector wait")
+class ConnectorWait(_GeneratedConnectorWait):
+    """Wait for a connector to reach a desired state.
+
+    :example: Wait until a connector created with --no-wait exists
+        az sre connector wait -g myrg --agent-name myagent -n conn-kusto --created
+    """
+
+    _args_schema = None
+
+
 class _ConnectorNameAliasMixin:
     """Adds the usual '-n'/'--name' aliases to --connector-name, matching
     show/update/delete -- the generated ListSecret recipe is missing them
@@ -1716,6 +1740,17 @@ class IdentityShow(_GeneratedIdentityShow):
 
     :example: Show an agent's identities
         az sre identity show -g myrg --agent-name myagent
+    """
+
+    _args_schema = None
+
+
+@register_command("sre identity wait")
+class IdentityWait(_GeneratedIdentityWait):
+    """Wait for an agent's identity update to finish.
+
+    :example: Wait for an identity assignment started with --no-wait
+        az sre identity wait -g myrg --agent-name myagent --updated
     """
 
     _args_schema = None
@@ -1965,7 +2000,7 @@ def _resolve_managed_resource_scope(cli_ctx, scope, target_subscription, target_
     convenience_flags_used = any((target_subscription, target_resource_group, management_group))
     if scope and convenience_flags_used:
         raise CLIError(
-            "Specify --scope on its own, or use --target-subscription/--target-resource-group/"
+            "Specify --scope on its own, or use --target-subscription/--target-rg/"
             "--management-group instead -- not both."
         )
     if scope:
@@ -1973,11 +2008,11 @@ def _resolve_managed_resource_scope(cli_ctx, scope, target_subscription, target_
     if management_group:
         if target_subscription or target_resource_group:
             raise CLIError(
-                "--management-group cannot be combined with --target-subscription/--target-resource-group."
+                "--management-group cannot be combined with --target-subscription/--target-rg."
             )
         return f"/providers/Microsoft.Management/managementGroups/{management_group}"
     if target_resource_group and not target_subscription:
-        raise CLIError("--target-resource-group requires --target-subscription.")
+        raise CLIError("--target-rg requires --target-subscription.")
     if target_subscription:
         sub_id = _resolve_subscription_id(cli_ctx, target_subscription)
         if target_resource_group:
@@ -1985,7 +2020,7 @@ def _resolve_managed_resource_scope(cli_ctx, scope, target_subscription, target_
         return f"/subscriptions/{sub_id}"
     raise CLIError(
         "Specify a target scope: --scope, --target-subscription, --target-subscription with "
-        "--target-resource-group, or --management-group."
+        "--target-rg, or --management-group."
     )
 
 
@@ -2109,20 +2144,20 @@ class _ManagedResourceScopeCommand(_ManagedResourceIdentityMixin, AAZCommand):
         )
         schema.resource_group = AAZResourceGroupNameArg(
             help="Resource group of the SRE Agent (NOT the target scope -- use "
-            "--target-resource-group for that).",
+            "--target-rg for that).",
             required=True,
         )
         schema.scope = AAZStrArg(
             options=["--scope"],
             help=f"Full resource ID of the scope to {cls._VERB} access on/from. "
-            "Alternative to --target-subscription/--target-resource-group/--management-group.",
+            "Alternative to --target-subscription/--target-rg/--management-group.",
         )
         schema.target_subscription = AAZStrArg(
             options=["--target-subscription"],
-            help="Target subscription name or ID. Alone: subscription scope. With --target-resource-group: resource-group scope.",
+            help="Target subscription name or ID. Alone: subscription scope. With --target-rg: resource-group scope.",
         )
         schema.target_resource_group = AAZStrArg(
-            options=["--target-resource-group"],
+            options=["--target-rg"],
             help="Target resource group name (requires --target-subscription). Distinct "
             "from --resource-group, which locates the agent itself.",
         )
@@ -2169,7 +2204,7 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
 
     :example: Grant on a resource group
         az sre managed-resource grant --agent-name myagent --resource-group myrg \\
-            --target-subscription my-sub --target-resource-group monitored-rg
+            --target-subscription my-sub --target-rg monitored-rg
 
     :example: Grant on a management group
         az sre managed-resource grant --agent-name myagent --resource-group myrg \\
@@ -2178,7 +2213,7 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
     :example: Grant an assigned user-assigned identity access to a resource group
         az sre managed-resource grant -g myrg --agent-name myagent \\
             --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \\
-            --target-subscription my-sub --target-resource-group monitored-rg
+            --target-subscription my-sub --target-rg monitored-rg
     """
 
     _args_schema = None
@@ -2207,12 +2242,12 @@ class ManagedResourceRevoke(_ManagedResourceScopeCommand):
 
     :example: Revoke access to a resource group
         az sre managed-resource revoke --agent-name myagent --resource-group myrg \\
-            --target-subscription my-sub --target-resource-group monitored-rg
+            --target-subscription my-sub --target-rg monitored-rg
 
     :example: Revoke an assigned user-assigned identity's access
         az sre managed-resource revoke -g myrg --agent-name myagent \\
             --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \\
-            --target-subscription my-sub --target-resource-group monitored-rg
+            --target-subscription my-sub --target-rg monitored-rg
     """
 
     _args_schema = None
@@ -2227,7 +2262,6 @@ class ManagedResourceRevoke(_ManagedResourceScopeCommand):
                 "role", "assignment", "delete",
                 "--role", role, "--assignee", principal_id, "--scope", scope,
             )
-        return None
 
 
 @register_command("sre managed-resource list")
@@ -3460,7 +3494,7 @@ def _require_str_list(obj, key, path):
 # YamlMember aliases are camelCase and line up 1:1 with other confirmed
 # types' JsonPropertyName casing (see HookSpecV2), so these are used
 # directly as the JSON wire field names.
-def _validate_tools_shape(parsed):
+def _validate_tools_shape(parsed):  # pylint: disable=too-many-branches
     if not isinstance(parsed, dict):
         raise CLIError(
             "--value for --extension-type tools must be a JSON object "
@@ -3551,9 +3585,9 @@ def _validate_subagents_shape(parsed):
         )
     _require_str(parsed, "instructions", "--value")
     instructions = parsed.get("instructions")
-    if instructions and instructions.strip() and     len(instructions) < 50:
+    if instructions and instructions.strip() and len(instructions) < 50:
         raise CLIError(
-                "--value.instructions must be at least 50 characters. "
+            "--value.instructions must be at least 50 characters. "
             "Expand the sub-agent instructions with meaningful guidance and retry."
         )
     _require_str(parsed, "handoffDescription", "--value")
@@ -3844,7 +3878,6 @@ def _encode_extension_value(raw_value, extension_type=None):
     with only the baseline JSON-syntax check. The legacy PythonTool name is
     normalized to the runtime's PythonFunctionTool discriminator.
     """
-    import base64
 
     try:
         parsed = json.loads(raw_value)
@@ -3868,7 +3901,6 @@ def _decode_extension_envelope(envelope):
     Falls back to leaving the raw base64 untouched if it's not valid
     UTF-8/JSON -- some extension types may carry opaque/binary payloads.
     """
-    import base64
     import contextlib
 
     if not isinstance(envelope, dict):
@@ -4073,6 +4105,7 @@ def _direct_extension_delete(cli_ctx, agent_name, resource_group, extension_type
     else:
         path = _direct_extension_path(extension_type, name)
     return _direct_extension_request(cli_ctx, agent_name, resource_group, "DELETE", path, missing_ok=True)
+
 
 def _arm_extension_create(
     cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False
@@ -4832,12 +4865,6 @@ def _incident_resource_create(cli_ctx, agent_name, resource_group, extension_typ
     return _incident_unwrap(kind, result)
 
 
-
-
-
-
-
-
 def _set_incident_filter_enabled(command, enabled):
     return _response_plan_apply_filter_changes(
         command.cli_ctx, _arg_value(command.ctx.args.agent_name),
@@ -4859,19 +4886,7 @@ def _incident_filter_toggle_schema(cls, schema):
     return schema
 
 
-
-
-
-
 # ---- incident handler helpers ----
-
-
-
-
-
-
-
-
 
 
 # ---- sre response-plan (portal: Incidents > Triggers & response plans) ----
@@ -5371,28 +5386,6 @@ class ResponsePlanDisable(AAZCommand):
         return _set_incident_filter_enabled(self, False)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ---- sre skill (portal: Extensions > Skills / Skill builder) ----
 @register_command_group("sre skill")
 class _SkillGroup(AAZCommandGroup):
@@ -5557,7 +5550,7 @@ class SubagentCreate(_PinnedExtensionCreate):
             return cls._args_schema
         schema = super()._build_arguments_schema(*args, **kwargs)
         schema.pre_tool_use_script_file = AAZStrArg(
-            options=["--pre-tool-use-script-file"],
+            options=["--pre-tool-use-script-file", "--pre-tool-use-script"],
             arg_group="Hooks",
             help="Path to a script file to run before every tool call this "
             "sub-agent makes (the portal's \"Manage Hooks\" > \"Pre Tool "
@@ -6218,11 +6211,11 @@ class RepoConnect(AAZCommand):
             help="Managed identity resource ID. Required with --devops-auth-type managed-identity.",
         )
         schema.devops_federated_client_id = AAZStrArg(
-            options=["--devops-federated-client-id"],
+            options=["--devops-federated-client-id", "--devops-fed-client-id"],
             help="Federated client ID, for an identity in a different tenant. Use with --devops-federated-tenant-id.",
         )
         schema.devops_federated_tenant_id = AAZStrArg(
-            options=["--devops-federated-tenant-id"],
+            options=["--devops-federated-tenant-id", "--devops-fed-tenant-id"],
             help="Federated tenant ID. Use with --devops-federated-client-id.",
         )
         cls._args_schema = schema
