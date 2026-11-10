@@ -126,10 +126,13 @@ GROUP_EXAMPLES = {
          "text": "az sre knowledge create -g myrg --agent-name myagent -n runbook --type webpage --url https://learn.microsoft.com/azure/"},
     ],
     "sre managed-resource": [
-        {"name": "List the scopes an agent's identity can currently monitor.",
+        {"name": "List the scopes an agent's system-assigned identity can currently monitor.",
          "text": "az sre managed-resource list -g myrg --agent-name myagent"},
         {"name": "Grant an agent's identity access to a resource group.",
          "text": "az sre managed-resource grant -g myrg --agent-name myagent --scope /subscriptions/<sub-id>/resourceGroups/prod-rg"},
+        {"name": "List the grants of a specific assigned user-assigned identity.",
+         "text": "az sre managed-resource list -g myrg --agent-name myagent "
+                 "--identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime"},
     ],
     "sre network": [
         {"name": "Limit an agent's code-execution sandbox to an allowlisted host.",

@@ -12,17 +12,24 @@ rebuilt one.
 """
 
 import base64
+import io
+import copy
 import json
 import os
 import tempfile
+import types
 import unittest
+from contextlib import ExitStack
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from requests import HTTPError, Response
 
+from azure.cli.core import get_default_cli
 from azure.cli.core.aaz import AAZCommand, AAZUndefined
 from azure.cli.core.azclierror import CLIError, ResourceNotFoundError
+from azure.cli.core.extension import DevExtension
 from azure.cli.core.mock import DummyCli
 from azure.core.exceptions import ResourceExistsError
 
@@ -32,6 +39,7 @@ from azext_sre.custom import (
     GITHUB_COPILOT_MCP_ENDPOINT,
     KNOWLEDGE_TYPES,
     MANAGED_RESOURCE_ROLES,
+    PORTAL_CONNECTOR_NAMES,
     Create,
     AgentSettingsShow,
     AgentSettingsUpdate,
@@ -44,6 +52,7 @@ from azext_sre.custom import (
     ManagedResourceList,
     AccessList,
     UpdateNetwork,
+    ShowNetwork,
     RepoConnect,
     GetConnection,
     KnowledgeCreate,
@@ -113,7 +122,9 @@ from azext_sre.custom import (
     _resolve_agent_principal_id,
     _resolve_managed_resource_scope,
     _resolve_signed_in_tenant_id,
-    _resolve_signed_in_user_object_id,
+    _IcmIncidentPlatformGateMixin,
+    _show_internal_features,
+    _listed_connector_types,    _resolve_signed_in_user_object_id,
     MICROSOFT_FIRST_PARTY_TENANT_IDS,
 )
 
@@ -391,6 +402,19 @@ class CliInvokeTests(unittest.TestCase):
     def test_success_returns_result(self):
         with patch("azure.cli.core.get_default_cli", return_value=self._fake_cli(result={"a": 1})):
             self.assertEqual(_cli_invoke(None, "account", "show"), {"a": 1})
+
+    def test_sre_call_forwards_callers_subscription(self):
+        seen = []
+        fake_cli = self._fake_cli()
+        fake_cli.invoke = lambda args, out_file=None: seen.append(args) or 0
+        cli_ctx = SimpleNamespace(data={"subscription_id": "sub-1"})
+        with patch("azure.cli.core.get_default_cli", return_value=fake_cli):
+            _cli_invoke(cli_ctx, "sre", "connector", "list", "-g", "rg")
+            _cli_invoke(cli_ctx, "account", "show")
+            _cli_invoke(cli_ctx, "sre", "agent", "show", "--subscription", "other")
+        self.assertEqual(seen[0][-2:], ["--subscription", "sub-1"])
+        self.assertNotIn("--subscription", seen[1])
+        self.assertEqual(seen[2].count("--subscription"), 1)
 
     def test_resource_not_found_error_wrapped_as_clierror(self):
         fake_cli = self._fake_cli(invoke_side_effect=ResourceNotFoundError("no such thing"))
@@ -1129,6 +1153,201 @@ class IncidentHandlersShapeValidationTests(unittest.TestCase):
         self.assertIn("incidentProcessingGuide must be a JSON array of strings", str(raised.exception))
 
 
+class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.filters = {}
+        self.handlers = {}
+        self.filter_error = None
+        self.handler_error = None
+        self.handler_path = "/api/v2/extendedAgent/incidentHandlers"
+        for replacement in (
+            patch.object(AAZCommand, "_handler", lambda command, command_args: None),
+            patch("azext_sre.custom._extension_resource_create", side_effect=self._arm_create),
+            patch("azext_sre.custom._extension_resource_show", side_effect=self._arm_show),
+            patch("azext_sre.custom._extension_resource_list", side_effect=self._arm_list),
+            patch("azext_sre.custom._extension_resource_delete", side_effect=self._arm_delete),
+            patch("azext_sre.custom._data_plane_request", side_effect=self._agent_request),
+        ):
+            replacement.start()
+            self.addCleanup(replacement.stop)
+
+    def _arm_create(self, cli_ctx, agent, group, extension_type, name, value, overwrite=False):
+        if extension_type != "incidentFilters":
+            raise ResourceNotFoundError("The ARM handler proxy is unavailable.")
+        if self.filter_error:
+            raise self.filter_error
+        self.filters[name] = json.loads(value)
+        return self._arm_show(cli_ctx, agent, group, extension_type, name)
+
+    def _arm_show(self, cli_ctx, agent, group, extension_type, name):
+        if extension_type != "incidentFilters":
+            raise ResourceNotFoundError("The ARM handler proxy is unavailable.")
+        if name not in self.filters:
+            raise ResourceNotFoundError(f"Extension '{name}' not found.")
+        return {"name": name, "properties": {"value": copy.deepcopy(self.filters[name])}}
+
+    def _arm_list(self, cli_ctx, agent, group, extension_type):
+        return {"value": [
+            self._arm_show(cli_ctx, agent, group, extension_type, name) for name in self.filters
+        ]}
+
+    def _arm_delete(self, cli_ctx, agent, group, extension_type, name):
+        if extension_type != "incidentFilters":
+            raise ResourceNotFoundError("The ARM handler proxy is unavailable.")
+        del self.filters[name]
+
+    def _agent_request(self, cli_ctx, agent, group, method, path, body=None,
+                       missing_ok=False, agent_url=None):
+        if method == "GET" and path == self.handler_path:
+            return copy.deepcopy(list(self.handlers.values()))
+        if not path.startswith(self.handler_path + "/"):
+            raise ResourceNotFoundError(path)
+        name = path.rsplit("/", 1)[-1]
+        if method == "PUT":
+            if self.handler_error:
+                raise self.handler_error
+            self.handlers[name] = copy.deepcopy(body)
+            return copy.deepcopy(self.handlers[name])
+        if method == "DELETE":
+            self.handlers.pop(name, None)
+            return {}
+        raise ResourceNotFoundError(path)
+
+    def _command(self, command_cls, **overrides):
+        values = dict(
+            agent_name="agent", resource_group="rg", extension_name="plan", agent_url=None,
+            platform=None, subagent=None, mode=None, disabled=None, priorities=None,
+            title_contains=None, title_not_contains=None, incident_types=None,
+            impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
+            instructions=None, processing_guide=None, overwrite=None,
+        )
+        return _bare_command(command_cls, **{**values, **overrides})._handler(None)
+
+    def _create(self, **overrides):
+        from azext_sre.custom import ResponsePlanCreate
+        return self._command(
+            ResponsePlanCreate, **{
+                "platform": "AzMonitor", "subagent": "responder", "mode": "review",
+                "disabled": True, "instructions": "Check logs", **overrides,
+            })
+
+    @staticmethod
+    def _forbidden():
+        response = Response()
+        response.status_code = 403
+        response._content = b"Forbidden"
+        return HTTPError("Forbidden", response=response)
+
+    def test_create_persists_instructions_and_default_show_reads_the_linked_handler(self):
+        from azext_sre.custom import ResponsePlanShow
+        self._create(processing_guide=["Read metrics"])
+        shown = self._command(ResponsePlanShow)
+        self.assertEqual(shown["handlers"], [{
+            "id": "plan", "incidentFilterId": "plan", "customInstructions": "Check logs",
+            "incidentProcessingGuide": ["Read metrics"],
+        }])
+        self.assertFalse(shown["filter"]["properties"]["isEnabled"])
+
+    def test_show_without_instructions_returns_an_empty_handler_list(self):
+        from azext_sre.custom import ResponsePlanShow
+        self._create(instructions=None)
+        self.assertEqual(self._command(ResponsePlanShow)["handlers"], [])
+
+    def test_update_preserves_existing_handler_identity_and_processing_guide(self):
+        from azext_sre.custom import ResponsePlanUpdate
+        self._create(instructions=None)
+        self.handlers["custom-handler"] = {
+            "id": "custom-handler", "incidentFilterId": "plan",
+            "customInstructions": "Old instructions", "incidentProcessingGuide": ["Read metrics"],
+        }
+        self._command(ResponsePlanUpdate, instructions="Check dependencies")
+        self.assertEqual(self.handlers, {"custom-handler": {
+            "id": "custom-handler", "incidentFilterId": "plan",
+            "customInstructions": "Check dependencies", "incidentProcessingGuide": ["Read metrics"],
+        }})
+        self.assertFalse(self.filters["plan"]["isEnabled"])
+
+    def test_update_creates_instructions_for_a_plan_with_no_handler(self):
+        from azext_sre.custom import ResponsePlanUpdate, ResponsePlanShow
+        self._create(instructions=None)
+        self._command(ResponsePlanUpdate, instructions="Check dependencies")
+        self.assertEqual(
+            self._command(ResponsePlanShow)["handlers"][0]["customInstructions"], "Check dependencies")
+
+    def test_instructions_only_update_succeeds_without_writing_the_filter(self):
+        from azext_sre.custom import ResponsePlanUpdate
+        self._create(instructions=None)
+        self.filter_error = self._forbidden()
+        result = self._command(ResponsePlanUpdate, instructions="Check dependencies")
+        self.assertEqual(self.handlers["plan"]["customInstructions"], "Check dependencies")
+        self.assertEqual(result["filter"]["properties"], self.filters["plan"])
+
+    def test_instructions_only_update_of_a_missing_plan_saves_nothing(self):
+        from azext_sre.custom import ResponsePlanUpdate
+        with self.assertRaises(ResourceNotFoundError):
+            self._command(ResponsePlanUpdate, instructions="Check dependencies")
+        self.assertEqual(self.handlers, {})
+
+    def test_update_leaves_the_filter_unchanged_when_reading_instructions_fails(self):
+        from azext_sre.custom import ResponsePlanUpdate
+        self._create(instructions=None)
+        saved_filter = copy.deepcopy(self.filters["plan"])
+        with patch("azext_sre.custom._data_plane_request", side_effect=self._forbidden()), \
+             self.assertRaises(HTTPError):
+            self._command(ResponsePlanUpdate, mode="autonomous", instructions="Check dependencies")
+        self.assertEqual(self.filters["plan"], saved_filter)
+
+    def test_failed_instruction_save_reports_only_filter_changes_that_were_saved(self):
+        from azext_sre.custom import ResponsePlanUpdate
+        self._create(instructions=None)
+        self.handler_error = self._forbidden()
+        with self.subTest("mixed update"), \
+             self.assertRaisesRegex(CLIError, r"\(agentMode, priorities\) were saved"):
+            self._command(
+                ResponsePlanUpdate, mode="autonomous", priorities=["Sev0"], instructions="Check dependencies")
+        self.assertEqual(self.filters["plan"]["agentMode"], "autonomous")
+        with self.subTest("instructions only"), self.assertRaises(HTTPError):
+            self._command(ResponsePlanUpdate, instructions="Check dependencies")
+
+    def test_delete_removes_all_linked_handlers_without_touching_another_plan(self):
+        from azext_sre.custom import ResponsePlanDelete
+        self._create()
+        self.handlers["extra"] = {"id": "extra", "incidentFilterId": "plan"}
+        unrelated = {"id": "other", "incidentFilterId": "other-plan", "customInstructions": "Keep"}
+        self.handlers["other"] = unrelated
+        self._command(ResponsePlanDelete)
+        self.assertEqual(self.handlers, {"other": unrelated})
+        self.assertNotIn("plan", self.filters)
+
+    def test_duplicate_handler_is_rejected_without_overwriting_its_instructions(self):
+        from azext_sre.custom import _incident_handler_path, _incident_resource_create
+        existing = {"id": "plan", "incidentFilterId": "other-plan", "customInstructions": "Keep"}
+        self.handlers["plan"] = existing
+        replacement = {"id": "plan", "incidentFilterId": "plan", "customInstructions": "Replace"}
+        with self.assertRaises(ResourceExistsError):
+            _incident_resource_create(
+                None, "agent", "rg", "incidentHandlers", "plan", replacement,
+                _incident_handler_path("plan"), replacement, False)
+        self.assertEqual(self.handlers["plan"], existing)
+
+    def test_create_reports_partial_failure_when_the_agent_rejects_instructions(self):
+        self.handler_error = self._forbidden()
+        with self.assertRaisesRegex(CLIError, "created, but its instructions were not saved"):
+            self._create()
+        self.assertIn("plan", self.filters)
+        self.assertFalse(self.filters["plan"]["isEnabled"])
+        self.assertEqual(self.handlers, {})
+
+    def test_unexpected_handler_collection_is_an_error_not_missing_instructions(self):
+        from azext_sre.custom import ResponsePlanShow
+        self._create(instructions=None)
+        for response in (None, {}, {"value": []}, [None]):
+            with self.subTest(response=response), \
+                 patch("azext_sre.custom._data_plane_request", return_value=response), \
+                 self.assertRaisesRegex(CLIError, "unexpected incident-handler collection"):
+                self._command(ResponsePlanShow)
+
+
 class IncidentDataPlaneTests(unittest.TestCase):
     def _run(self, cls, result=None, **args):
         command = _bare_command(
@@ -1367,6 +1586,31 @@ class ToolsShapeValidationTests(unittest.TestCase):
     (the real SRE Agent runtime/CLI source) -- Agent.Cli/Models/ToolSpecV2.cs
     + Kusto/Link/Python/HttpClientToolSpecV2.cs."""
 
+    def test_python_tool_alias_and_runtime_type_preserve_executable_configuration(self):
+        for tool_type in ("PythonTool", "PythonFunctionTool"):
+            with self.subTest(tool_type=tool_type):
+                value = {
+                    "type": tool_type, "description": "Read-only evidence",
+                    "functionCode": "def main() -> dict:\n    return {'status': 200}\n",
+                    "parameters": [], "timeoutSeconds": 30, "dependencies": [],
+                    "authEnabled": False, "authScopes": [],
+                }
+                encoded = _encode_extension_value(json.dumps(value), "tools")
+                decoded = json.loads(base64.b64decode(encoded))
+                self.assertEqual(decoded, {**value, "type": "PythonFunctionTool"})
+
+    def test_python_tool_types_reject_invalid_executable_and_authentication_fields(self):
+        invalid = {
+            "functionCode": 123, "dependencies": "requests",
+            "authEnabled": "false", "authScopes": "https://example.com",
+        }
+        for tool_type in ("PythonTool", "PythonFunctionTool"):
+            for field, value in invalid.items():
+                with self.subTest(tool_type=tool_type, field=field), self.assertRaises(CLIError):
+                    _encode_extension_value(json.dumps({
+                        "type": tool_type, "functionCode": "def main(): pass", field: value,
+                    }), "tools")
+
     def test_accepts_a_real_kusto_tool_payload(self):
         raw = json.dumps({
             "type": "KustoTool",
@@ -1442,9 +1686,14 @@ class SubagentsShapeValidationTests(unittest.TestCase):
     were architecturally uncreatable via ARM was wrong -- see the comment
     above EXTENSION_API_VERSION for the full correction)."""
 
+    _INSTRUCTIONS = (
+        "You are the application evidence specialist. Read supplied reference "
+        "files with ReadFile and return source-backed observations."
+    )
+
     def test_accepts_the_real_confirmed_example_payload(self):
         raw = json.dumps({
-            "instructions": "You are the application evidence specialist.",
+            "instructions": self._INSTRUCTIONS,
             "handoffDescription": "Use for read-only application evidence.",
             "tools": ["ReadFile"],
             "mcpTools": [],
@@ -1457,7 +1706,7 @@ class SubagentsShapeValidationTests(unittest.TestCase):
 
     def test_accepts_embedded_pretooluse_hook(self):
         raw = json.dumps({
-            "instructions": "x", "handoffDescription": "y",
+            "instructions": self._INSTRUCTIONS, "handoffDescription": "y",
             "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
             "allowParallelToolCalls": False,
             "hooks": {
@@ -1493,7 +1742,7 @@ class SubagentsShapeValidationTests(unittest.TestCase):
 
     def test_rejects_non_list_tools(self):
         raw = json.dumps({
-            "instructions": "x", "handoffDescription": "y",
+            "instructions": self._INSTRUCTIONS, "handoffDescription": "y",
             "tools": "ReadFile", "mcpTools": [], "commonTools": [],
             "allowedSkills": [], "allowParallelToolCalls": True,
         })
@@ -1503,7 +1752,7 @@ class SubagentsShapeValidationTests(unittest.TestCase):
 
     def test_rejects_non_bool_allow_parallel_tool_calls(self):
         raw = json.dumps({
-            "instructions": "x", "handoffDescription": "y",
+            "instructions": self._INSTRUCTIONS, "handoffDescription": "y",
             "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
             "allowParallelToolCalls": "true",
         })
@@ -1513,7 +1762,7 @@ class SubagentsShapeValidationTests(unittest.TestCase):
 
     def test_rejects_hooks_not_object(self):
         raw = json.dumps({
-            "instructions": "x", "handoffDescription": "y",
+            "instructions": self._INSTRUCTIONS, "handoffDescription": "y",
             "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
             "allowParallelToolCalls": True, "hooks": ["not", "an", "object"],
         })
@@ -1523,7 +1772,7 @@ class SubagentsShapeValidationTests(unittest.TestCase):
 
     def test_hook_entry_script_is_type_checked_but_not_presence_required(self):
         raw = json.dumps({
-            "instructions": "x", "handoffDescription": "y",
+            "instructions": self._INSTRUCTIONS, "handoffDescription": "y",
             "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
             "allowParallelToolCalls": True,
             "hooks": {"PreToolUse": [{"type": "command", "matcher": "(?s:.*)", "failMode": "block"}]},
@@ -1535,6 +1784,112 @@ class SubagentsShapeValidationTests(unittest.TestCase):
         with self.assertRaises(CLIError) as raised:
             _encode_extension_value(bad, "subagents")
         self.assertIn("script", str(raised.exception))
+
+
+class SubagentCreateValidationTests(unittest.TestCase):
+    _AGENT_ID = "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/agent"
+    _RESOURCE_ID = _AGENT_ID + "/subagents/specialist"
+    _VALID_VALUE = json.dumps({
+        "instructions": "Investigate the supplied evidence and return concise, source-backed observations.",
+        "oldOnly": True,
+    })
+
+    def setUp(self):
+        self.resources = {}
+        for replacement in (
+            patch.object(AAZCommand, "_handler", lambda command, command_args: None),
+            patch("azext_sre.custom._cli_invoke", return_value={"id": self._AGENT_ID}),
+            patch("azext_sre.custom._arm_request", side_effect=self._arm_request),
+        ):
+            replacement.start()
+            self.addCleanup(replacement.stop)
+
+    def _arm_request(self, cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+        if method == "PUT":
+            self.resources[resource_id] = copy.deepcopy(body)
+        elif method != "GET":
+            raise AssertionError(f"Unexpected ARM method: {method}")
+        return copy.deepcopy(self.resources.get(resource_id))
+
+    def _create(self, raw_value, overwrite=False):
+        return _bare_command(
+            SubagentCreate, agent_name="agent", resource_group="rg", extension_name="specialist",
+            value=raw_value, overwrite=overwrite, pre_tool_use_script_file=None,
+        )._handler(None)
+
+    def test_short_instructions_report_the_limit_without_mutating_resources(self):
+        for instructions in ("You are a helpful assistant. Be concise.", "private-prompt-" + "x" * 34):
+            for overwrite in (False, True):
+                with self.subTest(length=len(instructions), overwrite=overwrite):
+                    self.resources.clear()
+                    if overwrite:
+                        self._create(self._VALID_VALUE)
+                    before = copy.deepcopy(self.resources)
+                    with self.assertRaises(CLIError) as raised:
+                        self._create(json.dumps({"instructions": instructions}), overwrite=overwrite)
+                    message = str(raised.exception)
+                    self.assertIn("--value.instructions", message)
+                    self.assertIn("at least 50 characters", message)
+                    self.assertNotIn(instructions, message)
+                    self.assertEqual(self.resources, before)
+
+    def test_valid_instructions_and_stop_hooks_are_sent_without_rewriting(self):
+        for instructions in ("x" * 50, " " + "x" * 48 + " ", json.loads(self._VALID_VALUE)["instructions"]):
+            for overwrite in (False, True):
+                with self.subTest(length=len(instructions), overwrite=overwrite):
+                    self.resources.clear()
+                    if overwrite:
+                        self._create(self._VALID_VALUE)
+                    raw = json.dumps({
+                        "instructions": instructions,
+                        "handoffDescription": "Use for read-only evidence.",
+                        "tools": [], "mcpTools": [], "commonTools": [], "allowedSkills": [],
+                        "allowParallelToolCalls": False,
+                        "hooks": {"Stop": [{
+                            "type": "prompt", "prompt": "Require the final response marker DONE.",
+                            "timeout": 30, "failMode": "block",
+                        }]},
+                    }, indent=2)
+                    self._create(raw, overwrite=overwrite)
+                    stored = self.resources[self._RESOURCE_ID]["properties"]["value"]
+                    self.assertEqual(base64.b64decode(stored).decode("utf-8"), raw)
+
+    def test_omitted_and_blank_instructions_keep_existing_default_handling(self):
+        for value in ({}, {"instructions": ""}, {"instructions": " \t\r\n"}):
+            with self.subTest(value=value):
+                raw = json.dumps(value)
+                self._create(self._VALID_VALUE, overwrite=True)
+                self._create(raw, overwrite=True)
+                stored = self.resources[self._RESOURCE_ID]["properties"]["value"]
+                self.assertEqual(base64.b64decode(stored).decode("utf-8"), raw)
+
+    def test_malformed_input_still_fails_without_overwriting(self):
+        self._create(self._VALID_VALUE)
+        before = copy.deepcopy(self.resources)
+        for raw, error in (
+            ("not json {{{", r"--value.*JSON"),
+            ("[]", "must be a JSON object"),
+            ('{"instructions": null}', r"--value.instructions.*string"),
+            ('{"instructions": 123}', r"--value.instructions.*string"),
+        ):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(CLIError, error):
+                    self._create(raw, overwrite=True)
+                self.assertEqual(self.resources, before)
+
+    def test_existing_name_still_requires_explicit_overwrite(self):
+        self._create(self._VALID_VALUE)
+        before = copy.deepcopy(self.resources)
+        with self.assertRaisesRegex(ResourceExistsError, "--overwrite"):
+            self._create('{"instructions": "short"}')
+        self.assertEqual(self.resources, before)
+
+    def test_unrelated_service_errors_are_not_replaced_with_a_prompt_diagnosis(self):
+        error = CLIError("Unrelated service validation failure.")
+        with patch("azext_sre.custom._arm_request", side_effect=error):
+            with self.assertRaises(CLIError) as raised:
+                self._create(self._VALID_VALUE, overwrite=True)
+        self.assertIs(raised.exception, error)
 
 
 class HooksShapeValidationTests(unittest.TestCase):
@@ -1998,8 +2353,11 @@ class GithubDeviceFlowTests(unittest.TestCase):
             SimpleNamespace(json=lambda: {"access_token": "real-device-flow-token"}, raise_for_status=lambda: None),
         ])
 
+        requested = []
+
         def fake_post(url, **kwargs):
             if url.endswith("/login/device/code"):
+                requested.append(kwargs["data"]["scope"])
                 return code_response
             return next(token_responses)
 
@@ -2008,6 +2366,7 @@ class GithubDeviceFlowTests(unittest.TestCase):
              patch("azure.cli.core.util.open_page_in_browser"):
             token = _github_device_flow()
         self.assertEqual(token, "real-device-flow-token")
+        self.assertEqual(requested, ["repo workflow"])
 
     def test_denied_authorization_raises_a_clear_error(self):
         code_response = SimpleNamespace(
@@ -2080,6 +2439,200 @@ class ExtensionTypeEnumTests(unittest.TestCase):
                 "azureDevOpsAuths", "globalSettings",
             ],
         )
+
+
+class ExtensionTenantGateTests(unittest.TestCase):
+    """The service rejects every agent extension call from a non-internal
+    tenant. The CLI should say that plainly."""
+
+    _AGENT = {"id": "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"}
+
+    def test_3p_agent_skips_arm_and_caches_the_detection(self):
+        from azext_sre import custom
+
+        status = {"features": {"isFirstParty": False, "scheduledTasks": True}}
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": ""}), \
+             patch("azext_sre.custom._feature_cache_path", return_value=os.path.join(tmp, "f.json")), \
+             patch.dict(custom._FEATURES_MEMORY, clear=True), \
+             patch("azext_sre.custom._arm_request") as arm, \
+             patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._data_plane_request", side_effect=[status, {"value": []}, {"value": []}]) as dp:
+            _extension_resource_list(None, "myagent", "rg", "tools")
+            custom._FEATURES_MEMORY.clear()
+            _extension_resource_list(None, "myagent", "rg", "tools")
+            arm.assert_not_called()
+            paths = [c[0][4] for c in dp.call_args_list]
+            self.assertEqual(paths, ["/api/v1/feature/status", "/api/v2/extendedAgent/tools", "/api/v2/extendedAgent/tools"])
+
+    def test_1p_agent_keeps_the_arm_route(self):
+        from azext_sre import custom
+
+        with patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": ""}), \
+             patch("azext_sre.custom._feature_cache_key", return_value="k"), \
+             patch.dict(custom._FEATURES_MEMORY, {"k": {"isFirstParty": True}}, clear=True), \
+             patch("azext_sre.custom._arm_request", return_value={"value": []}) as arm, \
+             patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._data_plane_request") as dp:
+            _extension_resource_list(None, "myagent", "rg", "tools")
+            arm.assert_called()
+            dp.assert_not_called()
+
+    def test_unknown_features_fall_back_to_the_arm_error(self):
+        from azext_sre import custom
+
+        with patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": ""}), \
+             patch("azext_sre.custom._feature_cache_key", return_value="k"), \
+             patch.dict(custom._FEATURES_MEMORY, {"k": {}}, clear=True), \
+             patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+             patch("azext_sre.custom._data_plane_request", return_value={"value": []}) as dp:
+            _extension_resource_list(None, "myagent", "rg", "tools")
+            self.assertEqual(dp.call_args[0][4], "/api/v2/extendedAgent/tools")
+
+    def test_disabled_feature_blocks_create_with_a_clear_message(self):
+        from azext_sre import custom
+
+        with patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": ""}), \
+             patch("azext_sre.custom._feature_cache_key", return_value="k"), \
+             patch.dict(custom._FEATURES_MEMORY, {"k": {"isFirstParty": False, "httpTriggers": False}}, clear=True), \
+             patch("azext_sre.custom._data_plane_request") as dp:
+            with self.assertRaises(CLIError) as ctx:
+                _extension_resource_create(None, "myagent", "rg", "httpTriggers", "t", "{}")
+            self.assertIn("HTTP triggers enabled", str(ctx.exception))
+            dp.assert_not_called()
+
+    def _gate_error(self):
+        response = Response()
+        response.status_code = 400
+        response._content = (
+            b'{"error":{"message":"Agent Extensions are not available for this tenant. '
+            b'This feature is restricted to internal tenants only."}}'
+        )
+        return HTTPError("400 Client Error", response=response)
+
+    def test_each_extension_operation_explains_the_tenant_gate(self):
+        calls = (
+            (_extension_resource_create, ("subagents", "t", '{"url": "https://github.com/a/b"}'), {"overwrite": True}),
+            (_extension_resource_show, ("subagents", "t"), {}),
+            (_extension_resource_list, ("subagents",), {}),
+            (_extension_resource_delete, ("subagents", "t"), {}),
+        )
+        for func, args, kwargs in calls:
+            with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()):
+                with self.assertRaises(CLIError) as ctx:
+                    func(None, "myagent", "rg", *args, **kwargs)
+            self.assertIn("This tenant can't use 'subagents' yet", str(ctx.exception))
+
+    def test_tools_fall_back_to_the_agent_api(self):
+        envelope = {"name": "t", "type": "ExtendedAgentTool", "properties": {"type": "LinkTool"}}
+        with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+             patch("azext_sre.custom._data_plane_request", return_value={"value": [envelope]}) as dp:
+            result = _extension_resource_list(None, "myagent", "rg", "tools")
+        self.assertEqual(dp.call_args[0][3:5], ("GET", "/api/v2/extendedAgent/tools"))
+        self.assertEqual(result["value"][0]["properties"]["value"], {"type": "LinkTool"})
+
+    def test_instructions_and_scheduled_tasks_use_their_own_routes(self):
+        for extension_type, path in (("commonPrompts", "/api/v2/extendedAgent/commonprompts"),
+                                     ("scheduledTasks", "/api/v2/extendedAgent/scheduledtasks")):
+            with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+                 patch("azext_sre.custom._data_plane_request", return_value={"value": []}) as dp:
+                _extension_resource_list(None, "myagent", "rg", extension_type)
+            self.assertEqual(dp.call_args[0][4], path)
+
+    def test_repo_connect_calls_use_the_portal_routes(self):
+        cases = (
+            ("githubAuths", "github_com", '{"authType": "Pat", "pat": "p"}',
+             "/api/v2/github/domains/github_com", {"authType": "Pat", "pat": "p"}),
+            ("azureDevOpsAuths", "contoso", '{"authType": "Pat", "pat": "p"}',
+             "/api/v2/azuredevops/orgs/contoso", {"authType": "Pat", "pat": "p"}),
+            ("repositories", "r", '{"url": "https://github.com/a/r", "type": "GitHub"}',
+             "/api/v2/repos/r", {"name": "r", "type": "CodeRepo",
+                                  "properties": {"url": "https://github.com/a/r", "type": "GitHub"}}),
+        )
+        for extension_type, name, value, path, body in cases:
+            with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+                 patch("azext_sre.custom._data_plane_request", return_value={"success": True}) as dp:
+                _extension_resource_create(None, "myagent", "rg", extension_type, name, value, overwrite=True)
+            self.assertEqual(dp.call_args[0][3:5], ("PUT", path))
+            self.assertEqual(dp.call_args.kwargs["body"], body)
+
+    def test_auth_secret_is_not_echoed_back(self):
+        with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+             patch("azext_sre.custom._data_plane_request", return_value={"success": True}):
+            result = _extension_resource_create(
+                None, "myagent", "rg", "githubAuths", "github_com",
+                '{"authType": "Pat", "pat": "secret"}', overwrite=True)
+        self.assertNotIn("secret", json.dumps(result))
+
+    def test_triggers_plugins_and_settings_use_their_own_routes(self):
+        cases = (
+            ("httpTriggers", "/api/v2/extendedAgent/httpTriggers/t", "HttpTrigger"),
+            ("pluginMarketplaces", "/api/v2/extendedAgent/pluginMarketplaces/t", "Marketplace"),
+            ("pluginInstallations", "/api/v2/extendedAgent/pluginInstallations/t", "PluginInstallation"),
+            ("globalSettings", "/api/v2/extendedAgent/globalSettings/t", "GlobalSettings"),
+        )
+        for extension_type, path, envelope_type in cases:
+            with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+                 patch("azext_sre.custom._encode_extension_value"), \
+                 patch("azext_sre.custom._data_plane_request", return_value={}) as dp:
+                _extension_resource_create(None, "myagent", "rg", extension_type, "t", "{}", overwrite=True)
+            self.assertEqual(dp.call_args[0][3:5], ("PUT", path))
+            self.assertEqual(dp.call_args.kwargs["body"]["type"], envelope_type)
+
+    def test_global_settings_cannot_be_listed_or_deleted_directly(self):
+        for func, args in ((_extension_resource_list, ()), (_extension_resource_delete, ("default",))):
+            with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()):
+                with self.assertRaises(CLIError):
+                    func(None, "myagent", "rg", "globalSettings", *args)
+
+    def test_auth_and_repo_read_and_delete_use_the_portal_routes(self):
+        listing = {"values": [{"name": "github_com", "authType": "Pat"}]}
+        with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+             patch("azext_sre.custom._data_plane_request", return_value=listing) as dp:
+            shown = _extension_resource_show(None, "myagent", "rg", "githubAuths", "github_com")
+            self.assertEqual(shown["properties"]["value"]["authType"], "Pat")
+            self.assertEqual(dp.call_args[0][3:5], ("GET", "/api/v2/github/domains"))
+            _extension_resource_delete(None, "myagent", "rg", "azureDevOpsAuths", "my org")
+            self.assertEqual(dp.call_args[0][3:5], ("DELETE", "/api/v2/azuredevops/orgs?org=my%20org"))
+            _extension_resource_delete(None, "myagent", "rg", "repositories", "r")
+            self.assertEqual(dp.call_args[0][3:5], ("DELETE", "/api/v2/repos/r"))
+
+    def test_response_plan_filters_use_the_portal_route(self):
+        with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+             patch("azext_sre.custom._data_plane_request", return_value={}) as dp:
+            _extension_resource_create(None, "myagent", "rg", "incidentFilters", "p", '{"incidentPlatform": "PagerDuty"}', overwrite=True)
+            self.assertEqual(dp.call_args[0][3:5], ("PUT", "/api/v2/incidentManagement/incidentFilters/p"))
+            self.assertEqual(dp.call_args.kwargs["body"]["type"], "IncidentFilter")
+
+    def test_direct_create_sends_portal_envelope(self):
+        spec = '{"type": "LinkTool", "description": "d"}'
+        with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+             patch("azext_sre.custom._data_plane_request", side_effect=[None, {}]) as dp:
+            _extension_resource_create(None, "myagent", "rg", "tools", "t", spec)
+        body = dp.call_args_list[1].kwargs["body"]
+        self.assertEqual(body, {"name": "t", "type": "ExtendedAgentTool",
+                                "properties": {"type": "LinkTool", "description": "d"}})
+
+    def test_other_errors_pass_through(self):
+        response = Response()
+        response.status_code = 500
+        response._content = b'{"error":{"message":"boom"}}'
+        error = HTTPError("500 Server Error", response=response)
+        with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+             patch("azext_sre.custom._arm_request", side_effect=error):
+            with self.assertRaises(HTTPError):
+                _extension_resource_list(None, "myagent", "rg", "tools")
 
 
 class ExtensionCommandResourceIdTests(unittest.TestCase):
@@ -2190,6 +2743,175 @@ class ExtensionCommandResourceIdTests(unittest.TestCase):
             arm_calls[0]["resource_id"],
             "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent/hooks/myhook",
         )
+
+
+class HttpToolCreationPolicyTests(unittest.TestCase):
+    """Exercise tool commands against persisted ARM envelopes, without Azure calls."""
+
+    _AGENT_ID = "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"
+    _TOOL_ID = f"{_AGENT_ID}/tools/mytool"
+    _HTTP_TOOL = {
+        "type": "HttpClientTool",
+        "description": "Call a read-only API",
+        "url": "https://example.com/{{id}}",
+        "method": "GET",
+        "headers": [{"key": "Accept", "value": "application/json"}],
+        "parameters": [{"name": "id", "type": "string", "required": True}],
+        "auth": {"dataconnector": "api-connector", "scope": "https://example.com/.default"},
+        "timeout_seconds": 30,
+    }
+    _SUPPORTED_TOOLS = (
+        {"type": "LinkTool", "template": "https://example.com/docs"},
+        {"type": "KustoTool", "connector": "kusto", "database": "db", "query": "Table | take 1"},
+        {"type": "PythonFunctionTool", "functionCode": "def main():\n    return {'status': 200}\n"},
+    )
+
+    def setUp(self):
+        self.resources = {}
+        self.puts = []
+        self.read_error = None
+
+    def _seed(self, value):
+        self.resources[self._TOOL_ID] = {
+            "id": self._TOOL_ID,
+            "type": "microsoft.app/agents/tools",
+            "properties": {"value": base64.b64encode(json.dumps(value).encode("utf-8")).decode("ascii")},
+        }
+
+    def _arm_request(self, cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+        if method == "GET":
+            if self.read_error is not None:
+                raise self.read_error
+            if resource_id == f"{self._AGENT_ID}/tools":
+                return {"value": copy.deepcopy(list(self.resources.values()))}
+            return copy.deepcopy(self.resources.get(resource_id))
+        if method == "PUT":
+            self.puts.append({"resource_id": resource_id, "body": copy.deepcopy(body)})
+            self.resources[resource_id] = {"id": resource_id, **copy.deepcopy(body)}
+            return copy.deepcopy(self.resources[resource_id])
+        self.fail(f"Unexpected ARM method: {method}")
+
+    def _invoke(self, command_cls, **args):
+        command = _bare_command(command_cls, agent_name="myagent", resource_group="rg", **args)
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", return_value={"id": self._AGENT_ID}), \
+             patch("azext_sre.custom._arm_request", self._arm_request):
+            return command._handler({})
+
+    def _create(self, value, overwrite=False):
+        return self._invoke(
+            ToolCreate, extension_name="mytool", value=json.dumps(value), overwrite=overwrite,
+        )
+
+    def test_rejects_new_http_tool_with_and_without_overwrite(self):
+        for overwrite in (False, True):
+            with self.subTest(overwrite=overwrite):
+                self.resources.clear()
+                self.puts.clear()
+                with self.assertRaises(CLIError) as raised:
+                    self._create(self._HTTP_TOOL, overwrite=overwrite)
+                message = str(raised.exception)
+                self.assertIn("Creating new HttpClientTool tools is no longer supported", message)
+                self.assertIn("--overwrite", message)
+                self.assertIn("PythonFunctionTool", message)
+                self.assertIn("MCP", message)
+                self.assertEqual(self.resources, {})
+                self.assertEqual(self.puts, [])
+
+    def test_overwrite_cannot_replace_another_tool_type_with_http(self):
+        for tool in self._SUPPORTED_TOOLS:
+            with self.subTest(existing_type=tool["type"]):
+                self.puts.clear()
+                self._seed(tool)
+                before = copy.deepcopy(self.resources)
+                with self.assertRaises(CLIError):
+                    self._create(self._HTTP_TOOL, overwrite=True)
+                self.assertEqual(self.resources, before)
+                self.assertEqual(self.puts, [])
+
+    def test_existing_name_still_requires_intentional_overwrite(self):
+        for tool in (self._HTTP_TOOL, *self._SUPPORTED_TOOLS):
+            with self.subTest(existing_type=tool["type"]):
+                self._seed(tool)
+                before = copy.deepcopy(self.resources)
+                with self.assertRaises(ResourceExistsError) as raised:
+                    self._create(self._HTTP_TOOL)
+                self.assertIn("--overwrite", str(raised.exception))
+                self.assertEqual(self.resources, before)
+                self.assertEqual(self.puts, [])
+
+    def test_existing_http_tool_can_be_updated_without_converting_its_payload(self):
+        self._seed({"type": "HttpClientTool", "url": "https://example.com/old", "method": "GET"})
+        self._create(self._HTTP_TOOL, overwrite=True)
+        self.assertEqual(set(self.resources), {self._TOOL_ID})
+        persisted = self.resources[self._TOOL_ID]
+        self.assertEqual(persisted["type"], "microsoft.app/agents/tools")
+        self.assertEqual(json.loads(base64.b64decode(persisted["properties"]["value"])), self._HTTP_TOOL)
+
+    def test_unrecognized_existing_payload_does_not_authorize_http_creation(self):
+        for value in (None, [], {}, {"type": "UnknownTool"}):
+            with self.subTest(existing_value=value):
+                self.puts.clear()
+                self._seed(value)
+                before = copy.deepcopy(self.resources)
+                with self.assertRaises(CLIError):
+                    self._create(self._HTTP_TOOL, overwrite=True)
+                self.assertEqual(self.resources, before)
+                self.assertEqual(self.puts, [])
+
+    def test_undecodable_existing_payload_does_not_authorize_http_creation(self):
+        self.resources[self._TOOL_ID] = {"properties": {"value": "not a valid encoded tool"}}
+        before = copy.deepcopy(self.resources)
+        with self.assertRaises(CLIError):
+            self._create(self._HTTP_TOOL, overwrite=True)
+        self.assertEqual(self.resources, before)
+        self.assertEqual(self.puts, [])
+
+    def test_http_tools_remain_readable_by_show_and_list(self):
+        self._seed(self._HTTP_TOOL)
+        before = copy.deepcopy(self.resources)
+        shown = self._invoke(ToolShow, extension_name="mytool")
+        listed = self._invoke(ToolList)
+        self.assertEqual(shown["properties"]["value"], self._HTTP_TOOL)
+        self.assertEqual(listed["value"][0]["properties"]["value"], self._HTTP_TOOL)
+        self.assertEqual(self.resources, before)
+        self.assertEqual(self.puts, [])
+
+    def test_supported_tools_can_still_be_created(self):
+        for tool in self._SUPPORTED_TOOLS:
+            with self.subTest(tool_type=tool["type"]):
+                self.resources.clear()
+                self._create(tool)
+                persisted = self.resources[self._TOOL_ID]
+                self.assertEqual(json.loads(base64.b64decode(persisted["properties"]["value"])), tool)
+
+    def test_supported_overwrite_does_not_require_a_tool_lookup(self):
+        self.read_error = CLIError("Tool lookup denied")
+        for tool in self._SUPPORTED_TOOLS:
+            with self.subTest(tool_type=tool["type"]):
+                self._seed(self._HTTP_TOOL)
+                self._create(tool, overwrite=True)
+                persisted = self.resources[self._TOOL_ID]
+                self.assertEqual(json.loads(base64.b64decode(persisted["properties"]["value"])), tool)
+
+    def test_http_lookup_errors_propagate_without_mutation(self):
+        self._seed(self._HTTP_TOOL)
+        before = copy.deepcopy(self.resources)
+        self.read_error = CLIError("Tool lookup denied")
+        with self.assertRaises(CLIError) as raised:
+            self._create(self._HTTP_TOOL, overwrite=True)
+        self.assertIs(raised.exception, self.read_error)
+        self.assertEqual(self.resources, before)
+        self.assertEqual(self.puts, [])
+
+    def test_legacy_http_update_still_validates_the_payload(self):
+        self._seed(self._HTTP_TOOL)
+        before = copy.deepcopy(self.resources)
+        with self.assertRaises(CLIError) as raised:
+            self._create({**self._HTTP_TOOL, "headers": {"Accept": "application/json"}}, overwrite=True)
+        self.assertIn("--value.headers", str(raised.exception))
+        self.assertEqual(self.resources, before)
+        self.assertEqual(self.puts, [])
 
 
 class PinnedExtensionFacadeTests(unittest.TestCase):
@@ -2564,6 +3286,128 @@ class UpdateNetworkMergeTests(unittest.TestCase):
         self.assertNotIn("displayName", result)
 
 
+class NetworkUpdateCliTests(unittest.TestCase):
+    """Runs `network update` through the real Azure CLI parser, loading the
+    extension from source so CI doesn't need it installed."""
+
+    _AGENT = {"id": "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"}
+
+    def setUp(self):
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        config_dir = stack.enter_context(tempfile.TemporaryDirectory())
+        stack.enter_context(patch.dict(os.environ, {
+            "AZURE_CONFIG_DIR": config_dir,
+            "AZURE_CORE_COLLECT_TELEMETRY": "no",
+            "AZURE_CORE_USE_COMMAND_INDEX": "no",
+            "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "no",
+        }))
+        stack.enter_context(patch("azure.cli.core._config.GLOBAL_CONFIG_DIR", config_dir))
+        extension = DevExtension("sre", str(Path(__file__).resolve().parents[3]))
+        stack.enter_context(patch.object(extension, "get_metadata", return_value={"version": "1.0.0b1"}))
+        stack.enter_context(patch("azure.cli.core.extension.get_extensions", return_value=[extension]))
+        stack.enter_context(patch("azure.cli.core.MainCommandsLoader._load_modules", return_value=[]))
+        stack.enter_context(patch("azure.cli.core.util.handle_version_update"))
+        stack.enter_context(patch("azure.cli.core.util.show_updates_available"))
+        stack.enter_context(patch(
+            "requests.sessions.Session.request",
+            side_effect=AssertionError("This test must not use the network."),
+        ))
+
+    def test_accepts_network_show_output_with_nulls(self):
+        # Shape of `network show --query sandboxConfiguration` on a new agent.
+        shown = {
+            "egress": {
+                "mode": "Limited", "allowedHosts": ["a.example.com"],
+                "allowedRegistries": ["pypi"], "allowHttpMcpServerNetworkAccess": True,
+                "httpProxy": None, "vnetConfiguration": None,
+            },
+            "packages": None,
+        }
+        puts = []
+
+        def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+            if method == "PUT":
+                puts.append(body)
+                return body
+            return {"id": self._AGENT["id"], "properties": {}}
+
+        with patch("azext_sre.custom._cli_invoke", lambda *a, **k: self._AGENT), \
+             patch("azext_sre.custom._arm_request", fake_arm_request):
+            try:
+                code = get_default_cli().invoke([
+                    "sre", "network", "update", "-g", "rg", "-n", "myagent",
+                    "--sandbox-configuration", json.dumps(shown), "-o", "none",
+                ], out_file=io.StringIO())
+            except SystemExit as ex:
+                code = ex.code
+
+        self.assertEqual(code, 0)
+        self.assertEqual(puts[0]["properties"]["sandboxConfiguration"], {
+            "egress": {
+                "mode": "Limited", "allowedHosts": ["a.example.com"],
+                "allowedRegistries": ["pypi"], "allowHttpMcpServerNetworkAccess": True,
+            },
+        })
+
+class ShowNetworkTests(unittest.TestCase):
+    _ID = "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"
+
+    def test_reads_at_networking_api_version_and_trims(self):
+        command = _bare_command(ShowNetwork, name="myagent", resource_group="rg")
+        calls = []
+
+        def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+            calls.append((method, resource_id, api_version))
+            return {"id": self._ID, "name": "myagent", "properties": {
+                "displayName": "hide-me", "provisioningState": "Succeeded",
+                "sandboxConfiguration": {"egress": {"mode": "Limited"}}}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
+             patch("azext_sre.custom._arm_request", fake_arm_request):
+            result = command._handler({})
+
+        self.assertEqual(calls, [("GET", self._ID, "2026-11-01-preview")])
+        self.assertEqual(result["sandboxConfiguration"], {"egress": {"mode": "Limited"}})
+        self.assertIsNone(result["vnetConfiguration"])
+        # The live ARM response has no resourceGroup field; it comes from the ID.
+        self.assertEqual(result["resourceGroup"], "rg")
+        self.assertNotIn("displayName", result)
+
+    def test_missing_agent_raises(self):
+        command = _bare_command(ShowNetwork, name="myagent", resource_group="rg")
+
+        def fake_arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_ok=False):
+            if not missing_ok:
+                raise AssertionError("a 404 must be tolerated with missing_ok=True")
+            return None
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
+             patch("azext_sre.custom._arm_request", fake_arm_request):
+            with self.assertRaises(ResourceNotFoundError):
+                command._handler({})
+
+    def test_404_on_the_get_becomes_not_found(self):
+        command = _bare_command(ShowNetwork, name="myagent", resource_group="rg")
+
+        class Http404(Exception):
+            response = type("R", (), {"status_code": 404})()
+
+        def raise_404(*args, **kwargs):
+            raise Http404()
+
+        command.cli_ctx.cloud = types.SimpleNamespace(
+            endpoints=types.SimpleNamespace(resource_manager="https://management.azure.com/"))
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._resolve_agent_resource_id", lambda *a, **k: self._ID), \
+             patch("azext_sre.custom.send_raw_request", raise_404):
+            with self.assertRaises(ResourceNotFoundError):
+                command._handler({})
+
+
 class CommandRegistrationTests(unittest.TestCase):
     """Every hand-written command in custom.py must actually be reachable
     through the loader's public 'sre ...' surface -- extends the single
@@ -2581,7 +3425,7 @@ class CommandRegistrationTests(unittest.TestCase):
             "sre agent create", "sre agent update", "sre agent show",
             "sre agent list", "sre agent delete", "sre agent start",
             "sre agent stop", "sre endpoint show", "sre usage list",
-            "sre access grant", "sre access revoke", "sre network update",
+            "sre access grant", "sre access revoke", "sre network update", "sre network show",
             "sre connector create", "sre connector show", "sre connector list",
             "sre connector update", "sre connector delete", "sre connector list-secret",
             "sre identity assign", "sre identity remove", "sre identity show",
@@ -2630,51 +3474,6 @@ class CommandRegistrationTests(unittest.TestCase):
         self.assertEqual(still_present, [], f"Retired duplicate commands still registered: {still_present}")
 
 
-class CliArgumentEnforcementTests(unittest.TestCase):
-    """Exercises the real Azure CLI argument parser so enum/required-argument
-    enforcement is proven, not just declared. No Azure call happens: argument parsing
-    fails before any handler runs.
-    """
-
-    def _invoke(self, args):
-        from azure.cli.core import get_default_cli
-
-        cli = get_default_cli()
-        try:
-            return cli.invoke(args)
-        except SystemExit as ex:
-            return ex.code
-
-    def test_invalid_role_value_is_rejected(self):
-        code = self._invoke(
-            [
-                "sre", "agent", "grant-access",
-                "-g", "rg", "--agent-name", "a",
-                "--role", "bogus", "--assignee", "x",
-            ]
-        )
-        self.assertNotEqual(code, 0)
-
-    def test_invalid_extension_type_is_rejected(self):
-        code = self._invoke(
-            [
-                "sre", "agent", "extension", "show",
-                "-g", "rg", "--agent-name", "a",
-                "--extension-type", "bogus", "--extension-name", "x",
-            ]
-        )
-        self.assertNotEqual(code, 0)
-
-    def test_missing_required_assignee_is_rejected(self):
-        code = self._invoke(
-            [
-                "sre", "agent", "grant-access",
-                "-g", "rg", "--agent-name", "a", "--role", "admin",
-            ]
-        )
-        self.assertNotEqual(code, 0)
-
-
 class ArgSchemaHelpRegressionTests(unittest.TestCase):
     """Regression test for a real bug found during live verification:
     AAZBaseArg always initializes ._help as a dict (keyed by
@@ -2694,7 +3493,7 @@ class ArgSchemaHelpRegressionTests(unittest.TestCase):
     def test_connector_create_help_does_not_crash(self):
         schema = ConnectorCreate._build_arguments_schema()
         cmd_arg = schema.data_connector_type.to_cmd_arg("data_connector_type")
-        self.assertIn("Kusto", cmd_arg.type.settings.get("help"))
+        self.assertIn("Azure Data Explorer", cmd_arg.type.settings.get("help"))
 
     def test_agent_create_help_does_not_crash(self):
         schema = Create._build_arguments_schema()
@@ -2742,6 +3541,60 @@ class _TestConnectorConvenience(_ConnectorConvenienceArgsMixin, _NoOpPreOperatio
     pass
 
 
+class InternalFeatureHelpVisibilityTests(unittest.TestCase):
+    """Help hides Microsoft-internal options for non-Microsoft tenants, like the portal."""
+
+    def test_listed_connector_types_match_portal_picker(self):
+        with patch("azext_sre.custom._show_internal_features", return_value=False):
+            third_party = _listed_connector_types()
+        with patch("azext_sre.custom._show_internal_features", return_value=True):
+            internal = _listed_connector_types()
+        for hidden in ("Icm", "Dgrep", "GenevaMetrics", "S360"):
+            self.assertNotIn(hidden, third_party)
+            self.assertIn(hidden, internal)
+        for unlisted in ("Kusto", "Documentation", "MonitorClient", "KnowledgeText"):
+            self.assertNotIn(unlisted, internal)
+        for retired in ("KustoDataIndexer", "TsgCrawler"):
+            self.assertNotIn(retired, third_party)
+            self.assertNotIn(retired, internal)
+            self.assertEqual(
+                _normalize_data_connector_type(PORTAL_CONNECTOR_NAMES[retired]), retired)
+
+    def _visible_with_profile(self, profile):
+        with tempfile.TemporaryDirectory() as config_dir:
+            if profile is not None:
+                with open(os.path.join(config_dir, "azureProfile.json"), "w", encoding="utf-8") as f:
+                    f.write(profile if isinstance(profile, str) else json.dumps(profile))
+            old = os.environ.get("AZURE_CONFIG_DIR")
+            os.environ["AZURE_CONFIG_DIR"] = config_dir
+            try:
+                return _show_internal_features()
+            finally:
+                if old is None:
+                    del os.environ["AZURE_CONFIG_DIR"]
+                else:
+                    os.environ["AZURE_CONFIG_DIR"] = old
+
+    @staticmethod
+    def _profile(tenant_id):
+        return {"subscriptions": [
+            {"id": "other", "tenantId": "11111111-1111-1111-1111-111111111111", "isDefault": False},
+            {"id": "sub", "tenantId": tenant_id, "isDefault": True},
+        ]}
+
+    def test_hidden_for_non_microsoft_tenant(self):
+        self.assertFalse(self._visible_with_profile(self._profile("e0a62563-74af-4081-8ae3-fb94b692e394")))
+
+    def test_shown_for_microsoft_and_sovereign_tenants(self):
+        self.assertTrue(self._visible_with_profile(self._profile("72f988bf-86f1-41af-91ab-2d7cd011db47")))
+        self.assertTrue(self._visible_with_profile(self._profile("70a90262-f46c-48aa-ac4c-37e37f8be1a2")))
+
+    def test_shown_when_tenant_unknown(self):
+        self.assertTrue(self._visible_with_profile(None))
+        self.assertTrue(self._visible_with_profile("not json"))
+        self.assertTrue(self._visible_with_profile({"subscriptions": []}))
+
+
 class GenevaMetricsTenantGateTests(unittest.TestCase):
     """GenevaMetrics is Microsoft-internal only (Paul's 2026-11-02 Teams
     feedback). _DataConnectorTypeArgMixin.pre_operations() now resolves the
@@ -2764,6 +3617,31 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
         be None/AAZUndefined, and pre_operations() calls .to_serialized_data()
         on it (mirrors ConnectorConvenienceArgsTests' approach one level up)."""
         return SimpleNamespace(to_serialized_data=lambda: serialized)
+
+    class _TestIcmPlatformGate(_IcmIncidentPlatformGateMixin, _NoOpPreOperationsBase):
+        pass
+
+    def test_agent_icm_platform_blocked_outside_microsoft_tenants(self):
+        config = SimpleNamespace(type="Icm")
+        for tenant, blocked in (
+                ("e0a62563-74af-4081-8ae3-fb94b692e394", True),
+                (self.MICROSOFT_CORP_TENANT_ID, False),
+                (self.MICROSOFT_AME_TENANT_ID, False)):
+            with self.subTest(tenant=tenant), patch(
+                    "azext_sre.custom._resolve_signed_in_tenant_id", lambda cli_ctx, t=tenant: t):
+                command = _bare_command(self._TestIcmPlatformGate, incident_management_configuration=config)
+                if blocked:
+                    with self.assertRaises(CLIError):
+                        command.pre_operations()
+                else:
+                    command.pre_operations()
+
+    def test_agent_non_icm_platform_is_never_blocked(self):
+        command = _bare_command(
+            self._TestIcmPlatformGate,
+            incident_management_configuration=SimpleNamespace(type="PagerDuty"))
+        with patch("azext_sre.custom._resolve_signed_in_tenant_id", lambda cli_ctx: "e0a62563-74af-4081-8ae3-fb94b692e394"):
+            command.pre_operations()
 
     def test_resolve_signed_in_tenant_id_returns_tenant(self):
         with patch(
@@ -2835,6 +3713,38 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
         ):
             command.pre_operations()
         self.assertEqual(command.ctx.args.data_connector_type, "Kusto")
+
+    def _create_with_features(self, connector_type, features):
+        command = _bare_command(
+            self._TestDataConnectorType, data_connector_type=self._value(connector_type)
+        )
+        with patch("azext_sre.custom._agent_features", return_value=features):
+            command.pre_operations()
+        return command
+
+    def test_internal_only_connectors_blocked_when_the_agent_is_not_first_party(self):
+        for connector_type in ("GenevaMetrics", "S360", "dgrep"):
+            with self.assertRaises(CLIError):
+                self._create_with_features(connector_type, {"isFirstParty": False})
+
+    def test_internal_only_connectors_allowed_when_the_agent_is_first_party(self):
+        command = self._create_with_features("s360", {"isFirstParty": True})
+        self.assertEqual(command.ctx.args.data_connector_type, "S360")
+
+    def test_icm_connector_blocked_only_when_the_agent_says_it_is_not_first_party(self):
+        with self.assertRaises(CLIError):
+            self._create_with_features("icm", {"isFirstParty": False})
+        command = self._create_with_features("icm", {})
+        self.assertEqual(command.ctx.args.data_connector_type, "Icm")
+
+    def test_require_first_party_blocks_only_agents_that_say_they_are_not(self):
+        from azext_sre.custom import _require_first_party
+
+        with patch("azext_sre.custom._agent_features", return_value={"isFirstParty": False}):
+            with self.assertRaises(CLIError):
+                _require_first_party(None, "a", "rg", "Something internal")
+        with patch("azext_sre.custom._agent_features", return_value={}):
+            _require_first_party(None, "a", "rg", "Something internal")
 
 
 class ConnectorConvenienceArgsTests(unittest.TestCase):
@@ -3107,6 +4017,18 @@ class ConnectorListSecretAliasTests(unittest.TestCase):
         schema = ConnectorListSecret._build_arguments_schema()
         cmd_arg = schema.connector_name.to_cmd_arg("connector_name")
         self.assertEqual(cmd_arg.options_list, ["-n", "--name", "--connector-name"])
+
+    def test_http_logging_is_disabled_for_the_secret_request(self):
+        operation = ConnectorListSecret.AgentsConnectorsListSecrets.__new__(
+            ConnectorListSecret.AgentsConnectorsListSecrets
+        )
+        seen = {}
+        parent = ConnectorListSecret.AgentsConnectorsListSecrets.__mro__[2]
+        with patch.object(
+            parent, "__call__", lambda self, *a, **kw: seen.update(kw) or "ok"
+        ):
+            self.assertEqual(operation(logging_enable=True), "ok")
+        self.assertIs(seen["logging_enable"], False)
 
 
 class IdentityAndSupportedAgentModelRegistrationTests(unittest.TestCase):
@@ -3477,6 +4399,27 @@ class ConnectionShowDefaultAudienceTests(unittest.TestCase):
         result = self._run(data_plane_audience="https://custom.audience.example")
         self.assertEqual(result["dataPlaneAudience"], "https://custom.audience.example")
 
+    def test_malformed_connections_file_is_not_overwritten(self):
+        command = _bare_command(
+            GetConnection, name="myagent", resource_group="rg",
+            data_plane_audience="https://azuresre.dev",
+        )
+
+        def fake_cli_invoke(cli_ctx, *cmd_args, allow_missing=False):
+            return {"properties": {"agentEndpoint": "https://myagent.example"}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
+             tempfile.TemporaryDirectory() as tmp_dir:
+            path = os.path.join(tmp_dir, "sreAgentConnections.json")
+            for bad in ("{not json", "[1, 2]"):
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(bad)
+                with patch("azext_sre.custom._CONNECTIONS_FILE", path):
+                    with self.assertRaises(CLIError):
+                        command._handler({})
+                with open(path, "r", encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), bad)
 
 class _NoOpPreOpBase2:
     def pre_operations(self):
@@ -3786,6 +4729,11 @@ class ConnectorTableTransformerTests(unittest.TestCase):
         self.assertIsNotNone(command_table["sre connector list"].table_transformer)
         self.assertIsNotNone(command_table["sre connector show"].table_transformer)
         self.assertIsNone(command_table["sre connector create"].table_transformer)
+
+
+def setUpModule():
+    # Keep route detection off by default so tests never touch the network or the real cache.
+    os.environ["AZSRE_EXTENSION_ROUTE"] = "arm"
 
 
 if __name__ == "__main__":

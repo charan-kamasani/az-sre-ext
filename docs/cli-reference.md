@@ -10,14 +10,15 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **24 groups** and **77 commands**.
+Public surface: **24 groups** and **78 commands**.
 
 ## Important caveats
 
-- This CLI only talks to the control plane (`Microsoft.App/agents` ARM resource). It never talks to the agent's own data plane (`*.azuresre.ai`) directly. See the [implementation plan](../PLAN.md).
+- This CLI uses both the control plane (`Microsoft.App/agents` ARM resource) and the agent's own data plane (`*.azuresre.ai`). The route depends on the operation and tenant. See the [operations guide](operations.md).
+- This reference includes the complete command surface, including Microsoft-internal options where documented. Interactive help can hide those options for other tenants; generation does not depend on your signed-in account.
 - The overall noun/verb shape (why `agent` isn't a wrapper for every other noun, why there's one dedicated noun per runbook-extension type instead of a generic `extension --type`) is a deliberate decision with alternatives considered -- see the [shape design doc](shape-design.md).
 - `network update` is hand-written against the real `2026-11-01-preview` api-version; there is no public Swagger for it yet. See the [networking guide](networking.md).
-- `--value` JSON documents (e.g. `tool create`, `skill create`, `agent settings update`) are base64-encoded and sent as-is to the agent's data plane. Each extension type has its own dedicated front-door noun (`tool`, `skill`, `hook`, `instructions`, `plugin marketplace`/`plugin install`, `repo connect`, `agent settings`); there is no generic `extension` escape hatch anymore. See the [operations guide](operations.md).
+- `--value` JSON documents (e.g. `tool create`, `skill create`, `agent settings update`) are validated and sent in the envelope required by the selected API. Each extension type has its own dedicated front-door noun (`tool`, `skill`, `hook`, `instructions`, `plugin marketplace`/`plugin install`, `repo connect`, `agent settings`); there is no generic `extension` escape hatch anymore. See the [operations guide](operations.md).
 - `connector list-secret` is the only command that can return connector secret material in plain text; everything else (`connector show`, `connector list`, `connector create`/`update` responses) redacts secret fields server-side.
 
 ## Global options
@@ -93,10 +94,14 @@ Grant an agent role to a user, group or principal.
 
 - Grant yourself admin access to an agent
 
-  `az sre access grant --name myagent --resource-group myrg --role admin --assignee-me`
+  ```bash
+  az sre access grant --name myagent --resource-group myrg --role admin --assignee-me
+  ```
 - Grant a user read-only access
 
-  `az sre access grant --name myagent --resource-group myrg --role reader --assignee someone@contoso.com`
+  ```bash
+  az sre access grant --name myagent --resource-group myrg --role reader --assignee someone@contoso.com
+  ```
 
 ### `az sre access list`
 
@@ -117,7 +122,9 @@ assignment scoped to the agent itself.
 
 - List everyone with access to an agent
 
-  `az sre access list --name myagent --resource-group myrg`
+  ```bash
+  az sre access list --name myagent --resource-group myrg
+  ```
 
 ### `az sre access revoke`
 
@@ -139,7 +146,9 @@ Revoke an agent role from a user, group or principal.
 
 - Revoke a user's access to an agent
 
-  `az sre access revoke --name myagent --resource-group myrg --role user --assignee someone@contoso.com`
+  ```bash
+  az sre access revoke --name myagent --resource-group myrg --role user --assignee someone@contoso.com
+  ```
 
 ## `az sre agent`
 
@@ -193,7 +202,10 @@ Create an SRE Agent.
 
 - Create an agent with an Anthropic default model
 
-  `az sre agent create --name myagent --resource-group myrg \ --location eastus2 --default-model "{provider:anthropic,name:automatic}"`
+  ```bash
+  az sre agent create --name myagent --resource-group myrg \
+  --location eastus2 --default-model "{provider:anthropic,name:automatic}"
+  ```
 
 ### `az sre agent delete`
 
@@ -214,10 +226,14 @@ Delete an SRE Agent.
 
 - Delete an agent after confirming interactively
 
-  `az sre agent delete --name myagent --resource-group myrg`
+  ```bash
+  az sre agent delete --name myagent --resource-group myrg
+  ```
 - Delete an agent without an interactive confirmation prompt
 
-  `az sre agent delete --name myagent --resource-group myrg --yes`
+  ```bash
+  az sre agent delete --name myagent --resource-group myrg --yes
+  ```
 
 ### `az sre agent list`
 
@@ -237,10 +253,14 @@ List SRE Agents in a subscription or resource group.
 
 - List all agents in a resource group
 
-  `az sre agent list --resource-group myrg`
+  ```bash
+  az sre agent list --resource-group myrg
+  ```
 - List all agents in the current subscription
 
-  `az sre agent list`
+  ```bash
+  az sre agent list
+  ```
 
 ### `az sre agent list-models`
 
@@ -260,9 +280,11 @@ Use this before 'sre agent create' to confirm --default-model is supported in th
 
 **Examples**
 
-- See which models are available in East US
+- See which models are available in East US 2
 
-  `az sre agent list-models --location eastus`
+  ```bash
+  az sre agent list-models --location eastus2
+  ```
 
 ### `az sre agent show`
 
@@ -281,7 +303,9 @@ Show the details of an SRE Agent.
 
 - Show one agent's details
 
-  `az sre agent show --name myagent --resource-group myrg`
+  ```bash
+  az sre agent show --name myagent --resource-group myrg
+  ```
 
 ### `az sre agent start`
 
@@ -301,7 +325,9 @@ Start a stopped SRE Agent.
 
 - Start a stopped agent
 
-  `az sre agent start --name myagent --resource-group myrg`
+  ```bash
+  az sre agent start --name myagent --resource-group myrg
+  ```
 
 ### `az sre agent stop`
 
@@ -321,11 +347,15 @@ Stop a running SRE Agent.
 
 - Stop a running agent
 
-  `az sre agent stop --name myagent --resource-group myrg`
+  ```bash
+  az sre agent stop --name myagent --resource-group myrg
+  ```
 
 ### `az sre agent update`
 
 Update an SRE Agent.
+
+PagerDuty matches the portal's Incidents > Connect an incident platform > PagerDuty workflow. It uses an ARM PATCH on the agent resource, not the separate Connector Gateway used by Jira, Slack and SharePoint. --connection-key is the PagerDuty REST API access key; --obo-user is the identity the agent acts under when resolving or commenting on incidents. ServiceNow uses Basic Auth: set --connection-url to the instance URL and --connection-key to the credentials. Azure Monitor needs no configuration here -- it connects automatically when the agent is created, with AzMonitor as the enum's implicit default.
 
 **Syntax**
 
@@ -353,13 +383,22 @@ Update an SRE Agent.
 
 - Switch an agent's default model to MicrosoftFoundry
 
-  `az sre agent update --name myagent --resource-group myrg \ --default-model "{provider:MicrosoftFoundry,name:gpt-5}"`
-- Connect PagerDuty as the incident platform (portal: Incidents
+  ```bash
+  az sre agent update --name myagent --resource-group myrg \
+  --default-model "{provider:MicrosoftFoundry,name:gpt-5}"
+  ```
+- Connect PagerDuty as the incident platform
 
-  `> Connect an incident platform > PagerDuty). This is a plain ARM PATCH on the agent resource -- confirmed via the control plane's own AgentDocument.cs model and real E2E fixtures (PagerDutySetupFixture.cs) -- not the separate, portal-only Connector Gateway (which Jira/Slack/ SharePoint/etc. use). --connection-key is the PagerDuty REST API access key from the tutorial; --obo-user is the user whose identity the agent acts under when resolving/commenting on incidents. az sre agent update --name myagent --resource-group myrg \ --incident-management-configuration "{type:PagerDuty,connection-name:pagerduty,connection-key:<api-key>,obo-user:oncall@contoso.com}"`
-- Connect ServiceNow as the incident platform (Basic Auth; set
+  ```bash
+  az sre agent update --name myagent --resource-group myrg \
+  --incident-management-configuration "{type:PagerDuty,connection-name:pagerduty,connection-key:<api-key>,obo-user:oncall@contoso.com}"
+  ```
+- Connect ServiceNow as the incident platform with Basic Auth
 
-  `--connection-url to the instance URL and --connection-key to the credentials, per the tutorial's "instance URL and credentials" step) az sre agent update --name myagent --resource-group myrg \ --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:https://contoso.service-now.com,connection-key:<credentials>}" Azure Monitor needs no configuration here -- it connects automatically when the agent is created (confirmed by the tutorial and by AzMonitor being the enum's implicit default). Icm is this CLI's own sandbox/ first-party path, set the same way with type=Icm.`
+  ```bash
+  az sre agent update --name myagent --resource-group myrg \
+  --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:https://contoso.service-now.com,connection-key:<credentials>}"
+  ```
 
 ### `az sre agent wait`
 
@@ -373,6 +412,14 @@ Place the CLI in a waiting state until a condition is met.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- Wait until the agent finishes provisioning
+
+  ```bash
+  az sre agent wait -g myrg --agent-name myagent --created
+  ```
 
 ## `az sre automation`
 
@@ -412,12 +459,12 @@ Create an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. |
+| `--data-connector-type` | String | No |  |  | Connector type, by portal name (case-insensitive): Azure Data Explorer, Database query connector (user), Log Analytics Workspace, Application Insights, MCP server, Office 365 Outlook, Microsoft Teams, EV2, Azure DevOps AI Search, IcM connector, DGrep, Geneva Metrics, S360 connector. For knowledge sources use 'az sre knowledge create'. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
-| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
+| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. |
 | `--identity` | String | No |  |  | Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity. |
-| `--file-path` | String | No |  |  | Local file to ingest. KnowledgeFile: base64-encoded and uploaded. KnowledgeText: read as UTF-8 text. |
+| `--file-path` | String | No |  |  | Local file to ingest. For knowledge sources use 'az sre knowledge create'. |
 | `--mcp-endpoint` | String | No |  |  | For Mcp: the MCP server's HTTP endpoint URL. |
 | `--github` | Boolean | No |  | `false`, `true` | For Mcp: connect the public GitHub Copilot MCP server (https://api.githubcopilot.com/mcp/). |
 | `--tool-access` | Boolean | No |  | `false`, `true` | For KustoClient: let the agent use query tools from this connector (portal 'Allow agent to use query tools'). |
@@ -432,19 +479,39 @@ Create an Agent Connector.
 
 - Connect Azure Data Explorer
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name adx --data-connector-type "Azure Data Explorer"`
+  ```bash
+  az sre connector create --agent-name myagent --resource-group myrg \
+  --name adx --data-connector-type "Azure Data Explorer"
+  ```
 - Connect the GitHub MCP server
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name github --data-connector-type Mcp --github true`
+  ```bash
+  az sre connector create --agent-name myagent --resource-group myrg \
+  --name github --data-connector-type Mcp --github true
+  ```
 - Connect a custom MCP server with a bearer token
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name mcp --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --bearer-token "$MY_SERVER_TOKEN"`
+  ```bash
+  az sre connector create --agent-name myagent --resource-group myrg \
+  --name mcp --data-connector-type Mcp \
+  --mcp-endpoint "https://myserver.contoso.com/mcp" \
+  --bearer-token "$MY_SERVER_TOKEN"
+  ```
 - Connect a custom MCP server with the agent's managed identity
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name mcp --data-connector-type Mcp \ --mcp-endpoint "https://myserver.contoso.com/mcp" \ --managed-identity-auth true`
+  ```bash
+  az sre connector create --agent-name myagent --resource-group myrg \
+  --name mcp --data-connector-type Mcp \
+  --mcp-endpoint "https://myserver.contoso.com/mcp" \
+  --managed-identity-auth true
+  ```
 - Connect one Kusto cluster and database
 
-  `az sre connector create --agent-name myagent --resource-group myrg \ --name kusto --data-connector-type Kusto \ --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"`
+  ```bash
+  az sre connector create --agent-name myagent --resource-group myrg \
+  --name kusto --data-connector-type "Azure Data Explorer" \
+  --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"
+  ```
 
 ### `az sre connector delete`
 
@@ -461,6 +528,14 @@ Delete an Agent Connector.
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--yes`, `-y` | Flag | No | false |  | Do not prompt for confirmation. |
+
+**Examples**
+
+- Delete a connector without a prompt
+
+  ```bash
+  az sre connector delete -g myrg --agent-name myagent -n conn-kusto --yes
+  ```
 
 ### `az sre connector list`
 
@@ -479,11 +554,19 @@ consentStatus (Consented/PendingConsent) is shown for EntraOAuth-backed Mcp conn
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
+**Examples**
+
+- List an agent's connectors
+
+  ```bash
+  az sre connector list -g myrg --agent-name myagent
+  ```
+
 ### `az sre connector list-secret`
 
 Show a connector with its secrets in plain text.
 
-Unlike 'sre connector show'/'sre connector list', which redact secret fields server-side, this command returns them unredacted.
+Unlike 'sre connector show'/'sre connector list', which redact secret fields server-side, this command returns them unredacted. HTTP request and response tracing is disabled for this command, including with --debug. Store the output securely and never commit it. The service only returns secrets to callers with an admin role on the agent; other callers get an authorization error.
 
 **Syntax**
 
@@ -499,7 +582,9 @@ Unlike 'sre connector show'/'sre connector list', which redact secret fields ser
 
 - Read back a Kusto connector's secret after creating it
 
-  `az sre connector list-secret --agent-name myagent --resource-group myrg --name conn-kusto`
+  ```bash
+  az sre connector list-secret --agent-name myagent --resource-group myrg --name conn-kusto
+  ```
 
 ### `az sre connector show`
 
@@ -516,6 +601,14 @@ consentStatus is shown for EntraOAuth-backed Mcp connectors.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- Show one connector
+
+  ```bash
+  az sre connector show -g myrg --agent-name myagent -n conn-kusto
+  ```
 
 ### `az sre connector update`
 
@@ -535,11 +628,20 @@ Update an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type (case-insensitive; portal names also accepted). Allowed values: KustoClient (default), Kusto, Mcp, Outlook, Teams, LogAnalytics, Icm, Dgrep, Ev2Mcp, GenevaMetrics, S360, Documentation, AppInsights, KnowledgeText, KnowledgeFile, KnowledgeWebPage, KnowledgeRepository. |
+| `--data-connector-type` | String | No |  |  | Connector type, by portal name (case-insensitive): Azure Data Explorer, Database query connector (user), Log Analytics Workspace, Application Insights, MCP server, Office 365 Outlook, Microsoft Teams, EV2, Azure DevOps AI Search, IcM connector, DGrep, Geneva Metrics, S360 connector. For knowledge sources use 'az sre knowledge create'. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: https://cluster.kusto.windows.net/database. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
-| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. Needed for KnowledgeText, KnowledgeFile, KnowledgeWebPage and KnowledgeRepository. |
+| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. |
 | `--identity` | String | No |  |  | Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity. |
+
+**Examples**
+
+- Point a Kusto connector at a different database
+
+  ```bash
+  az sre connector update -g myrg --agent-name myagent -n conn-kusto \
+  --data-connector-type "Azure Data Explorer" \
+  ```
 
 ## `az sre endpoint`
 
@@ -571,7 +673,9 @@ Like 'az aks get-credentials', it writes the connection details that data-plane 
 
 - Resolve and save the data-plane endpoint for an agent
 
-  `az sre endpoint show --agent-name myagent --resource-group myrg`
+  ```bash
+  az sre endpoint show --agent-name myagent --resource-group myrg
+  ```
 
 ## `az sre hook`
 
@@ -606,10 +710,26 @@ Create or update a hook.
 
 - Run a prompt after every Bash tool call
 
-  `az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check \ --value @hook.json hook.json: {"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands", "hook": {"type": "prompt", "prompt": "Warn if the last tool call looks destructive.", "matcher": "Bash.*", "failMode": "Allow"}}`
+  ```bash
+  cat > hook.json <<'JSON'
+  {"eventType": "PostToolUse", "activationMode": "always", "description": "Flag risky commands",
+  "hook": {"type": "prompt", "prompt": "Warn if the last tool call looks destructive.",
+  "matcher": "Bash.*", "failMode": "Allow"}}
+  JSON
+  az sre hook create --agent-name myagent --resource-group myrg --name post-tool-check \
+  --value @hook.json
+  ```
 - Run a command instead of a prompt
 
-  `--value @hook.json, with "hook": {"type": "command", "command": "echo ok", "matcher": "Bash.*", "timeout": 30}`
+  ```bash
+  cat > command-hook.json <<'JSON'
+  {"eventType": "PostToolUse", "activationMode": "always",
+  "hook": {"type": "command", "script": "#!/usr/bin/env python3\nimport json\nprint(json.dumps({'decision': 'allow'}))",
+  "matcher": "Bash.*", "timeout": 30}}
+  JSON
+  az sre hook create --agent-name myagent --resource-group myrg --name post-tool-command \
+  --value @command-hook.json
+  ```
 
 ### `az sre hook delete`
 
@@ -630,7 +750,9 @@ Delete a hook.
 
 - Delete a hook
 
-  `az sre hook delete -g myrg --agent-name myagent --name post-tool-check`
+  ```bash
+  az sre hook delete -g myrg --agent-name myagent --name post-tool-check
+  ```
 
 ### `az sre hook list`
 
@@ -649,7 +771,9 @@ List hooks.
 
 - List an agent's hooks
 
-  `az sre hook list -g myrg --agent-name myagent`
+  ```bash
+  az sre hook list -g myrg --agent-name myagent
+  ```
 
 ### `az sre hook show`
 
@@ -669,7 +793,9 @@ Show a hook.
 
 - Show one hook
 
-  `az sre hook show -g myrg --agent-name myagent --name post-tool-check`
+  ```bash
+  az sre hook show -g myrg --agent-name myagent --name post-tool-check
+  ```
 
 ## `az sre identity`
 
@@ -703,10 +829,15 @@ Assign a managed identity to an agent.
 
 - Turn on the agent's system-assigned identity
 
-  `az sre identity assign --agent-name myagent --resource-group myrg --system-assigned`
+  ```bash
+  az sre identity assign --agent-name myagent --resource-group myrg --system-assigned
+  ```
 - Assign one or more user-assigned identities
 
-  `az sre identity assign --agent-name myagent --resource-group myrg \ --user-assigned "/subscriptions/.../resourceGroups/myrg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/myid"`
+  ```bash
+  az sre identity assign --agent-name myagent --resource-group myrg \
+  --user-assigned "/subscriptions/.../resourceGroups/myrg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/myid"
+  ```
 
 ### `az sre identity remove`
 
@@ -728,7 +859,9 @@ Remove a managed identity from an agent.
 
 - Turn off the agent's system-assigned identity
 
-  `az sre identity remove --agent-name myagent --resource-group myrg --system-assigned`
+  ```bash
+  az sre identity remove --agent-name myagent --resource-group myrg --system-assigned
+  ```
 
 ### `az sre identity show`
 
@@ -742,6 +875,14 @@ Show the managed identities assigned to an agent.
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- Show an agent's identities
+
+  ```bash
+  az sre identity show -g myrg --agent-name myagent
+  ```
 
 ## `az sre instructions`
 
@@ -776,18 +917,29 @@ WARNING -- this does NOT set the portal's single "Custom instructions" text box.
 
 **Examples**
 
-- Set an agent's global custom instructions (the portal's real
+- Set the portal's global custom instructions with agent settings
 
-  `singleton text box -- NOT this command; shown here to avoid the mix-up) az sre agent settings update -g myrg --agent-name myagent \ --value '{"customInstructions": "Always cite the runbook section you used."}'`
-- Create a named, reusable prompt snippet instead (what this
+  ```bash
+  az sre agent settings update -g myrg --agent-name myagent \
+  --value '{"customInstructions": "Always cite the runbook section you used."}'
+  ```
+- Create a named, reusable prompt snippet
 
-  `command actually does) az sre instructions create -g myrg --agent-name myagent --name default \ --value '{"prompt": "Always cite the runbook section you used."}'`
-- Windows PowerShell -- same --value @file pattern as 'sre hook
+  ```bash
+  az sre instructions create -g myrg --agent-name myagent --name default \
+  --value '{"prompt": "Always cite the runbook section you used."}'
+  ```
+- Windows PowerShell -- pass a JSON file
 
-  `create' (live-verified, recommended; see 'sre hook create -h' for why) '{"prompt": "Be concise."}' \| Set-Content -Path "$env:TEMP\instructions.json" az sre instructions create -g myrg --agent-name myagent --name default --value "@$env:TEMP\instructions.json" --overwrite true`
-- Windows PowerShell -- alternative 'cmd /c' wrapper, if you'd
+  ```powershell
+  '{"prompt": "Be concise."}' | Set-Content -Path "$env:TEMP\instructions.json"
+  az sre instructions create -g myrg --agent-name myagent --name default --value "@$env:TEMP\instructions.json" --overwrite true
+  ```
+- Windows PowerShell -- pass inline JSON through cmd /c
 
-  `rather not write a temp file (live-verified, also works) cmd /c 'az sre instructions create --agent-name myagent --resource-group myrg --name default --value "{\"prompt\": \"Be concise.\"}" --overwrite true'`
+  ```powershell
+  cmd /c 'az sre instructions create --agent-name myagent --resource-group myrg --name default --value "{\"prompt\": \"Be concise.\"}" --overwrite true'
+  ```
 
 ### `az sre instructions delete`
 
@@ -810,7 +962,9 @@ WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions cre
 
 - Delete an agent's custom instructions
 
-  `az sre instructions delete -g myrg --agent-name myagent --name default`
+  ```bash
+  az sre instructions delete -g myrg --agent-name myagent --name default
+  ```
 
 ### `az sre instructions list`
 
@@ -831,7 +985,9 @@ WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions cre
 
 - List an agent's custom instructions entries
 
-  `az sre instructions list -g myrg --agent-name myagent`
+  ```bash
+  az sre instructions list -g myrg --agent-name myagent
+  ```
 
 ### `az sre instructions show`
 
@@ -853,7 +1009,9 @@ WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions cre
 
 - Show an agent's current custom instructions
 
-  `az sre instructions show -g myrg --agent-name myagent --name default`
+  ```bash
+  az sre instructions show -g myrg --agent-name myagent --name default
+  ```
 
 ## `az sre knowledge`
 
@@ -891,10 +1049,16 @@ Add a knowledge source (file or web page) to an SRE Agent.
 
 - Add a local file as a knowledge source
 
-  `az sre knowledge create --agent-name myagent --resource-group myrg \ --name runbook-md --type file --file-path ./runbook.md`
+  ```bash
+  az sre knowledge create --agent-name myagent --resource-group myrg \
+  --name runbook-md --type file --file-path ./runbook.md
+  ```
 - Add a web page as a knowledge source
 
-  `az sre knowledge create --agent-name myagent --resource-group myrg \ --name docs-site --type webpage --url https://learn.microsoft.com/azure/`
+  ```bash
+  az sre knowledge create --agent-name myagent --resource-group myrg \
+  --name docs-site --type webpage --url https://learn.microsoft.com/azure/
+  ```
 
 ### `az sre knowledge delete`
 
@@ -915,7 +1079,9 @@ Remove a knowledge source.
 
 - Remove a knowledge source
 
-  `az sre knowledge delete -g myrg --agent-name myagent --name docs-site`
+  ```bash
+  az sre knowledge delete -g myrg --agent-name myagent --name docs-site
+  ```
 
 ### `az sre knowledge list`
 
@@ -929,6 +1095,14 @@ List an SRE Agent's knowledge sources (files and web pages).
 | --- | --- | --- | --- | --- | --- |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- List knowledge sources
+
+  ```bash
+  az sre knowledge list -g myrg --agent-name myagent
+  ```
 
 ### `az sre knowledge show`
 
@@ -948,30 +1122,35 @@ Show a knowledge source.
 
 - Show one knowledge source
 
-  `az sre knowledge show -g myrg --agent-name myagent --name docs-site`
+  ```bash
+  az sre knowledge show -g myrg --agent-name myagent --name docs-site
+  ```
 
 ## `az sre managed-resource`
 
 Let the agent monitor resources outside its resource group.
 
-Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles together on a subscription, resource group, or management group.
+Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles together on a subscription, resource group, or management group. Defaults to the system-assigned identity. Use --identity with an assigned user-assigned identity's ARM resource ID to target it instead.
 
 | Verb | Exact syntax |
 | --- | --- |
-| `grant` | `az sre managed-resource grant --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
-| `list` | `az sre managed-resource list --name <value> --resource-group <value>` |
-| `revoke` | `az sre managed-resource revoke --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
+| `grant` | `az sre managed-resource grant [--identity <value>] --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
+| `list` | `az sre managed-resource list [--identity <value>] --name <value> --resource-group <value>` |
+| `revoke` | `az sre managed-resource revoke [--identity <value>] --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]` |
 
 ### `az sre managed-resource grant`
 
 Give the agent Reader and Monitoring Contributor on a scope.
 
+Targets the system-assigned identity by default. Use --identity to select an assigned user-assigned identity without changing runtime settings.
+
 **Syntax**
 
-`az sre managed-resource grant --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
+`az sre managed-resource grant [--identity <value>] --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
+| `--identity` | String | No | system |  | Agent identity to target: 'system' (default), or the full ARM resource ID of an assigned user-assigned identity. Does not change the agent's runtime identity. |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent (NOT the target scope -- use --target-resource-group for that). |
 | `--scope` | String | No |  |  | Full resource ID of the scope to grant access on/from. Alternative to --target-subscription/--target-resource-group/--management-group. |
@@ -983,26 +1162,43 @@ Give the agent Reader and Monitoring Contributor on a scope.
 
 - Grant on a subscription
 
-  `az sre managed-resource grant --agent-name myagent --resource-group myrg \ --target-subscription my-sub`
+  ```bash
+  az sre managed-resource grant --agent-name myagent --resource-group myrg \
+  --target-subscription my-sub
+  ```
 - Grant on a resource group
 
-  `az sre managed-resource grant --agent-name myagent --resource-group myrg \ --target-subscription my-sub --target-resource-group monitored-rg`
+  ```bash
+  az sre managed-resource grant --agent-name myagent --resource-group myrg \
+  --target-subscription my-sub --target-resource-group monitored-rg
+  ```
 - Grant on a management group
 
-  `az sre managed-resource grant --agent-name myagent --resource-group myrg \ --management-group my-mg`
+  ```bash
+  az sre managed-resource grant --agent-name myagent --resource-group myrg \
+  --management-group my-mg
+  ```
+- Grant an assigned user-assigned identity access to a resource group
+
+  ```bash
+  az sre managed-resource grant -g myrg --agent-name myagent \
+  --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \
+  --target-subscription my-sub --target-resource-group monitored-rg
+  ```
 
 ### `az sre managed-resource list`
 
 List the scopes the agent's managed identity can access.
 
-Shows every role assignment where the agent is the assignee.
+Shows role assignments under the current subscription for the selected identity, not just Reader and Monitoring Contributor. Defaults to the system-assigned identity. Use --identity to select an assigned user-assigned identity.
 
 **Syntax**
 
-`az sre managed-resource list --name <value> --resource-group <value>`
+`az sre managed-resource list [--identity <value>] --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
+| `--identity` | String | No | system |  | Agent identity to target: 'system' (default), or the full ARM resource ID of an assigned user-assigned identity. Does not change the agent's runtime identity. |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent. |
 
@@ -1010,18 +1206,29 @@ Shows every role assignment where the agent is the assignee.
 
 - List what an agent can currently monitor
 
-  `az sre managed-resource list --agent-name myagent --resource-group myrg`
+  ```bash
+  az sre managed-resource list --agent-name myagent --resource-group myrg
+  ```
+- List an assigned user-assigned identity's role assignments
+
+  ```bash
+  az sre managed-resource list -g myrg --agent-name myagent \
+  --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime
+  ```
 
 ### `az sre managed-resource revoke`
 
 Remove the agent's Reader and Monitoring Contributor on a scope.
 
+Only removes these two roles for the selected identity on the exact requested scope. Other identities, roles, and scopes are unaffected. Defaults to the system-assigned identity.
+
 **Syntax**
 
-`az sre managed-resource revoke --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
+`az sre managed-resource revoke [--identity <value>] --name <value> --resource-group <value> [--scope <value>] [--target-subscription <value>] [--target-resource-group <value>] [--management-group <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
+| `--identity` | String | No | system |  | Agent identity to target: 'system' (default), or the full ARM resource ID of an assigned user-assigned identity. Does not change the agent's runtime identity. |
 | `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Resource group of the SRE Agent (NOT the target scope -- use --target-resource-group for that). |
 | `--scope` | String | No |  |  | Full resource ID of the scope to revoke access on/from. Alternative to --target-subscription/--target-resource-group/--management-group. |
@@ -1033,7 +1240,17 @@ Remove the agent's Reader and Monitoring Contributor on a scope.
 
 - Revoke access to a resource group
 
-  `az sre managed-resource revoke --agent-name myagent --resource-group myrg \ --target-subscription my-sub --target-resource-group monitored-rg`
+  ```bash
+  az sre managed-resource revoke --agent-name myagent --resource-group myrg \
+  --target-subscription my-sub --target-resource-group monitored-rg
+  ```
+- Revoke an assigned user-assigned identity's access
+
+  ```bash
+  az sre managed-resource revoke -g myrg --agent-name myagent \
+  --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \
+  --target-subscription my-sub --target-resource-group monitored-rg
+  ```
 
 ## `az sre network`
 
@@ -1043,7 +1260,31 @@ Configures VNet injection and outbound egress for the agent's own sandboxed tool
 
 | Verb | Exact syntax |
 | --- | --- |
+| `show` | `az sre network show --name <value> --resource-group <value>` |
 | `update` | `az sre network update --name <value> --resource-group <value> [--vnet-configuration <json-or-@file>] [--sandbox-configuration <json-or-@file>]` |
+
+### `az sre network show`
+
+Show VNet injection and sandbox egress settings (preview).
+
+'az sre agent show' omits these because it uses an older API version.
+
+**Syntax**
+
+`az sre network show --name <value> --resource-group <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | Name of the SRE Agent to show networking settings for. |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+
+**Examples**
+
+- Show an agent's networking settings
+
+  ```bash
+  az sre network show --name myagent --resource-group myrg
+  ```
 
 ### `az sre network update`
 
@@ -1064,7 +1305,10 @@ Configure VNet injection and sandbox egress (preview).
 
 - Limit the agent's sandbox egress to one allowed host
 
-  `az sre network update --name myagent --resource-group myrg \ --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}"`
+  ```bash
+  az sre network update --name myagent --resource-group myrg \
+  --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}"
+  ```
 
 ## `az sre plugin`
 
@@ -1114,20 +1358,36 @@ Connect a GitHub or Azure DevOps repo to an agent.
 
 - Connect a GitHub repo
 
-  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service`
+  ```bash
+  az sre repo connect --agent-name myagent --resource-group myrg \
+  --repo-url https://github.com/contoso/my-service
+  ```
 - Connect a GitHub repo with a token
 
-  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://github.com/contoso/my-service \ --github-token $env:GITHUB_TOKEN`
+  ```bash
+  az sre repo connect --agent-name myagent --resource-group myrg \
+  --repo-url https://github.com/contoso/my-service \
+  --github-token $env:GITHUB_TOKEN
+  ```
 - Connect an Azure DevOps repo
 
-  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo`
+  ```bash
+  az sre repo connect --agent-name myagent --resource-group myrg \
+  --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo
+  ```
 - Connect an Azure DevOps repo with a managed identity
 
-  `az sre repo connect --agent-name myagent --resource-group myrg \ --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo \ --devops-auth-type managed-identity --devops-identity <agent-identity-resource-id>`
+  ```bash
+  az sre repo connect --agent-name myagent --resource-group myrg \
+  --repo-url https://dev.azure.com/contoso/my-project/_git/my-repo \
+  --devops-auth-type managed-identity --devops-identity <agent-identity-resource-id>
+  ```
 
 ## `az sre response-plan`
 
 Route incidents to a subagent (portal: Triggers & response plans).
+
+Match criteria use ARM; linked instructions use the agent API.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -1154,7 +1414,7 @@ Routes matching incidents to a subagent. Connect the incident platform and creat
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of the response plan. |
-| `--platform` | String | Yes |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. |
+| `--platform` | String | Yes |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. Icm is Microsoft-internal only. |
 | `--subagent` | String | Yes |  |  | Name of the existing subagent that handles matched incidents. |
 | `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all. |
 | `--title-contains` | String | No |  |  | Only match incidents whose title contains this text. |
@@ -1174,13 +1434,24 @@ Routes matching incidents to a subagent. Connect the incident platform and creat
 
 - Route high-severity Azure Monitor incidents to a subagent in review mode
 
-  `az sre response-plan create -g myrg --agent-name myagent -n sev1-api \ --platform AzMonitor --subagent incident-responder --priority Sev0 Sev1 \ --title-contains api --mode review`
+  ```bash
+  az sre response-plan create -g myrg --agent-name myagent -n sev1-api \
+  --platform AzMonitor --subagent incident-responder --priority Sev0 Sev1 \
+  --title-contains api --mode review
+  ```
 - Skip noisy incidents and give the subagent step-by-step guidance
 
-  `az sre response-plan create -g myrg --agent-name myagent -n api-errors \ --platform AzMonitor --subagent incident-responder --priority Sev1 Sev2 \ --title-not-contains test synthetic \ --processing-guide "Check recent deployments" "Query error rates in App Insights"`
+  ```bash
+  az sre response-plan create -g myrg --agent-name myagent -n api-errors \
+  --platform AzMonitor --subagent incident-responder --priority Sev1 Sev2 \
+  --title-not-contains test synthetic \
+  --processing-guide "Check recent deployments" "Query error rates in App Insights"
+  ```
 - Change an existing plan
 
-  `az sre response-plan update -g myrg --agent-name myagent -n api-errors --mode autonomous`
+  ```bash
+  az sre response-plan update -g myrg --agent-name myagent -n api-errors --mode autonomous
+  ```
 
 ### `az sre response-plan delete`
 
@@ -1201,7 +1472,9 @@ Delete a response plan and its linked instructions.
 
 - Delete a plan
 
-  `az sre response-plan delete -g myrg --agent-name myagent -n sev1-api`
+  ```bash
+  az sre response-plan delete -g myrg --agent-name myagent -n sev1-api
+  ```
 
 ### `az sre response-plan disable`
 
@@ -1221,7 +1494,9 @@ Turn off a response plan without deleting it.
 
 - Disable a plan
 
-  `az sre response-plan disable -g myrg --agent-name myagent -n sev1-api`
+  ```bash
+  az sre response-plan disable -g myrg --agent-name myagent -n sev1-api
+  ```
 
 ### `az sre response-plan enable`
 
@@ -1241,7 +1516,9 @@ Turn on a response plan.
 
 - Enable a plan
 
-  `az sre response-plan enable -g myrg --agent-name myagent -n sev1-api`
+  ```bash
+  az sre response-plan enable -g myrg --agent-name myagent -n sev1-api
+  ```
 
 ### `az sre response-plan list`
 
@@ -1261,7 +1538,9 @@ List response plans.
 
 - List an agent's response plans
 
-  `az sre response-plan list -g myrg --agent-name myagent`
+  ```bash
+  az sre response-plan list -g myrg --agent-name myagent
+  ```
 
 ### `az sre response-plan show`
 
@@ -1282,7 +1561,9 @@ Show a response plan and its instructions.
 
 - Show one plan
 
-  `az sre response-plan show -g myrg --agent-name myagent -n sev1-api`
+  ```bash
+  az sre response-plan show -g myrg --agent-name myagent -n sev1-api
+  ```
 
 ### `az sre response-plan update`
 
@@ -1317,10 +1598,16 @@ Passing a list flag (for example --priority) replaces that whole list. Use 'enab
 
 - Change the autonomy mode and the merge window
 
-  `az sre response-plan update -g myrg --agent-name myagent -n sev1-api \ --mode autonomous --merge-window-hours 6`
+  ```bash
+  az sre response-plan update -g myrg --agent-name myagent -n sev1-api \
+  --mode autonomous --merge-window-hours 6
+  ```
 - Point a plan at a different subagent and replace its severities
 
-  `az sre response-plan update -g myrg --agent-name myagent -n sev1-api \ --subagent other-responder --priority Sev0 Sev1`
+  ```bash
+  az sre response-plan update -g myrg --agent-name myagent -n sev1-api \
+  --subagent other-responder --priority Sev0 Sev1
+  ```
 
 ## `az sre skill`
 
@@ -1358,10 +1645,16 @@ Create or update a custom skill.
 
 - Create a skill from a SKILL.md file
 
-  `az sre skill create --agent-name myagent --resource-group myrg --name my-skill \ --file-path SKILL.md --tools kusto-query log-search`
+  ```bash
+  az sre skill create --agent-name myagent --resource-group myrg --name my-skill \
+  --file-path SKILL.md --tools kusto-query log-search
+  ```
 - Create a skill from a raw JSON value
 
-  `az sre skill create --agent-name myagent --resource-group myrg --name my-skill \ --value '{"description": "...", "tools": [], "skillContent": "# My skill\n..."}'`
+  ```bash
+  az sre skill create --agent-name myagent --resource-group myrg --name my-skill \
+  --value '{"description": "...", "tools": [], "skillContent": "# My skill\n..."}'
+  ```
 
 ### `az sre skill delete`
 
@@ -1382,7 +1675,9 @@ Delete a custom skill.
 
 - Delete a custom skill
 
-  `az sre skill delete -g myrg --agent-name myagent --name triage-skill`
+  ```bash
+  az sre skill delete -g myrg --agent-name myagent --name triage-skill
+  ```
 
 ### `az sre skill list`
 
@@ -1401,7 +1696,9 @@ List custom skills.
 
 - List an agent's custom skills
 
-  `az sre skill list -g myrg --agent-name myagent`
+  ```bash
+  az sre skill list -g myrg --agent-name myagent
+  ```
 
 ### `az sre skill show`
 
@@ -1421,7 +1718,9 @@ Show a custom skill.
 
 - Show one custom skill
 
-  `az sre skill show -g myrg --agent-name myagent --name triage-skill`
+  ```bash
+  az sre skill show -g myrg --agent-name myagent --name triage-skill
+  ```
 
 ## `az sre subagent`
 
@@ -1449,7 +1748,7 @@ Create or update a named sub-agent.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Sub-agent configuration as JSON. Required: instructions, handoffDescription, tools, mcpTools, commonTools, allowedSkills, allowParallelToolCalls. |
+| `--value` | String | Yes |  |  | Sub-agent configuration as JSON. Nonblank instructions must be at least 50 characters. Fields: instructions, handoffDescription, tools, mcpTools, commonTools, allowedSkills, allowParallelToolCalls. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 | `--pre-tool-use-script-file` | String | No |  |  | Path to a script file to run before every tool call this sub-agent makes (the portal's "Manage Hooks" > "Pre Tool Use" button inside the subagent dialog). Merged into --value.hooks.PreToolUse with matcher "(?s:.*)" (every tool), timeout 30s, failMode "block" -- pass --value.hooks directly instead for other matchers/timeouts. |
 
@@ -1457,10 +1756,16 @@ Create or update a named sub-agent.
 
 - Create a read-only evidence-gathering sub-agent (live-verified payload)
 
-  `az sre subagent create --agent-name myagent --resource-group myrg --name app-investigator \ --value '{"instructions": "You are the application evidence specialist. Read supplied reference files with ReadFile and return source-backed observations.", "handoffDescription": "Use for read-only application request/error/dependency evidence.", "tools": ["ReadFile"], "mcpTools": [], "commonTools": [], "allowedSkills": ["zava-application-evidence"], "allowParallelToolCalls": true}'`
+  ```bash
+  az sre subagent create --agent-name myagent --resource-group myrg --name app-investigator \
+  --value '{"instructions": "You are the application evidence specialist. Read supplied reference files with ReadFile and return source-backed observations.", "handoffDescription": "Use for read-only application request/error/dependency evidence.", "tools": ["ReadFile"], "mcpTools": [], "commonTools": [], "allowedSkills": ["zava-application-evidence"], "allowParallelToolCalls": true}'
+  ```
 - Same, plus a PreToolUse hook script read from a file (live-verified)
 
-  `az sre subagent create --agent-name myagent --resource-group myrg --name app-investigator \ --value "@value.json" --pre-tool-use-script-file readonly-evidence.py`
+  ```bash
+  az sre subagent create --agent-name myagent --resource-group myrg --name app-investigator \
+  --value "@value.json" --pre-tool-use-script-file readonly-evidence.py
+  ```
 
 ### `az sre subagent delete`
 
@@ -1481,7 +1786,9 @@ Delete a sub-agent.
 
 - Delete a sub-agent
 
-  `az sre subagent delete -g myrg --agent-name myagent --name app-investigator`
+  ```bash
+  az sre subagent delete -g myrg --agent-name myagent --name app-investigator
+  ```
 
 ### `az sre subagent list`
 
@@ -1500,7 +1807,9 @@ List sub-agents.
 
 - List an agent's sub-agents
 
-  `az sre subagent list -g myrg --agent-name myagent`
+  ```bash
+  az sre subagent list -g myrg --agent-name myagent
+  ```
 
 ### `az sre subagent show`
 
@@ -1520,7 +1829,9 @@ Show a sub-agent.
 
 - Show one sub-agent
 
-  `az sre subagent show -g myrg --agent-name myagent --name app-investigator`
+  ```bash
+  az sre subagent show -g myrg --agent-name myagent --name app-investigator
+  ```
 
 ## `az sre tool`
 
@@ -1537,7 +1848,7 @@ Built-in tools and MCP servers/services are configured separately and are not ye
 
 ### `az sre tool create`
 
-Create or update a custom tool.
+Create a custom tool, or update one with --overwrite.
 
 **Syntax**
 
@@ -1548,14 +1859,17 @@ Create or update a custom tool.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Tool configuration as JSON. "type" is one of KustoTool, LinkTool, PythonTool or HttpClientTool. |
+| `--value` | String | Yes |  |  | Tool configuration as JSON. New tools: KustoTool, LinkTool or PythonFunctionTool. PythonTool is a legacy alias for PythonFunctionTool. HttpClientTool is update-only: pass --overwrite for an existing HttpClientTool of the same name. Use PythonFunctionTool or an MCP server for new HTTP integrations. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**
 
-- Create an HTTP tool
+- Create a link tool
 
-  `az sre tool create -g myrg --agent-name myagent --name docs-link \ --value '{"type": "LinkTool", "name": "docs", "description": "Link to docs", "template": "https://learn.microsoft.com/azure/"}'`
+  ```bash
+  az sre tool create -g myrg --agent-name myagent --name docs-link \
+  --value '{"type": "LinkTool", "name": "docs", "description": "Link to docs", "template": "https://learn.microsoft.com/azure/"}'
+  ```
 
 ### `az sre tool delete`
 
@@ -1576,7 +1890,9 @@ Delete a custom tool.
 
 - Delete a custom tool
 
-  `az sre tool delete -g myrg --agent-name myagent --name docs-link`
+  ```bash
+  az sre tool delete -g myrg --agent-name myagent --name docs-link
+  ```
 
 ### `az sre tool list`
 
@@ -1595,7 +1911,9 @@ List custom tools.
 
 - List an agent's custom tools
 
-  `az sre tool list -g myrg --agent-name myagent`
+  ```bash
+  az sre tool list -g myrg --agent-name myagent
+  ```
 
 ### `az sre tool show`
 
@@ -1615,7 +1933,9 @@ Show a custom tool.
 
 - Show one custom tool
 
-  `az sre tool show -g myrg --agent-name myagent --name docs-link`
+  ```bash
+  az sre tool show -g myrg --agent-name myagent --name docs-link
+  ```
 
 ## `az sre usage`
 
@@ -1645,7 +1965,9 @@ List monthly or daily agent-unit usage for an SRE Agent.
 
 - List this month's usage for an agent
 
-  `az sre usage list --agent-name myagent --resource-group myrg`
+  ```bash
+  az sre usage list --agent-name myagent --resource-group myrg
+  ```
 
 ## `az sre agent settings`
 
@@ -1675,7 +1997,9 @@ Show an SRE Agent's global settings.
 
 - Show an agent's global settings
 
-  `az sre agent settings show --agent-name myagent --resource-group myrg`
+  ```bash
+  az sre agent settings show --agent-name myagent --resource-group myrg
+  ```
 
 ### `az sre agent settings update`
 
@@ -1697,10 +2021,16 @@ Always targets the agent's single settings object (there is no --name). Each cal
 
 - Set the portal's "Custom instructions" text box
 
-  `az sre agent settings update -g myrg --agent-name myagent \ --value '{"customInstructions": "Always cite the runbook section you used."}'`
+  ```bash
+  az sre agent settings update -g myrg --agent-name myagent \
+  --value '{"customInstructions": "Always cite the runbook section you used."}'
+  ```
 - Allow, ask for approval, or deny specific tools
 
-  `--value '{"toolPermissions": {"allow": ["kusto-query"], "ask": [], "deny": ["run-shell"]}}'`
+  ```bash
+  az sre agent settings update -g myrg --agent-name myagent \
+  --value '{"toolPermissions": {"allow": ["kusto-query"], "ask": [], "deny": ["run-shell"]}}'
+  ```
 
 ## `az sre automation http-trigger`
 
@@ -1735,7 +2065,10 @@ Create or update an HTTP trigger.
 
 - Create a webhook that runs the agent against a prompt
 
-  `az sre automation http-trigger create -g myrg --agent-name myagent --name alert-webhook \ --value '{"agentPrompt": "Investigate the attached alert payload"}'`
+  ```bash
+  az sre automation http-trigger create -g myrg --agent-name myagent --name alert-webhook \
+  --value '{"agentPrompt": "Investigate the attached alert payload"}'
+  ```
 
 ### `az sre automation http-trigger delete`
 
@@ -1756,7 +2089,9 @@ Delete an HTTP trigger.
 
 - Delete an HTTP trigger
 
-  `az sre automation http-trigger delete -g myrg --agent-name myagent --name alert-webhook`
+  ```bash
+  az sre automation http-trigger delete -g myrg --agent-name myagent --name alert-webhook
+  ```
 
 ### `az sre automation http-trigger list`
 
@@ -1775,7 +2110,9 @@ List HTTP triggers.
 
 - List an agent's HTTP triggers
 
-  `az sre automation http-trigger list -g myrg --agent-name myagent`
+  ```bash
+  az sre automation http-trigger list -g myrg --agent-name myagent
+  ```
 
 ### `az sre automation http-trigger show`
 
@@ -1795,7 +2132,9 @@ Show an HTTP trigger.
 
 - Show one HTTP trigger
 
-  `az sre automation http-trigger show -g myrg --agent-name myagent --name alert-webhook`
+  ```bash
+  az sre automation http-trigger show -g myrg --agent-name myagent --name alert-webhook
+  ```
 
 ## `az sre automation scheduled-task`
 
@@ -1830,7 +2169,10 @@ Create or update a scheduled task.
 
 - Run the agent on a timer against a prompt
 
-  `az sre automation scheduled-task create -g myrg --agent-name myagent --name daily-digest \ --value '{"cronExpression": "0 9 * * 1-5", "agentPrompt": "Summarize overnight alerts"}'`
+  ```bash
+  az sre automation scheduled-task create -g myrg --agent-name myagent --name daily-digest \
+  --value '{"cronExpression": "0 9 * * 1-5", "agentPrompt": "Summarize overnight alerts"}'
+  ```
 
 ### `az sre automation scheduled-task delete`
 
@@ -1851,7 +2193,9 @@ Delete a scheduled task.
 
 - Delete a scheduled task
 
-  `az sre automation scheduled-task delete -g myrg --agent-name myagent --name daily-digest`
+  ```bash
+  az sre automation scheduled-task delete -g myrg --agent-name myagent --name daily-digest
+  ```
 
 ### `az sre automation scheduled-task list`
 
@@ -1870,7 +2214,9 @@ List scheduled tasks.
 
 - List an agent's scheduled tasks
 
-  `az sre automation scheduled-task list -g myrg --agent-name myagent`
+  ```bash
+  az sre automation scheduled-task list -g myrg --agent-name myagent
+  ```
 
 ### `az sre automation scheduled-task show`
 
@@ -1890,7 +2236,9 @@ Show a scheduled task.
 
 - Show one scheduled task
 
-  `az sre automation scheduled-task show -g myrg --agent-name myagent --name daily-digest`
+  ```bash
+  az sre automation scheduled-task show -g myrg --agent-name myagent --name daily-digest
+  ```
 
 ## `az sre plugin install`
 
@@ -1927,7 +2275,11 @@ Unlike other extension types, 'marketplaceName'/'pluginName' alone are not enoug
 
 - Install a plugin from a connected marketplace
 
-  `az sre plugin install create -g myrg --agent-name myagent --name datadog \ --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", \ "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}'`
+  ```bash
+  az sre plugin install create -g myrg --agent-name myagent --name datadog \
+  --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", \
+  "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}'
+  ```
 
 ### `az sre plugin install delete`
 
@@ -1948,7 +2300,9 @@ Uninstall a plugin.
 
 - Uninstall a plugin
 
-  `az sre plugin install delete -g myrg --agent-name myagent --name datadog`
+  ```bash
+  az sre plugin install delete -g myrg --agent-name myagent --name datadog
+  ```
 
 ### `az sre plugin install list`
 
@@ -1967,7 +2321,9 @@ List installed plugins.
 
 - List an agent's installed plugins
 
-  `az sre plugin install list -g myrg --agent-name myagent`
+  ```bash
+  az sre plugin install list -g myrg --agent-name myagent
+  ```
 
 ### `az sre plugin install show`
 
@@ -1987,7 +2343,9 @@ Show an installed plugin.
 
 - Show one installed plugin
 
-  `az sre plugin install show -g myrg --agent-name myagent --name datadog`
+  ```bash
+  az sre plugin install show -g myrg --agent-name myagent --name datadog
+  ```
 
 ## `az sre plugin marketplace`
 
@@ -2022,7 +2380,10 @@ Connect a plugin marketplace.
 
 - Connect a GitHub repo as a plugin marketplace
 
-  `az sre plugin marketplace create -g myrg --agent-name myagent --name contoso-plugins \ --value '{"sourceType": "github", "sourceUrl": "owner/repo"}'`
+  ```bash
+  az sre plugin marketplace create -g myrg --agent-name myagent --name contoso-plugins \
+  --value '{"sourceType": "github", "sourceUrl": "owner/repo"}'
+  ```
 
 ### `az sre plugin marketplace delete`
 
@@ -2043,7 +2404,9 @@ Disconnect a plugin marketplace.
 
 - Disconnect a plugin marketplace
 
-  `az sre plugin marketplace delete -g myrg --agent-name myagent --name contoso-plugins`
+  ```bash
+  az sre plugin marketplace delete -g myrg --agent-name myagent --name contoso-plugins
+  ```
 
 ### `az sre plugin marketplace list`
 
@@ -2062,7 +2425,9 @@ List connected plugin marketplaces.
 
 - List an agent's connected plugin marketplaces
 
-  `az sre plugin marketplace list -g myrg --agent-name myagent`
+  ```bash
+  az sre plugin marketplace list -g myrg --agent-name myagent
+  ```
 
 ### `az sre plugin marketplace show`
 
@@ -2082,4 +2447,6 @@ Show a connected plugin marketplace.
 
 - Show one connected plugin marketplace
 
-  `az sre plugin marketplace show -g myrg --agent-name myagent --name contoso-plugins`
+  ```bash
+  az sre plugin marketplace show -g myrg --agent-name myagent --name contoso-plugins
+  ```

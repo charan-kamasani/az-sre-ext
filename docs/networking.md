@@ -6,34 +6,19 @@ no public Swagger for the api-version that actually supports these fields
 in production (`2026-11-01-preview`; see `NETWORK_API_VERSION` in
 `custom.py`). It performs a real ARM read-modify-write (GET then full PUT,
 matching the pattern the generated `agent update` command itself uses for
-every other property), merging only the networking properties the caller
-actually supplied and leaving everything else on the resource untouched.
+every other property), replacing only the networking objects the caller
+supplied (`vnetConfiguration` or `sandboxConfiguration`, each as a whole)
+and leaving everything else on the resource untouched.
 
 ## Inspect current networking configuration
 
-> [!WARNING]
-> `agent show`/`agent list` query ARM at the pinned, older
-> `API_VERSION = "2026-01-01"` (see `custom.py`), which does not expose
-> `sandboxConfiguration`/`vnetConfiguration` at all. Live-verified: setting
-> `--sandbox-configuration` via `network update` succeeds (confirmed in the
-> PUT's own response body, which is read at `NETWORK_API_VERSION =
-> "2026-11-01-preview"`), but a subsequent `agent show` on the same agent
-> returns `null` for both fields — not because the write was lost, but
-> because `agent show` is reading the wrong api-version to see them. There
-> is currently **no command in this CLI that can read back** a
-> previously-set networking configuration. Use `az rest` directly against
-> the preview api-version as a workaround until a dedicated `network show`
-> (or an `update`-equivalent read) is added:
->
-> ```bash
-> az rest --method get \
->   --url "https://management.azure.com/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.App/agents/<name>?api-version=2026-11-01-preview" \
->   --query "properties.{sandbox:sandboxConfiguration, vnet:vnetConfiguration}"
-> ```
+```bash
+az sre network show -g myrg --agent-name myagent
+```
 
-There is no dedicated `network show` — networking fields are part of
-the main agent resource body, and today only readable at the preview
-api-version (see warning above).
+This returns the VNet injection and sandbox egress settings. `az sre agent show` omits them: the service returns them at `2026-01-01` too, but the generated `agent show` schema doesn't model these fields, so they're dropped from its output. Use `network show` to read them back.
+
+A new agent starts with `Limited` egress and a service-managed default allow list: 45 hosts on 2026-11-10 (Azure management, Microsoft Graph, Log Analytics, Kusto, GitHub, Azure DevOps and similar), the `pypi`, `npmjs`, `nuget-org` and `ubuntu` registries, the `Github`, `AzureDevOps` and `GithubEnterprise` code repositories, and `allowHttpMcpServerNetworkAccess: true`. Its `vnetConfiguration.subnetResourceId` is `null`.
 
 ## Configure sandbox egress
 
@@ -45,12 +30,47 @@ az sre network update -g myrg --agent-name myagent \
   --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}"
 ```
 
-## Configure VNet injection
+`--sandbox-configuration` replaces the agent's whole `sandboxConfiguration`.
+Any field you leave out is cleared, and the service doesn't restore its
+defaults. For example, the `Limited` command above leaves `example.com` as
+the only allowed host and clears the default registries, code repositories
+and `allowHttpMcpServerNetworkAccess`. To add a host and keep the rest,
+start from the current settings:
 
 ```bash
-az sre network update -g myrg --agent-name myagent \
-  --vnet-configuration "{subnet-resource-id:/subscriptions/.../subnets/mysubnet}"
+az sre network show -g myrg --agent-name myagent --query sandboxConfiguration > sandbox.json
+# Edit sandbox.json to add your hosts. Fields left as null are ignored.
+# Don't commit the file: it holds any proxy URLs set on the agent.
+az sre network update -g myrg --agent-name myagent --sandbox-configuration @sandbox.json
 ```
+
+## Configure VNet injection
+
+Use a dedicated subnet prepared for this agent, delegated to
+`Microsoft.App/environments`. The example assumes an existing VNet and
+subnet in the agent's region; replace the network resource names with your
+approved resources. Do not change the delegation of a shared or in-use
+subnet.
+
+```bash
+NETWORK_RG="network-rg"
+VNET="agent-vnet"
+SUBNET="agent-subnet"
+
+az network vnet subnet update -g "$NETWORK_RG" --vnet-name "$VNET" \
+  --name "$SUBNET" --delegations Microsoft.App/environments
+
+SUBNET_ID=$(az network vnet subnet show -g "$NETWORK_RG" --vnet-name "$VNET" \
+  --name "$SUBNET" --query id -o tsv)
+
+az sre network update -g myrg --agent-name myagent \
+  --vnet-configuration "{subnet-resource-id:$SUBNET_ID}" \
+  --sandbox-configuration "{egress:{mode:AzureVNet}}"
+```
+
+The VNet configuration and `AzureVNet` sandbox egress mode must be applied
+together; the subnet ID alone is not sufficient. Subnet delegation is a
+separate prerequisite and is not performed by `az sre network update`.
 
 ## Important sequencing note
 
@@ -78,9 +98,22 @@ public spec. Live-verified against a disposable test agent
 `2026-11-01-preview`) showed `sandboxConfiguration.egress.mode:
 "Unrestricted"` immediately. `agent wait --updated` correctly settled back
 to `provisioningState: Succeeded`. However, a subsequent `agent show` read
-`null` for the same field — confirmed via `--debug` to be because `agent
-show` queries `api-version=2026-01-01`, not the preview version the write
-used — not a lost write. Re-verify the write path against that source if
-the service's shape ever changes; there is no codegen drift check possible
-for a hand-maintained, unspecced api-version. See the read-back gap noted
-above before trusting `agent show` for networking state.
+`null` for the same field. That was not a lost write: `agent show` uses the
+generated `2026-01-01` code, whose schema doesn't model the networking
+fields, so they're dropped from its output. A raw `2026-01-01` GET on
+2026-11-10 returned them unchanged. Re-verify the write path against that
+source if the service's shape ever changes; there is no codegen drift check
+possible for a hand-maintained, unspecced api-version. Use `network show` to
+read networking state back instead of `agent show`.
+
+`network show` was live-verified on 2026-11-10 against a disposable agent
+in a throwaway resource group. Its `id`, `name`, `type`,
+`provisioningState`, `vnetConfiguration` and `sandboxConfiguration`
+matched a raw ARM GET at `2026-11-01-preview` exactly: for the new agent's
+defaults, after both sandbox egress examples above, and after a 46-host
+update built from `network show` output. It reported `InProgress` while an
+update was applying. VNet injection was not exercised. The run found one
+mismatch: `resourceGroup` was always `null`. ARM doesn't return that field,
+and setting it to `null` also stopped the Azure CLI from filling it in from
+`id`. Both `network show` and `network update` now derive it from the
+resource ID.

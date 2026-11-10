@@ -24,7 +24,7 @@ request-flow walkthrough.
 
 ```bash
 cd src/sre
-pip install azure-cli-core azure-cli-testsdk build setuptools wheel
+pip install azure-cli-core azure-cli-testsdk msrest azure-common build setuptools wheel
 python -m unittest discover -s azext_sre/tests -v
 ```
 

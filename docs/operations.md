@@ -104,6 +104,38 @@ az sre managed-resource revoke -g myrg --agent-name myagent \
   --target-subscription <sub-id> --target-resource-group monitored-rg
 ```
 
+All three commands default to the agent's **system-assigned managed identity
+(SAMI)**, even when its knowledge graph, action configuration, or a connector
+uses a user-assigned managed identity (UAMI). To target a UAMI, pass its full
+assigned ARM resource ID as `--identity` on **grant, list, and revoke**:
+
+```bash
+UAMI_ID="/subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime"
+
+az sre identity show -g myrg --agent-name myagent
+az sre managed-resource grant -g myrg --agent-name myagent \
+  --identity "$UAMI_ID" --target-subscription <sub-id> --target-resource-group monitored-rg
+az sre managed-resource list -g myrg --agent-name myagent --identity "$UAMI_ID"
+az sre managed-resource revoke -g myrg --agent-name myagent \
+  --identity "$UAMI_ID" --target-subscription <sub-id> --target-resource-group monitored-rg
+```
+
+`--identity system` explicitly selects the default SAMI. UAMI resource IDs
+are matched case-insensitively against `identity show`'s
+`userAssignedIdentities`; names, client IDs, principal IDs, unassigned UAMIs,
+and identities without principal metadata are rejected. Selection uses the
+attached identity's `principalId`, with no additional directory lookup.
+The selected identity and principal ID are logged on stderr (unless
+`--only-show-errors` suppresses warnings), including when a list is empty.
+These commands do not attach identities, change runtime identity settings,
+restart the agent, or select the first attached UAMI automatically.
+
+Grant and revoke still operate on Reader + Monitoring Contributor as a pair.
+Revoke is limited to the chosen identity and exact requested scope, preserving
+other principals, other roles, and assignments on parent or child scopes.
+List retains `az role assignment list --all`'s current-subscription scope and
+returns every role, not just the managed pair, for the chosen identity.
+
 `access list` and `managed-resource list` both return a raw
 `az role assignment list` object (a dozen-plus flat top-level fields —
 `id`/`principalId`/`principalName`/`principalType`/`roleDefinitionId`/
@@ -115,8 +147,8 @@ terminal width. Both commands register a custom `table_transformer`
 `Principal`/`Type`/`Role`/`GrantedOn` view for `access list` (the scope is
 always the agent itself, so it's omitted), and a
 `Scope`/`Role`/`PrincipalType`/`GrantedOn` view for `managed-resource list`
-(the principal is always the agent's own identity, so its GUID/app-id is
-omitted as noise). `-o json`/`-o jsonc`/`-o yaml`/etc. are unaffected and
+(the principal is the selected agent identity, reported separately on stderr).
+`-o json`/`-o jsonc`/`-o yaml`/etc. are unaffected and
 still return every field.
 
 ## Data connectors
@@ -133,6 +165,11 @@ az sre connector list-secret -g myrg --agent-name myagent \
   --connector-name my-kusto-connector
 az sre connector delete -g myrg --agent-name myagent --name my-kusto-connector -y
 ```
+
+`list-secret` prints secrets in plain text. It disables HTTP tracing for its
+own request, so `--debug` doesn't log them, but anything you pipe or save is
+yours to protect. Avoid `--debug` on other commands against real data: it can
+print secrets in request and response bodies.
 
 `--data-connector-type` also accepts the product's own friendly names
 (`"Azure Data Explorer"`, `"MCP server"`, `"Office 365 Outlook"`, etc. — see
@@ -249,6 +286,8 @@ cross-referenced against this CLI's `DATA_CONNECTOR_TYPES` allowlist. This is
 the authoritative tracking table for "is X implemented in the CLI yet?" —
 update it whenever a new wire value or portal card is confirmed.
 
+`az sre connector create --help` lists only the portal names in the table below that the CLI implements (Microsoft-internal ones are hidden for third-party tenants). `--data-connector-type` accepts either the portal name or the wire value.
+
 | Portal card (Title) | Portal subtitle | Wire value (`--data-connector-type`) | CLI status |
 |---|---|---|---|
 | Azure Data Explorer | Azure Data Explorer | `KustoClient` | **Implemented** — live-verified, default type |
@@ -276,8 +315,8 @@ update it whenever a new wire value or portal card is confirmed.
 | IcM connector | Microsoft IcM | `Icm` | **Implemented** — shape-confirmed; create blocked in this tenant by a real `InternalServerError` (not a CLI defect) |
 | EV2 | Ev2 (ExpressV2) | `Ev2Mcp` | **Implemented** — schema/create-level verified |
 | Database query connector (user) | Azure Data Explorer | `KustoUser` | **Implemented** — high-confidence correlation, not create-and-inspect confirmed |
-| Database indexing connector | Azure Data Explorer | `KustoDataIndexer` | **Implemented** — same caveat |
-| Documentation connector | Documentation | `Documentation` | **Implemented** — schema/create-level verified |
+| Database indexing connector | Azure Data Explorer | `KustoDataIndexer` | **Implemented** — same caveat; being retired, accepted but not listed in help |
+| Documentation connector | Documentation | `TsgCrawler` | **Implemented** — portal-confirmed 2026-11-08 (card saves as `TsgCrawler`); being retired, accepted but not listed in help |
 | Azure DevOps AI Search | Azure DevOps | `AzureDevOpsBuiltinMcp` | **Implemented** — high-confidence correlation, not create-and-inspect confirmed |
 | Microsoft Security Copilot | Microsoft Security Copilot | *(none)* | **Not implemented** — Connector Gateway/"Additional connectors" platform |
 | Notion | Notion | *(none)* | **Not implemented** — same |
@@ -304,7 +343,7 @@ update it whenever a new wire value or portal card is confirmed.
 | EV2 *(shown again under "Other")* | Ev2 (ExpressV2) | `Ev2Mcp` | **Implemented** — duplicate portal listing, same as above |
 | Database query connector (user) *(shown again under "Other")* | Azure Data Explorer | `KustoUser` | **Implemented** — duplicate portal listing, same as above |
 | Database indexing connector *(shown again under "Other")* | Azure Data Explorer | `KustoDataIndexer` | **Implemented** — duplicate portal listing, same as above |
-| Documentation connector *(shown again under "Other")* | Documentation | `Documentation` | **Implemented** — duplicate portal listing, same as above |
+| Documentation connector *(shown again under "Other")* | Documentation | `TsgCrawler` | **Implemented** — duplicate portal listing, same as above |
 | Azure DevOps AI Search *(shown again under "Other")* | Azure DevOps | `AzureDevOpsBuiltinMcp` | **Implemented** — duplicate portal listing, same as above |
 | Azure Managed Grafana | Azure Managed Grafana | *(none)* | **Not implemented** — no confirmed wire value; do not assume `Mcp` + endpoint without backend confirmation |
 
@@ -478,7 +517,7 @@ and a full catalog text export):**
 | `Ev2Mcp` | "EV2" | Confirmed — Title; subtitle is "Ev2 (ExpressV2)" |
 | `GenevaMetrics` | "Geneva Metrics" | Confirmed — Title; subtitle is "Geneva Metrics (MDM)" (gated, see above) |
 | `S360` | "S360 connector" | Confirmed — Title; subtitle is "S360" |
-| `Documentation` | "Documentation connector" | Confirmed — Title; subtitle is "Documentation" |
+| `Documentation` | *(none)* | Not the Documentation connector card. **Confirmed 2026-11-08:** that card saves as `TsgCrawler` (see below) |
 | `Mcp` | "MCP server" | **Corrected 2026-11-04**: the real Title is "MCP server" (subtitle "User provided connector"), not "Custom MCP" as previously (incorrectly) documented/coded — "Custom MCP" does not appear anywhere in the real catalog |
 | `Icm` | "IcM connector" | **Corrected 2026-11-04**: the real Title is "IcM connector" (subtitle "Microsoft IcM") — previously had Title/subtitle swapped |
 | `Dgrep` | "DGrep" | **Corrected 2026-11-04**: the real Title is "DGrep" (subtitle "Microsoft DGrep") — previously had Title/subtitle swapped |
@@ -486,7 +525,7 @@ and a full catalog text export):**
 | `KustoUser` | "Database query connector (user)" *(high-confidence, unconfirmed)* | Subtitle "Azure Data Explorer"; description "Query Azure Data Explorer using your own identity via OAuth sign-in" matches the wire value's name/purpose closely, but no create-and-inspect test has confirmed the mapping |
 | `KustoDataIndexer` | "Database indexing connector" *(high-confidence, unconfirmed)* | Subtitle "Azure Data Explorer"; description "The agent generates queries by learning about your logs, telemetry, and time series data" matches closely, same caveat as above |
 | `AzureDevOpsBuiltinMcp` | "Azure DevOps AI Search" *(high-confidence, unconfirmed)* | Subtitle "Azure DevOps"; description "AI-powered remote code search across Azure DevOps repositories without local cloning" matches closely, same caveat as above |
-| `TsgCrawler` | *(none)* | Confirmed **not** present as a picker card (empty search, and absent from the full catalog export) |
+| `TsgCrawler` | "Documentation connector" | **Confirmed 2026-11-08** by creating the card in the portal and reading it back with `az sre connector show`: `dataConnectorType` is `TsgCrawler` |
 | `ConnectorGateway` | *(none)* | Confirmed **not** present as a picker card — consistent with it needing separate `Microsoft.Web/connectorGateways` infrastructure, not a direct picker entry |
 | `AzureMonitor` / `MonitorClient` | *(none)* | Confirmed **not** present as their own cards anywhere in the full catalog — no "Azure Monitor" card exists; Azure Monitor's constituent signals are reached via the dedicated Log Analytics Workspace / Application Insights cards instead |
 
@@ -601,7 +640,7 @@ live-verification pass (12 of 15 extension types confirmed live):
 | `globalSettings` (`agent settings`) | `{}` plus optional `toolPermissions`/`toolStatuses`/`skillStatuses`/`customInstructions`/`approvalExpirationSetting` | Shape-confirmed from the control-plane team's own integration tests — true ARM singleton, `DELETE` unsupported, reset via `agent settings update --value '{}'` |
 | `pluginMarketplaces` (`plugin marketplace`), `pluginInstallations` (`plugin install`) | See `PLAN.md` | Create/show live-verified; K8s-backed install provisioning not exercised in this sandbox |
 | `tools` (`tool`), `skills` (`skill`), `hooks` (`hook`), `repositories` (`repo connect`) | Confirmed | Live-verified end to end (PUT + GET round-trip against a real agent) |
-| `incidentFilters` (`response-plan`), `incidentHandlers` (`response-plan`) | Filter: `{name,type:"IncidentFilter",properties:{...}}`; handler: flat JSON with `id` | Dedicated commands use the ARM extension routes with a data-plane replay for the real error; enable/disable use the data plane. Direct API create/read-back and rebuilt CLI list verified; full CLI CRUD (create, show, list, duplicate guard, overwrite, delete) verified on a disposable agent. Real alert ingestion is not yet tested. |
+| `incidentFilters` (`response-plan`), `incidentHandlers` (`response-plan`) | Filter: `{name,type:"IncidentFilter",properties:{...}}`; handler: flat JSON with `id` | Filter operations use ARM, including enable/disable; linked handler operations use the agent's v2 API because the deployed ARM handler proxy returns 404. Read back both halves when verifying a plan; configuration persistence alone does not prove real alert ingestion. |
 | `githubAuths`, `azureDevOpsAuths` (both wired up for you by `repo connect`) | Shape-confirmed from authoritative source | Live-create rejected by real credential/token validation on the service side, not a shape defect |
 | `subagents` | No model found | Believed server-managed / Agent-Canvas-only, not CLI-creatable |
 
@@ -609,6 +648,45 @@ A universal constraint applies to every extension type: the decoded
 `--value` must be a JSON **object** at the root. A bare JSON array is
 always rejected with `"request body contains an invalid or unrecognized
 property"`.
+
+### Non-Microsoft tenants
+
+The service currently rejects agent extension calls through ARM from
+non-Microsoft tenants with "This feature is restricted to internal tenants
+only". When that happens, these commands retry on the agent's own API, the
+same one the Azure SRE portal uses:
+
+`tool`, `skill`, `hook`, `instructions`, `automation scheduled-task`,
+`automation http-trigger`, `plugin marketplace`, `plugin install`,
+`agent settings`, `response-plan`, `repo connect` and its GitHub / Azure DevOps
+credentials.
+
+Changing anything through the agent's API needs the **SRE Agent Author** or
+**SRE Agent Administrator** role on the agent. `agent settings` can be shown and
+updated but not listed or deleted this way. Other types (for example
+`subagents`) still show a plain "not available for this tenant" message.
+
+The CLI asks the agent once (`GET /api/v1/feature/status`) whether it is a
+Microsoft first-party agent, and remembers the answer for 24 hours in
+`sre_agent_features.json` in the Azure CLI config folder. For other tenants it
+goes straight to the agent's API, so there is no failed first call. If the agent
+can't be asked, it tries ARM first and falls back as described above. Set
+`AZSRE_EXTENSION_ROUTE=direct` or `arm` to force a route. Creating scheduled
+tasks or HTTP triggers on an agent that reports the feature as off fails with a
+clear message.
+
+Some features are Microsoft-internal, as in the portal. On an agent that
+reports it isn't first-party, `connector create` rejects the `Dgrep`,
+`GenevaMetrics` and `S360` types. IcM (the `Icm` connector
+type, `response-plan --platform Icm` and `agent create/update` with
+`type=Icm`) is blocked the same way, because in
+the public cloud IcM is offered only to first-party tenants. Use PagerDuty,
+ServiceNow or Azure Monitor instead.
+
+`--help` can't ask the agent, so it goes by the tenant you're signed in to
+(read from the local Azure CLI profile, no network call). For other tenants it
+doesn't mention these internal options, as the portal hides them. If the tenant
+can't be read, help lists them. Typing one anyway still gets the error above.
 
 ### `hook` eventType has 4 values, not 2
 
@@ -694,7 +772,9 @@ unrelated `null` fields) because the underlying call is a PUT directly on
 the agent resource itself (there's no separate ARM child resource for
 networking). Fixed to trim the response to `id`/`name`/`resourceGroup`/
 `type`/`provisioningState`/`vnetConfiguration`/`sandboxConfiguration` only,
-matching the output shape convention used everywhere else.
+matching the output shape convention used everywhere else. Until 2026-11-10,
+`resourceGroup` in this output (and in `network show`) was always `null`,
+because ARM doesn't return the field; it is now derived from the resource ID.
 
 ### `sre agent list-models --output table` used to show only a concatenated name
 
@@ -719,13 +799,18 @@ source than the ARM control-plane proxy) and live-verified by creating a
 real `LinkTool` on `mytestagent`:
 
 - The polymorphic discriminator field is **`type`** (values: `KustoTool`,
-  `LinkTool`, `PythonTool`, `HttpClientTool`), not `toolType`.
+  `LinkTool`, `PythonFunctionTool`, and legacy/update-only `HttpClientTool`),
+  not `toolType`.
+- `PythonTool` remains accepted as a legacy CLI alias. The CLI normalizes it
+  to `PythonFunctionTool` before encoding the request; the runtime rejects
+  the old discriminator. Executable code and the other configuration fields
+  are preserved.
 - `LinkTool`'s link field is **`template`**, not `url`. `url` is a real
   field, but only on `HttpClientTool`.
 
 ```bash
 az sre tool create -g myrg --agent-name myagent -n my-link-tool --value \
-  '{"type": "LinkTool", "name": "my-link-tool", "description": "Opens the docs", \
+  '{"type": "LinkTool", "name": "my-link-tool", "description": "Opens the docs",
     "template": "https://example.com/docs"}'
 ```
 
@@ -733,6 +818,33 @@ The CLI's `_validate_tools_shape` client-side validator already enforced
 the correct `type`/`template` fields; only the `--value` help text's
 example was stale and contradicted it. Fixed so the documented example
 now matches the validator and the real API.
+
+### `HttpClientTool` is update-only, not supported for new creation
+
+Fresh-deployment verification of the native tools API returned HTTP 400
+`ValidationFailure` for a valid new `HttpClientTool` with this message:
+**"Creating new HttpClientTool tools is no longer supported. Existing
+HttpClientTool tools can still be updated."** The ARM proxy can instead
+surface a generic invalid extension configuration error. This is a service
+creation policy, not evidence that the discriminator or headers need a
+different JSON shape.
+
+`az sre tool create` now rejects new HTTP tools before sending a PUT,
+including an absent name with `--overwrite`. Updating a legacy HTTP tool
+requires `--overwrite` and an existing resource of the same name whose
+decoded configuration is already `HttpClientTool`; replacing a different
+tool type does not qualify. Without `--overwrite`, an existing name still
+produces the ordinary resource-exists error. `tool show` and `tool list`
+continue to read legacy HTTP tools, and their update payload retains the
+existing HTTP field names and shapes.
+
+For new HTTP integrations, use `PythonFunctionTool` or an MCP server/connector
+configured separately. The CLI does not convert HTTP tools or their
+credentials automatically.
+
+Legacy update support is declared by the service and covered locally with
+existing-resource state and payload checks. The fresh deployment had no
+legacy HTTP tool, so a live legacy update has **not** been qualified.
 
 ### `globalSettings.toolStatuses` is accepted but doesn't round-trip; `toolPermissions`/`approvalExpirationSetting` do
 
@@ -820,7 +932,10 @@ github-actions` already use -- `_github_token()` tries, in order:
    CLI's standard `logger.warning()` (not a bare `print()`, so it respects
    `--only-show-errors` and never pollutes `--query`/`-o json` output),
    opens `verification_uri` in the browser, then polls
-   `https://github.com/login/oauth/access_token` until authorized.
+   `https://github.com/login/oauth/access_token` until authorized. It
+      requests the `repo` and `workflow` scopes (no `admin:repo_hook`).
+      Tokens issued earlier with broader scopes are not revoked, and `repo`
+      is still broad access to your repositories.
 
 An earlier version of this fix had a middle tier that opportunistically
 reused an installed, already-logged-in `gh` CLI's token (via `gh auth
@@ -922,7 +1037,16 @@ Scheduled task and HTTP trigger were live-verified end-to-end against
 portal's Automation tab (status, type, and for HTTP triggers the real
 `triggerUrl`), then deleted via CLI and confirmed gone from the portal.
 
-Incident filter and handler create, show, list and delete use the ARM extension routes. On the generic ARM validation error, create replays the request on the agent data plane to surface the real reason. `enable`/`disable` and `--agent-url` reads use the data plane:
+Incident filter create, update, show, list and delete use the ARM extension
+routes, as do `enable` and `disable`. On the generic ARM validation error,
+filter creation replays the request on the agent data plane to surface the
+real reason. `--agent-url` reads use the data plane.
+
+Linked instructions are managed through the agent's v2 incident-handler API
+for create, read, update and delete. The deployed ARM `incidentHandlers`
+collection returns 404 even when the filter exists, so using that proxy can
+leave a partially created response plan and break its default `show`.
+The CLI does not use the ARM handler proxy:
 
 - `/api/v2/incidentManagement/incidentFilters[/{name}]`
 - `/api/v2/extendedAgent/incidentHandlers[/{id}]`
@@ -932,12 +1056,20 @@ token for `https://azuresre.dev`. The caller needs the appropriate SRE Agent
 data-plane role as well as ARM read access. Filter lists return a `value`
 collection; handler lists return an array.
 
-Earlier ARM requests returned "The extension configuration is invalid".
-Live testing showed the ARM routes work. The failures came from agents with
+`response-plan update` saves the filter and the instructions as two separate,
+non-atomic writes. It finishes every read and check first, writes the filter
+only when a filter option is passed, and then writes the instructions. An
+instructions-only update still reads the filter, so a missing plan fails
+before anything is saved. If the instructions write fails after the filter
+was saved, the command fails and names the saved filter fields; re-run it
+with only `--instructions` or `--processing-guide` to retry.
+
+Earlier filter ARM requests returned "The extension configuration is invalid".
+Live testing showed the filter ARM routes work. The failures came from agents with
 no incident platform configured, or a `handlingAgent` that did not exist, with
 ARM collapsing the downstream reason into the generic message. On an agent
-with Azure Monitor configured, ARM create/show/list/delete of filters and
-handlers all succeeded (a handler's `incidentFilterId` is the filter name).
+with Azure Monitor configured, the filter ARM operations succeeded.
+A handler's `incidentFilterId` is the filter name; its own `id` can differ.
 Remaining control-plane bug: some downstream validation errors are still
 masked by the generic message, which is why create replays on the data plane.
 
