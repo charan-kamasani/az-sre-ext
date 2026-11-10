@@ -56,7 +56,7 @@ inspection). Status:
 | `--mi-user-assigned` (create only) | Live-verified | Not accepted on `agent update` (service only exposes it on the create/PUT recipe) -- use `az sre identity assign --user-assigned <id>` to add one to an existing agent instead. |
 | `--tags` | Live-verified | Plain pass-through. |
 | `--upgrade-channel` | Live-verified | `Preview`/`Stable` both accepted. |
-| `--action-configuration` | Live-verified, with one real enum/server mismatch found | `identity` must be the literal string `"system"` (not a resource ID) to reference the agent's own system-assigned identity, or a user-assigned identity's resource ID. **`mode` accepts `Autonomous`/`ReadOnly`/`Review` per the CLI's generated enum (from Swagger), but the live service only accepts `Autonomous`/`Review` -- `ReadOnly` is rejected with `(InvalidActionMode)`.** This is a Swagger/service enum drift, not a CLI defect; not fixable without a service-side Swagger fix or hand-editing generated code (which this project avoids). |
+| `--action-configuration` | Live-verified; one real enum/server mismatch found, now rejected client-side | `identity` must be the literal string `"system"` (not a resource ID) to reference the agent's own system-assigned identity, or a user-assigned identity's resource ID. **The generated `mode` enum (from Swagger) lists `Autonomous`/`ReadOnly`/`Review`, but the live service only accepts `Autonomous`/`Review` -- `ReadOnly` is rejected with `(InvalidActionMode)`.** `agent create`/`agent update` drop `ReadOnly` from the `mode` choices (`_ActionModeArgMixin` in `custom.py`; generated code untouched), so it fails while arguments are parsed, with an error naming the supported values -- before `agent create` auto-creates a managed identity or anything is sent. Raw generic updates (`--set properties.actionConfiguration.mode=...`) are not checked client-side. Remove the mixin if the service starts accepting `ReadOnly`. |
 | `--knowledge-graph-configuration` | Live-verified | Same `identity: "system"` convention as `--action-configuration`. |
 | `--log-configuration` | Live-verified, with a real identity-assign interaction bug found | `applicationInsightsConfiguration.connectionString` is write-only (never echoed back on `agent show`), same pattern as connector `extendedProperties`/`dataSource`. **Known gotcha**: if an agent has `--log-configuration` set, a subsequent `sre identity assign`/`sre identity remove` call will fail with `(InvalidApplicationInsightsConfiguration) The AppId and ConnectionString fields must be provided together` -- these are generated GET-merge-PUT commands, and the GET can never recover the write-only `connectionString`, so the merged PUT re-submits `appId` alone. Not fixable at the CLI layer without either (a) silently dropping the user's existing log configuration as a side effect of an unrelated identity change (worse), or (b) a service-side change. **Workaround**: re-apply `--log-configuration` with the same `app-id`/`connection-string` immediately after any `identity assign`/`identity remove` call on an agent that has one configured. `sre agent update` is the same kind of command: live-verified 2026-11-10, `agent update --incident-management-configuration "{type:AzMonitor}"` on an agent linked to Application Insights failed with this error, and succeeded when the same command also passed `--log-configuration "@log-configuration.json"`. The same risk likely applies to `--incident-management-configuration`'s `connection-key` (also a write-only/password field), though not independently reproduced. |
 | `--incident-management-configuration` | Live-verified, with a real validation message found | `connection-url` must be omitted for production IcM connections (it's auto-wired via the Agent Space proxy); if set for testing it must be an `https://*.microsofticm.com` URL -- any other host is rejected with `(InvalidIcmConnectionUrl)` and a clear, actionable error message. |
@@ -171,8 +171,15 @@ az sre connector delete -g myrg --agent-name myagent --name my-kusto-connector -
 
 `list-secret` prints secrets in plain text. It disables HTTP tracing for its
 own request, so `--debug` doesn't log them, but anything you pipe or save is
-yours to protect. Avoid `--debug` on other commands against real data: it can
-print secrets in request and response bodies.
+yours to protect. `repo connect`, `connector create`, `connector update` and the
+tool, skill and plugin create commands also keep the secrets they send out of
+the `--debug` logs. `--debug` still echoes the command line, though, so a secret
+typed into a flag (`--github-token`, `--bearer-token`, `--value`) shows up there.
+Read it from a file instead (`--bearer-token @token.txt`, `--value @tool.json`),
+or for `repo connect` use `GITHUB_TOKEN` or the browser sign-in. The CLI warns
+when `--github-token` or `--bearer-token` is typed directly. Avoid `--debug` on
+other commands against real data: it can print secrets in request and response
+bodies.
 
 `--data-connector-type` also accepts the product's own friendly names
 (`"Azure Data Explorer"`, `"MCP server"`, `"Office 365 Outlook"`, etc. — see
@@ -931,14 +938,24 @@ github-actions` already use -- `_github_token()` tries, in order:
    directly in Python with `requests` + Azure CLI's own
    `azure.cli.core.util.open_page_in_browser` -- no `gh` CLI, no client
    secret needed (device-flow apps are public clients by design). Posts to
-   `https://github.com/login/device/code`, logs the `user_code` via the
-   CLI's standard `logger.warning()` (not a bare `print()`, so it respects
-   `--only-show-errors` and never pollutes `--query`/`-o json` output),
+   `https://github.com/login/device/code`, prints the page address, the
+   `user_code` and its expiry to stderr (not through `logger.warning()`, so
+   `--only-show-errors` can't hide the code; stdout stays clean for
+   `--query`/`-o json`),
    opens `verification_uri` in the browser, then polls
    `https://github.com/login/oauth/access_token` until authorized. It
       requests the `repo` and `workflow` scopes (no `admin:repo_hook`).
       Tokens issued earlier with broader scopes are not revoked, and `repo`
       is still broad access to your repositories.
+
+The sign-in text is written for keyboard-only and screen reader use. The
+page address and the code each get a short line of their own, and they're
+printed with the expiry time and Ctrl+C before the browser opens and takes
+focus, so you can switch back and read them. The browser opens without a
+prompt, like `az login` and the `--login-with-github` sign-in in the
+appservice, staticwebapp and containerapp commands. Denied, expired,
+network and proxy failures end with a plain error that offers
+`GITHUB_TOKEN` (no time limit, no browser) instead of a traceback.
 
 An earlier version of this fix had a middle tier that opportunistically
 reused an installed, already-logged-in `gh` CLI's token (via `gh auth
@@ -999,10 +1016,10 @@ something this extension adds.
 az sre repo connect --agent-name myagent --resource-group myrg \
   --repo-url https://github.com/contoso/my-service
 
-# Or pass a token explicitly (required in CI, where no browser is
-# available -- device flow cannot run unattended):
+# In CI, where no browser is available, set GITHUB_TOKEN first. The command
+# reads it directly, so the token never appears on the command line:
 az sre repo connect --agent-name myagent --resource-group myrg \
-  --repo-url https://github.com/contoso/my-service --github-token $env:GITHUB_TOKEN
+  --repo-url https://github.com/contoso/my-service
 ```
 
 ### `az sre automation`: group for scheduled tasks, HTTP triggers, and incident filters
