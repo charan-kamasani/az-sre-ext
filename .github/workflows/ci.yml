@@ -11,9 +11,35 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
+  unit-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install azure-cli==2.81.0 azure-cli-testsdk
+
+      - name: Run unit tests
+        working-directory: src/sre
+        run: python -m unittest discover -s azext_sre/tests -v
+
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Check out repository
@@ -24,21 +50,41 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install pinned dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install azure-cli-core azure-cli-testsdk build setuptools wheel
-
-      - name: Run unit tests
-        working-directory: src/sre
-        run: python -m unittest discover -s azext_sre/tests -v
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install \
+            azure-cli==2.81.0 \
+            azure-cli-testsdk \
+            build==1.3.0 \
+            setuptools==79.0.1 \
+            wheel==0.47.0
 
       - name: Check CLI reference is up to date
-        run: python scripts/generate_cli_reference.py --check
+        run: .venv/bin/python scripts/generate_cli_reference.py --check
 
-      - name: Build wheel
+      - name: Build exactly one wheel
         working-directory: src/sre
-        run: python -m build --wheel
+        run: |
+          ../../.venv/bin/python -m build --wheel --no-isolation
+          set -- dist/*.whl
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+            echo "Expected exactly one wheel, found $#." >&2
+            exit 1
+          fi
+
+      - name: Verify wheel through a clean Azure CLI
+        run: |
+          PATH="$PWD/.venv/bin:$PATH" \
+            scripts/verify_installed_wheel.sh src/sre/dist/*.whl
+
+      - name: Ensure repository tree is clean
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --short >&2
+            exit 1
+          fi
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -48,9 +94,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-# NOTE: This is a deliberately minimal placeholder CI for early-stage development
-# (unit tests + wheel build only). The full production pipeline -- swagger-drift
-# validation, codegen regeneration checks, SBOM generation, signed releases -- is
-# parked in .github/workflows-future/ until the command surface stabilizes and
-# the missing supporting scripts (validate_swagger.py, generate_sre_extension.py,
-# etc.) and docs/cli-reference.md are actually built.
+# The full production pipeline (swagger-drift validation, codegen regeneration
+# checks) stays parked in .github/workflows-future/ until the missing supporting
+# scripts exist. Releases are built by .github/workflows/release.yml.
