@@ -438,7 +438,7 @@ Connect an SRE Agent to an external data source it can query or act on.
 
 | Verb | Exact syntax |
 | --- | --- |
-| `create` | `az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}] [--tool-access {false,true}] [--bearer-token <value>] [--managed-identity-auth {false,true}] [--mi-token-scope <value>] [--oauth-dcr {false,true}] [--oauth-scopes <value>] [--oauth-client-name <value>]` |
+| `create` | `az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--overwrite {false,true}] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}] [--tool-access {false,true}] [--bearer-token <value>] [--managed-identity-auth {false,true}] [--mi-token-scope <value>] [--oauth-dcr {false,true}] [--oauth-scopes <value>] [--oauth-client-name <value>]` |
 | `delete` | `az sre connector delete [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--yes]` |
 | `list` | `az sre connector list [--next-token <value>] [--max-items <value>] --agent-name <value> --resource-group <value>` |
 | `list-secret` | `az sre connector list-secret --agent-name <value> --name <value> --resource-group <value>` |
@@ -452,7 +452,7 @@ Create an Agent Connector.
 
 **Syntax**
 
-`az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}] [--tool-access {false,true}] [--bearer-token <value>] [--managed-identity-auth {false,true}] [--mi-token-scope <value>] [--oauth-dcr {false,true}] [--oauth-scopes <value>] [--oauth-client-name <value>]`
+`az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--overwrite {false,true}] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}] [--tool-access {false,true}] [--bearer-token <value>] [--managed-identity-auth {false,true}] [--mi-token-scope <value>] [--oauth-dcr {false,true}] [--oauth-scopes <value>] [--oauth-client-name <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -465,6 +465,7 @@ Create an Agent Connector.
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. |
 | `--identity` | String | No |  |  | Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity. |
+| `--overwrite` | Boolean | No | false | `false`, `true` | Replace an existing connector with the same name instead of failing. |
 | `--file-path` | String | No |  |  | Local file to ingest. For knowledge sources use 'az sre knowledge create'. |
 | `--mcp-endpoint` | String | No |  |  | For Mcp: the MCP server's HTTP endpoint URL. |
 | `--github` | Boolean | No |  | `false`, `true` | For Mcp: connect the public GitHub Copilot MCP server (`https://api.githubcopilot.com/mcp/`). |
@@ -1390,9 +1391,9 @@ Connect a GitHub or Azure DevOps repo to an agent.
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--repo-url` | String | Yes |  |  | HTTPS clone URL of the repo. |
 | `--provider` | String | No |  | `GitHub`, `AzureDevOps` | Repo provider. Auto-detected from --repo-url's host when omitted. |
-| `--display-name`, `--name`, `-n` | String | No |  |  | Display name for the repo. Defaults to the last path segment of --repo-url. |
+| `--display-name`, `--name`, `-n` | String | No |  |  | Display name for the repo. Defaults to the repo name from --repo-url (without .git). |
 | `--branch` | String | No |  |  | Branch to check out. Defaults to the repo's default branch. |
-| `--github-token` | String | No |  |  | GitHub token. Default: GITHUB_TOKEN/GH_TOKEN, else browser sign-in. |
+| `--github-token` | String | No |  |  | GitHub token. Default: GITHUB_TOKEN/GH_TOKEN, else browser sign-in. A fine-grained, repo-scoped token is recommended; it is stored on the agent. |
 | `--devops-organization` | String | No |  |  | Azure DevOps organization. Default: taken from --repo-url. |
 | `--devops-auth-type` | String | No | pat | `pat`, `managed-identity` | Azure DevOps auth method. Use managed-identity if your org blocks PAT creation. |
 | `--devops-identity` | String | No |  |  | Managed identity resource ID. Required with --devops-auth-type managed-identity. |

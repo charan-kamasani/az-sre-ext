@@ -923,7 +923,10 @@ github-actions` already use -- `_github_token()` tries, in order:
 1. **Explicit/CI**: `--github-token`, or `GITHUB_TOKEN`/`GH_TOKEN` env vars.
    This remains required for any non-interactive use (CI/CD pipelines,
    scheduled jobs, headless containers) -- device flow needs a human in a
-   browser, so it can never substitute for this tier.
+   browser, so it can never substitute for this tier. A token picked up from
+   the environment is stored on the agent, so the command warns and names the
+   variable it used; a fine-grained, repo-scoped token passed with
+   `--github-token` is the recommended option.
 2. **Native GitHub OAuth Device Flow (RFC 8628)** fallback, implemented
    directly in Python with `requests` + Azure CLI's own
    `azure.cli.core.util.open_page_in_browser` -- no `gh` CLI, no client
@@ -989,6 +992,14 @@ Azure DevOps PAT path (`_devops_pat_token`) was already dependency-free
 (calls the vssps REST API directly, no `az devops` extension needed), and
 `requests` is a hard transitive dependency of `azure-cli-core` itself, not
 something this extension adds.
+
+`repo connect` validates the repository name and payload before it writes
+any credentials, because the auth write replaces existing credentials for
+that host or org. If a later step fails, a freshly minted Azure DevOps PAT
+is revoked again, and a failed repository write after new credentials were
+saved is called out in a warning. For `*.visualstudio.com` URLs the Azure
+DevOps organization comes from the host name; the default repository name
+drops a trailing `.git`.
 
 ```bash
 # No token needed up front -- opens a browser-based device-flow prompt

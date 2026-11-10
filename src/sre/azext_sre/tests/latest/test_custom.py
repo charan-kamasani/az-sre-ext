@@ -22,13 +22,13 @@ import unittest
 from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import ANY, MagicMock, patch
 
 from requests import HTTPError, Response
 
 from azure.cli.core import get_default_cli
 from azure.cli.core.aaz import AAZCommand, AAZUndefined
-from azure.cli.core.azclierror import CLIError, ResourceNotFoundError
+from azure.cli.core.azclierror import CLIError, InvalidArgumentValueError, ResourceNotFoundError
 from azure.cli.core.extension import DevExtension
 from azure.cli.core.mock import DummyCli
 from azure.core.exceptions import ResourceExistsError
@@ -108,6 +108,10 @@ from azext_sre.custom import (
     _connector_consent_status,
     _decode_extension_envelope,
     _detect_repo_provider,
+    _devops_organization_from_url,
+    _devops_pat_token,
+    _direct_extension_create,
+    _revoke_devops_pat,
     _encode_extension_value,
     _extension_resource_create,
     _extension_resource_show,
@@ -410,11 +414,29 @@ class CliInvokeTests(unittest.TestCase):
         cli_ctx = SimpleNamespace(data={"subscription_id": "sub-1"})
         with patch("azure.cli.core.get_default_cli", return_value=fake_cli):
             _cli_invoke(cli_ctx, "sre", "connector", "list", "-g", "rg")
-            _cli_invoke(cli_ctx, "account", "show")
+            _cli_invoke(cli_ctx, "ad", "signed-in-user", "show")
             _cli_invoke(cli_ctx, "sre", "agent", "show", "--subscription", "other")
         self.assertEqual(seen[0][-2:], ["--subscription", "sub-1"])
         self.assertNotIn("--subscription", seen[1])
         self.assertEqual(seen[2].count("--subscription"), 1)
+
+    def test_nested_non_sre_commands_that_take_subscription_get_it(self):
+        seen = []
+        fake_cli = self._fake_cli()
+        fake_cli.invoke = lambda args, out_file=None: seen.append(args) or 0
+        cli_ctx = SimpleNamespace(data={"subscription_id": "sub-1"})
+        commands = [
+            ("role", "assignment", "list", "--assignee", "p", "--all"),
+            ("role", "assignment", "create", "--role", "r", "--assignee", "p", "--scope", "s"),
+            ("role", "assignment", "delete", "--role", "r", "--assignee", "p", "--scope", "s"),
+            ("account", "show"),
+            ("account", "get-access-token", "--resource", "x"),
+        ]
+        with patch("azure.cli.core.get_default_cli", return_value=fake_cli):
+            for command in commands:
+                _cli_invoke(cli_ctx, *command)
+        for args in seen:
+            self.assertEqual(args[-2:], ["--subscription", "sub-1"], args)
 
     def test_resource_not_found_error_wrapped_as_clierror(self):
         fake_cli = self._fake_cli(invoke_side_effect=ResourceNotFoundError("no such thing"))
@@ -2178,7 +2200,7 @@ class RepoConnectTests(unittest.TestCase):
         command, calls, fake_extension_resource_create = self._run_devops()
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create), \
-             patch("azext_sre.custom._devops_pat_token", lambda cli_ctx, org, name: "ado-pat-xyz"):
+             patch("azext_sre.custom._devops_pat_token", lambda cli_ctx, org, name: ("ado-pat-xyz", "auth-id-1")):
             command._handler({})
 
         ext_type, ext_name, raw_value, _overwrite = calls[0]
@@ -2262,7 +2284,7 @@ class RepoConnectTests(unittest.TestCase):
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create_with_real_pat), \
-             patch("azext_sre.custom._devops_pat_token", lambda cli_ctx, org, name: "ado-pat-xyz"):
+             patch("azext_sre.custom._devops_pat_token", lambda cli_ctx, org, name: ("ado-pat-xyz", "auth-id-1")):
             result = command._handler({})
 
         self.assertEqual(result["auth"]["properties"]["value"]["pat"], "******")
@@ -2289,6 +2311,107 @@ class RepoConnectTests(unittest.TestCase):
             result = command._handler({})
 
         self.assertEqual(result["auth"]["properties"]["value"]["pat"], "******")
+
+    def test_default_display_name_drops_git_suffix_query_and_slash(self):
+        for url in ("https://github.com/org/repo.git", "https://github.com/org/repo/",
+                    "https://github.com/org/repo.git?ref=main#readme"):
+            _, calls = self._run_github(repo_url=url)
+            self.assertEqual(calls[1][1], "repo", url)
+            self.assertEqual(json.loads(calls[1][2])["description"], "repo")
+
+    def test_bad_repository_name_fails_before_auth_is_written(self):
+        with self.assertRaises(CLIError) as raised:
+            self._run_github(display_name="bad/name")
+        self.assertIn("not a valid repository name", str(raised.exception))
+        command, calls, fake_create = self._run_devops(display_name="bad?name")
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._extension_resource_create", fake_create), \
+             patch("azext_sre.custom._devops_pat_token") as fake_pat:
+            with self.assertRaises(CLIError):
+                command._handler({})
+        self.assertEqual(calls, [])
+        fake_pat.assert_not_called()
+
+    def test_invalid_repository_value_fails_before_auth_is_written(self):
+        command, calls, fake_create = self._run_devops(branch=None)
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._extension_resource_create", fake_create), \
+             patch("azext_sre.custom._normalize_extension_value",
+                   side_effect=CLIError("--value.url is required")), \
+             patch("azext_sre.custom._devops_pat_token") as fake_pat:
+            with self.assertRaises(CLIError):
+                command._handler({})
+        self.assertEqual(calls, [])
+        fake_pat.assert_not_called()
+
+    def test_visualstudio_com_org_comes_from_the_host(self):
+        command, calls, fake_create = self._run_devops(
+            repo_url="https://contoso.visualstudio.com/Proj/_git/repo")
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._extension_resource_create", fake_create), \
+             patch("azext_sre.custom._devops_pat_token",
+                   lambda cli_ctx, org, name: ("ado-pat-xyz", "auth-id-1")) as _:
+            command._handler({})
+        self.assertEqual(calls[0][:2], ("azureDevOpsAuths", "contoso"))
+
+    def test_dev_azure_com_org_comes_from_the_path(self):
+        self.assertEqual(_devops_organization_from_url("https://dev.azure.com/contoso/Proj/_git/repo"), "contoso")
+        self.assertEqual(_devops_organization_from_url("https://contoso.visualstudio.com/Proj/_git/repo"), "contoso")
+
+    def _run_devops_with_failure(self, fail_on):
+        command, calls, _ = self._run_devops()
+
+        def fake_create(cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value,
+                        overwrite=False):
+            calls.append(extension_type)
+            if extension_type == fail_on:
+                raise CLIError(f"{extension_type} PUT failed")
+            return {"properties": {"value": "stub"}}
+
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._extension_resource_create", fake_create), \
+             patch("azext_sre.custom._devops_pat_token",
+                   lambda cli_ctx, org, name: ("ado-pat-xyz", "auth-id-1")), \
+             patch("azext_sre.custom._revoke_devops_pat") as fake_revoke, \
+             patch("azext_sre.custom.logger") as fake_logger:
+            with self.assertRaises(CLIError) as raised:
+                command._handler({})
+        warnings = [call.args[0] % call.args[1:] for call in fake_logger.warning.call_args_list]
+        return raised.exception, fake_revoke, warnings
+
+    def test_pat_is_revoked_when_the_auth_write_fails(self):
+        error, fake_revoke, _ = self._run_devops_with_failure("azureDevOpsAuths")
+        self.assertIn("azureDevOpsAuths PUT failed", str(error))
+        fake_revoke.assert_called_once_with(ANY, "contoso", "auth-id-1")
+
+    def test_repo_write_failure_warns_about_the_new_credentials(self):
+        error, fake_revoke, logs = self._run_devops_with_failure("repositories")
+        self.assertIn("repositories PUT failed", str(error))
+        fake_revoke.assert_not_called()
+        self.assertTrue(any("but connecting repository 'repo' failed" in line for line in logs), logs)
+
+    def test_revoke_devops_pat_sends_delete_with_authorization_id(self):
+        with patch("azext_sre.custom._cli_invoke", return_value={"accessToken": "aad"}), \
+             patch("azext_sre.custom.send_raw_request") as fake_send:
+            _revoke_devops_pat(object(), "contoso", "auth-id-1")
+        method, url = fake_send.call_args[0][1:3]
+        self.assertEqual(method, "DELETE")
+        self.assertIn("vssps.dev.azure.com/contoso/_apis/tokens/pats?authorizationId=auth-id-1", url)
+        self.assertIn("Authorization=Bearer aad", fake_send.call_args[1]["headers"])
+
+    def test_revoke_devops_pat_failure_only_warns(self):
+        with patch("azext_sre.custom._cli_invoke", return_value={"accessToken": "aad"}), \
+             patch("azext_sre.custom.send_raw_request", side_effect=CLIError("boom")), \
+             self.assertLogs("cli.azext_sre.custom", level="WARNING") as logs:
+            _revoke_devops_pat(object(), "contoso", "auth-id-1")
+        self.assertIn("revoke it manually", "\n".join(logs.output))
+
+    def test_devops_pat_token_returns_authorization_id(self):
+        response = MagicMock()
+        response.json.return_value = {"patToken": {"token": "pat", "authorizationId": "auth-id-1"}}
+        with patch("azext_sre.custom._cli_invoke", return_value={"accessToken": "aad"}), \
+             patch("azext_sre.custom.send_raw_request", return_value=response):
+            self.assertEqual(_devops_pat_token(object(), "contoso", "name"), ("pat", "auth-id-1"))
 
 
 class GithubTokenResolutionTests(unittest.TestCase):
@@ -4734,6 +4857,285 @@ class ConnectorTableTransformerTests(unittest.TestCase):
         self.assertIsNotNone(command_table["sre connector list"].table_transformer)
         self.assertIsNotNone(command_table["sre connector show"].table_transformer)
         self.assertIsNone(command_table["sre connector create"].table_transformer)
+
+
+class _FakeCreateBase:
+    """Mimics the generated create's _execute_operations generator."""
+
+    polling = None
+
+    def pre_operations(self):
+        pass
+
+    def post_operations(self):
+        pass
+
+    def _execute_operations(self):
+        self.pre_operations()
+        yield self.polling
+        self.post_operations()
+
+
+class _TestIdentityCleanup(_DefaultSystemIdentityMixin, _FakeCreateBase):
+    pass
+
+
+class _FakePolling:
+    def __init__(self, error=None):
+        self.error = error
+        self.extra = "delegated"
+
+    def run(self):
+        if self.error:
+            raise self.error
+
+
+class AutoIdentityCleanupTests(unittest.TestCase):
+    """The identity auto-created for 'agent create' is deleted again if the
+    agent itself is never created."""
+
+    IDENTITY_ID = ("/subscriptions/sub/resourceGroups/rg/providers/"
+                   "Microsoft.ManagedIdentity/userAssignedIdentities/myagent-identity-abc")
+
+    def _command(self, polling=None, **extra_args):
+        args = {"mi_system_assigned": AAZUndefined, "mi_user_assigned": AAZUndefined,
+                "agent_name": "myagent", "resource_group": "rg", "location": "eastus2"}
+        args.update(extra_args)
+        command = _bare_command(_TestIdentityCleanup, **args)
+        command.ctx.subscription_id = "sub"
+        command.polling = polling
+        return command
+
+    def _drive(self, command, arm_side_effect=None):
+        with patch("azext_sre.custom._create_user_assigned_identity", return_value=self.IDENTITY_ID), \
+             patch("azext_sre.custom._arm_request", side_effect=arm_side_effect) as arm, \
+             patch("azext_sre.custom.logger") as fake_logger:
+            try:
+                for polling in command._execute_operations():
+                    polling.run()
+            finally:
+                command.arm, command.log = arm, fake_logger
+
+    def _assert_identity_deleted(self, command):
+        command.arm.assert_called_once_with(ANY, "DELETE", self.IDENTITY_ID, "2023-01-31", missing_ok=True)
+
+    def test_initial_put_failure_deletes_the_identity(self):
+        command = self._command()
+
+        def failing_execute(_self):
+            _self.pre_operations()
+            raise CLIError("PUT failed")
+            yield  # pylint: disable=unreachable
+
+        with patch.object(_FakeCreateBase, "_execute_operations", failing_execute):
+            with self.assertRaisesRegex(CLIError, "PUT failed"):
+                self._drive(command)
+        self._assert_identity_deleted(command)
+
+    def test_lro_failure_deletes_the_identity(self):
+        command = self._command(polling=_FakePolling(CLIError("provisioning failed")))
+        with self.assertRaisesRegex(CLIError, "provisioning failed"):
+            self._drive(command)
+        self._assert_identity_deleted(command)
+
+    def test_success_keeps_the_identity(self):
+        command = self._command(polling=_FakePolling())
+        self._drive(command)
+        command.arm.assert_not_called()
+
+    def test_wrapped_polling_delegates_other_attributes(self):
+        command = self._command(polling=_FakePolling())
+        with patch("azext_sre.custom._create_user_assigned_identity", return_value=self.IDENTITY_ID):
+            polling = next(command._execute_operations())
+        self.assertEqual(polling.extra, "delegated")
+
+    def test_failure_after_agent_was_created_keeps_the_identity(self):
+        command = self._command(polling=_FakePolling())
+        with patch.object(_FakeCreateBase, "post_operations", side_effect=CLIError("grant failed")):
+            with self.assertRaisesRegex(CLIError, "grant failed"):
+                self._drive(command)
+        command.arm.assert_not_called()
+
+    def test_explicit_identity_is_never_deleted(self):
+        command = self._command(polling=_FakePolling(CLIError("provisioning failed")),
+                                mi_system_assigned="True")
+        with self.assertRaisesRegex(CLIError, "provisioning failed"):
+            self._drive(command)
+        command.arm.assert_not_called()
+
+    def test_cleanup_failure_warns_and_keeps_the_original_error(self):
+        command = self._command(polling=_FakePolling(CLIError("provisioning failed")))
+        with self.assertRaisesRegex(CLIError, "provisioning failed"):
+            self._drive(command, arm_side_effect=CLIError("delete failed"))
+        message = command.log.warning.call_args[0][0] % command.log.warning.call_args[0][1:]
+        self.assertIn("az identity delete --ids " + self.IDENTITY_ID, message)
+
+
+class GrantAccessToMeFailureTests(unittest.TestCase):
+    def test_grant_failure_says_the_agent_exists_and_how_to_retry(self):
+        command = _bare_command(_TestGrantAccessToMe, agent_name="myagent", resource_group="rg",
+                                grant_access_to_me="admin")
+
+        def fake_cli_invoke(cli_ctx, *cmd_args, allow_missing=False):
+            if cmd_args[:3] == ("ad", "signed-in-user", "show"):
+                return {"id": "user-object-id"}
+            raise CLIError("AuthorizationFailed")
+
+        with patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+            with self.assertRaises(CLIError) as raised:
+                command.post_operations()
+        message = str(raised.exception)
+        self.assertIn("Agent 'myagent' was created", message)
+        self.assertIn("AuthorizationFailed", message)
+        self.assertIn("az sre access grant --agent-name myagent --resource-group rg --role admin --assignee-me",
+                      message)
+
+
+class ConnectorOverwriteTests(unittest.TestCase):
+    def test_overwrite_skips_the_existence_check(self):
+        command = _bare_command(_TestConnectorExistenceGuard, agent_name="myagent", resource_group="rg",
+                                connector_name="myconn", overwrite=True)
+        with patch("azext_sre.custom._arm_request") as arm, \
+             patch("azext_sre.custom._resolve_agent_resource_id") as resolve:
+            command.pre_operations()
+        arm.assert_not_called()
+        resolve.assert_not_called()
+
+    def test_existence_check_still_runs_by_default(self):
+        command = _bare_command(_TestConnectorExistenceGuard, agent_name="myagent", resource_group="rg",
+                                connector_name="myconn", overwrite=False)
+        with patch("azext_sre.custom._arm_request", return_value={"name": "myconn"}), \
+             patch("azext_sre.custom._resolve_agent_resource_id", return_value="/agents/myagent"):
+            with self.assertRaises(ResourceExistsError) as raised:
+                command.pre_operations()
+        self.assertIn("--overwrite", str(raised.exception))
+
+    def test_connector_create_schema_has_overwrite(self):
+        schema = ConnectorCreate._build_arguments_schema()
+        self.assertEqual(schema.overwrite._options, ["--overwrite"])
+
+
+class McpEndpointSafetyTests(unittest.TestCase):
+    def _run(self, **extra_args):
+        args = {"data_connector_type": "Mcp", "file_path": None, "mcp_endpoint": None, "github": None,
+                "data_source": None, "extended_properties": None}
+        args.update(extra_args)
+        command = _bare_command(_TestConnectorConvenience, **args)
+        with patch("azext_sre.custom.logger") as fake_logger:
+            command.pre_operations()
+        return command.ctx.args, fake_logger
+
+    def test_non_https_endpoint_is_rejected(self):
+        for endpoint in ("http://example.com/mcp", "ftp://example.com", "example.com/mcp"):
+            with self.assertRaises(InvalidArgumentValueError):
+                self._run(mcp_endpoint=endpoint)
+
+    def test_managed_identity_without_scope_warns_about_the_arm_token(self):
+        args, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", managed_identity_auth=True)
+        self.assertEqual(args.extended_properties["armScope"], "https://management.azure.com/.default")
+        log.warning.assert_called_once()
+        self.assertEqual(log.warning.call_args[0][1], "mcp.contoso.com")
+
+    def test_managed_identity_with_scope_does_not_warn(self):
+        _, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", managed_identity_auth=True,
+                           mi_token_scope="api://contoso-mcp/.default")
+        log.warning.assert_not_called()
+
+
+class Utf8BomFileTests(unittest.TestCase):
+    """Files saved by Windows editors often start with a UTF-8 BOM."""
+
+    def _write(self, text, suffix):
+        handle = tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False, encoding="utf-8-sig")
+        self.addCleanup(lambda: os.remove(handle.name))
+        handle.write(text)
+        handle.close()
+        return handle.name
+
+    def test_skill_md_frontmatter_is_found_after_a_bom(self):
+        path = self._write("---\ndescription: Desc\n---\nBody\n", ".md")
+        self.assertEqual(_parse_skill_md(path), ("Desc", "Body"))
+
+    def test_knowledge_text_does_not_keep_the_bom(self):
+        path = self._write("hello", ".txt")
+        command = _bare_command(_TestConnectorConvenience, data_connector_type="KnowledgeText",
+                                file_path=path, mcp_endpoint=None, github=None,
+                                data_source=None, extended_properties=None)
+        command.pre_operations()
+        self.assertEqual(command.ctx.args.extended_properties, {"content": "hello"})
+
+    def test_hook_script_does_not_keep_the_bom(self):
+        path = self._write("print('x')\n", ".py")
+        command = _bare_command(SubagentCreate, value=json.dumps({"instructions": "x"}),
+                                pre_tool_use_script_file=path)
+        command._prepare_value()
+        script = json.loads(command.ctx.args.value)["hooks"]["PreToolUse"][0]["script"]
+        self.assertEqual(script, "print('x')\n")
+
+
+class DirectExtensionCreateNormalizationTests(unittest.TestCase):
+    """The agent-endpoint create path applies the same --value handling as ARM."""
+
+    def _create(self, raw_value, existing=None, overwrite=True):
+        requests = []
+
+        def fake_request(cli_ctx, agent_name, resource_group, method, path, body=None, missing_ok=False):
+            requests.append((method, path, body))
+            return existing if method == "GET" else body
+
+        with patch("azext_sre.custom._direct_extension_request", fake_request):
+            _direct_extension_create(None, "myagent", "rg", "tools", "t", raw_value, overwrite)
+        return requests
+
+    def test_python_tool_is_sent_as_python_function_tool(self):
+        value = json.dumps({"type": "PythonTool", "description": "d", "functionCode": "def main(): pass"})
+        with patch.dict("azext_sre.custom.EXTENSION_VALUE_VALIDATORS", {"tools": lambda parsed: None}):
+            requests = self._create(value)
+        self.assertEqual(requests[-1][0], "PUT")
+        self.assertEqual(requests[-1][2]["properties"]["type"], "PythonFunctionTool")
+
+    def test_validator_runs_on_the_direct_path(self):
+        with patch.dict("azext_sre.custom.EXTENSION_VALUE_VALIDATORS",
+                        {"tools": MagicMock(side_effect=CLIError("bad tool"))}):
+            with self.assertRaisesRegex(CLIError, "bad tool"):
+                self._create(json.dumps({"type": "LinkTool"}))
+
+    def test_new_http_client_tool_is_rejected(self):
+        with patch.dict("azext_sre.custom.EXTENSION_VALUE_VALIDATORS", {"tools": lambda parsed: None}):
+            with self.assertRaisesRegex(CLIError, "HttpClientTool"):
+                self._create(json.dumps({"type": "HttpClientTool"}), existing=None)
+
+    def test_existing_http_client_tool_can_be_updated(self):
+        existing = {"name": "t", "properties": {"type": "HttpClientTool"}}
+        with patch.dict("azext_sre.custom.EXTENSION_VALUE_VALIDATORS", {"tools": lambda parsed: None}):
+            requests = self._create(json.dumps({"type": "HttpClientTool"}), existing=existing)
+        self.assertEqual(requests[-1][0], "PUT")
+
+
+class ShortTimestampTests(unittest.TestCase):
+    def test_trailing_z_is_not_doubled(self):
+        from azext_sre._transformers import _short_timestamp
+
+        self.assertEqual(_short_timestamp("2026-11-03T18:10:42Z"), "2026-11-03T18:10:42Z")
+        self.assertEqual(_short_timestamp("2026-11-03T18:10:42.12Z"), "2026-11-03T18:10:42Z")
+        self.assertEqual(_short_timestamp("2026-11-03T18:10:42.126877+00:00"), "2026-11-03T18:10:42Z")
+
+
+class GithubTokenEnvWarningTests(unittest.TestCase):
+    def test_env_token_warning_names_the_variable(self):
+        for var in ("GITHUB_TOKEN", "GH_TOKEN"):
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "", "GH_TOKEN": ""}), \
+                 patch("azext_sre.custom.logger") as fake_logger:
+                os.environ[var] = "env-token"
+                self.assertEqual(_github_token(), "env-token")
+            message = fake_logger.warning.call_args[0][0] % fake_logger.warning.call_args[0][1:]
+            self.assertIn(var, message)
+            self.assertIn("stored on the agent", message)
+
+    def test_explicit_token_does_not_warn(self):
+        with patch("azext_sre.custom.logger") as fake_logger:
+            _github_token(explicit_token="explicit")
+        fake_logger.warning.assert_not_called()
 
 
 def setUpModule():

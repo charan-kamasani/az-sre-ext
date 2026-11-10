@@ -35,7 +35,7 @@ import os
 import re
 import uuid
 from functools import partial
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 # 'requests' is imported eagerly here (rather than left to its normal lazy
 # import inside azure.cli.core.util.send_raw_request) to avoid a real,
@@ -70,7 +70,7 @@ from azure.cli.core.aaz import (
     register_command_group,
 )
 from azure.cli.core.aaz._operation import AAZHttpOperation
-from azure.cli.core.azclierror import CLIError, ResourceNotFoundError
+from azure.cli.core.azclierror import CLIError, InvalidArgumentValueError, ResourceNotFoundError
 from azure.core.exceptions import ResourceExistsError
 from azure.cli.core.util import send_raw_request
 from azure.mgmt.core.tools import parse_resource_id
@@ -209,8 +209,6 @@ def _resolve_agent_endpoint(cli_ctx, agent_name, resource_group):
 
 def _validate_agent_url(agent_url):
     """Accept only https agent endpoints, since a data-plane token is sent to it."""
-    from urllib.parse import urlparse
-
     parsed = urlparse(agent_url or "")
     if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".azuresre.ai"):
         raise CLIError(
@@ -271,6 +269,19 @@ def _data_plane_request(cli_ctx, agent_name, resource_group, method, path, body=
     return response.json()
 
 
+# Nested commands that take --subscription. 'ad signed-in-user show' does not.
+_SUBSCRIPTION_COMMAND_PREFIXES = (
+    ("sre",),
+    ("role", "assignment"),
+    ("account", "show"),
+    ("account", "get-access-token"),
+)
+
+
+def _accepts_subscription(args):
+    return any(tuple(args[:len(prefix)]) == prefix for prefix in _SUBSCRIPTION_COMMAND_PREFIXES)
+
+
 def _cli_invoke(cli_ctx, *args, allow_missing=False):
     """Run another public `az sre ...` command in-process and return its
     parsed result.
@@ -280,9 +291,10 @@ def _cli_invoke(cli_ctx, *args, allow_missing=False):
     from azure.cli.core import get_default_cli
 
     args = list(args)
-    # The nested CLI starts fresh, so pass along the caller's --subscription.
+    # The nested CLI starts fresh, so pass along the caller's --subscription
+    # to commands that accept it.
     subscription = (getattr(cli_ctx, "data", None) or {}).get("subscription_id")
-    if (subscription and args and args[0] == "sre"
+    if (subscription and _accepts_subscription(args)
             and "--subscription" not in args and "--ids" not in args):
         args += ["--subscription", subscription]
 
@@ -575,13 +587,20 @@ class _GrantAccessToMeMixin:
             return
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
-        object_id = _resolve_signed_in_user_object_id(self.cli_ctx)
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        invoke(
-            "sre", "access", "grant",
-            "--agent-name", agent_name, "--resource-group", resource_group,
-            "--role", role_key, "--assignee", object_id,
-        )
+        try:
+            object_id = _resolve_signed_in_user_object_id(self.cli_ctx)
+            invoke = partial(_cli_invoke, self.cli_ctx)
+            invoke(
+                "sre", "access", "grant",
+                "--agent-name", agent_name, "--resource-group", resource_group,
+                "--role", role_key, "--assignee", object_id,
+            )
+        except Exception as ex:
+            raise CLIError(
+                f"Agent '{agent_name}' was created, but granting you the '{role_key}' role failed: {ex}\n"
+                f"Retry with: az sre access grant --agent-name {agent_name} "
+                f"--resource-group {resource_group} --role {role_key} --assignee-me"
+            ) from ex
         logger.warning(
             "Granted '%s' role to signed-in user (%s) on agent '%s'.",
             GrantAccess._ROLES[role_key], object_id, agent_name,
@@ -610,6 +629,24 @@ def _create_user_assigned_identity(cli_ctx, subscription_id, resource_group, loc
     return resource_id
 
 
+class _CleanupOnFailurePolling:
+    """Wraps an LRO polling method so a failed run triggers a cleanup callback."""
+
+    def __init__(self, polling, on_failure):
+        self._polling = polling
+        self._on_failure = on_failure
+
+    def run(self):
+        try:
+            self._polling.run()
+        except Exception:
+            self._on_failure()
+            raise
+
+    def __getattr__(self, name):
+        return getattr(self._polling, name)
+
+
 class _DefaultSystemIdentityMixin:
     """Defaults 'agent create' to match the Azure Portal's own identity
     default when neither --mi-system-assigned nor --mi-user-assigned is
@@ -634,6 +671,37 @@ class _DefaultSystemIdentityMixin:
     system-assigned-only behavior.
     """
 
+    _auto_identity_id = None
+    _agent_created = False
+
+    def _execute_operations(self):
+        # If the agent create fails, delete the identity we made for it so
+        # retries don't pile up orphaned identities. With --no-wait only the
+        # synchronous part (pre_operations and the initial PUT) is covered.
+        try:
+            for polling in super()._execute_operations():
+                yield _CleanupOnFailurePolling(polling, self._delete_auto_identity)
+        except Exception:
+            self._delete_auto_identity()
+            raise
+
+    def _delete_auto_identity(self):
+        identity_id = self._auto_identity_id
+        if not identity_id or self._agent_created:
+            return
+        self._auto_identity_id = None
+        try:
+            _arm_request(self.cli_ctx, "DELETE", identity_id, "2023-01-31", missing_ok=True)
+            logger.warning("Agent creation failed; deleted the identity '%s' created for it.",
+                           identity_id.rsplit("/", 1)[-1])
+        except Exception as ex:  # pylint: disable=broad-except
+            logger.warning("Agent creation failed and the identity created for it could not be "
+                           "deleted (%s). Delete it manually: az identity delete --ids %s", ex, identity_id)
+
+    def post_operations(self):
+        self._agent_created = True
+        super().post_operations()
+
     def pre_operations(self):
         args = self.ctx.args
         system_assigned = getattr(args, "mi_system_assigned", None)
@@ -647,6 +715,7 @@ class _DefaultSystemIdentityMixin:
             identity_id = _create_user_assigned_identity(
                 self.cli_ctx, self.ctx.subscription_id, resource_group, location, agent_name,
             )
+            self._auto_identity_id = identity_id
             args.mi_system_assigned = "True"
             args.mi_user_assigned = [identity_id]
             logger.warning(
@@ -1280,6 +1349,8 @@ class _ConnectorConvenienceArgsMixin:
             if connector_type != "Mcp":
                 raise CLIError("--github/--mcp-endpoint require --data-connector-type Mcp.")
             endpoint = GITHUB_COPILOT_MCP_ENDPOINT if github else mcp_endpoint
+            if urlparse(endpoint).scheme.lower() != "https":
+                raise InvalidArgumentValueError("--mcp-endpoint must be an https:// URL.")
             args.data_source = endpoint
             existing = _arg_value(getattr(args, "extended_properties", None)) or {}
             if not isinstance(existing, dict):
@@ -1309,7 +1380,7 @@ class _ConnectorConvenienceArgsMixin:
                     "fileName": os.path.basename(file_path),
                 }
             else:
-                with open(file_path, "r", encoding="utf-8") as handle:
+                with open(file_path, "r", encoding="utf-8-sig") as handle:
                     text = handle.read()
                 args.extended_properties = {"content": text}
             self._file_path_used = True
@@ -1352,6 +1423,14 @@ class _ConnectorConvenienceArgsMixin:
                     "bearerToken": bearer_token,
                 }
             elif managed_identity_auth or mi_token_scope:
+                if not mi_token_scope:
+                    target = existing.get("endpoint") or _arg_value(getattr(args, "data_source", None)) or ""
+                    logger.warning(
+                        "--managed-identity-auth without --mi-token-scope sends the agent's managed "
+                        "identity ARM token (https://management.azure.com/.default) to '%s'. Only use "
+                        "this with an MCP server you trust, or pass --mi-token-scope for its own audience.",
+                        urlparse(target).hostname or target or "the MCP endpoint",
+                    )
                 existing = {
                     **existing,
                     "authType": "AzureARM",
@@ -1412,7 +1491,22 @@ class _ConnectorExistenceGuardMixin:
     so a 404 on a brand-new connector name no longer prints anything.
     """
 
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        if hasattr(schema, "overwrite"):
+            return schema
+        schema.overwrite = AAZBoolArg(
+            options=["--overwrite"],
+            help="Replace an existing connector with the same name instead of failing.",
+            default=False,
+        )
+        return schema
+
     def pre_operations(self):
+        if _arg_value(getattr(self.ctx.args, "overwrite", None)):
+            super().pre_operations()
+            return
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
         connector_name = _arg_value(self.ctx.args.connector_name)
@@ -1423,7 +1517,7 @@ class _ConnectorExistenceGuardMixin:
             raise ResourceExistsError(
                 f"A connector named '{connector_name}' already exists on agent "
                 f"'{agent_name}'. Use 'az sre connector update' to change "
-                "it, or choose another --name."
+                "it, pass --overwrite to replace it, or choose another --name."
             )
         super().pre_operations()
 
@@ -3867,16 +3961,13 @@ EXTENSION_VALUE_VALIDATORS = {
 }
 
 
-def _encode_extension_value(raw_value, extension_type=None):
-    """Base64-encode a user-supplied JSON string for properties.value, the
-    wire format confirmed in Agents.http (e.g. pluginMarketplaces' example
-    body). Validates the input is JSON first so typos fail fast client-side
-    instead of as an opaque base64 blob the service will silently accept
-    but the data plane can't parse. Additionally applies a per-type shape
-    check for any extension_type we have a confirmed real shape for (see
-    EXTENSION_VALUE_VALIDATORS) -- unconfirmed types are passed through
-    with only the baseline JSON-syntax check. The legacy PythonTool name is
-    normalized to the runtime's PythonFunctionTool discriminator.
+def _normalize_extension_value(raw_value, extension_type=None):
+    """Parse and validate a user-supplied --value, returning the JSON text to
+    send. Applies a per-type shape check for any extension_type we have a
+    confirmed real shape for (see EXTENSION_VALUE_VALIDATORS) -- unconfirmed
+    types only get the baseline JSON-syntax check. The legacy PythonTool name
+    is normalized to the runtime's PythonFunctionTool discriminator. Shared by
+    the ARM and direct (agent endpoint) create paths.
     """
 
     try:
@@ -3892,7 +3983,31 @@ def _encode_extension_value(raw_value, extension_type=None):
     validator = EXTENSION_VALUE_VALIDATORS.get(extension_type)
     if validator is not None:
         validator(parsed)
+    return raw_value
+
+
+def _encode_extension_value(raw_value, extension_type=None):
+    """Base64-encode a validated --value for properties.value, the wire format
+    confirmed in Agents.http (e.g. pluginMarketplaces' example body)."""
+    raw_value = _normalize_extension_value(raw_value, extension_type)
     return base64.b64encode(raw_value.encode("utf-8")).decode("ascii")
+
+
+def _is_http_client_tool(extension_type, raw_value):
+    if extension_type != "tools":
+        return False
+    parsed = json.loads(raw_value)
+    return isinstance(parsed, dict) and parsed.get("type") == "HttpClientTool"
+
+
+def _require_existing_http_client_tool(existing_tool):
+    if not isinstance(existing_tool, dict) or existing_tool.get("type") != "HttpClientTool":
+        raise CLIError(
+            "Creating new HttpClientTool tools is no longer supported. "
+            "--overwrite can update an existing HttpClientTool of the same name, "
+            "but cannot create one or replace a different tool type. "
+            "Use PythonFunctionTool or an MCP server for new HTTP integrations."
+        )
 
 
 def _decode_extension_envelope(envelope):
@@ -3954,21 +4069,6 @@ EXTENSION_TYPE_CREATE_NOUN = {
     "azureDevOpsAuths": "az sre repo connect",
     "globalSettings": "az sre agent settings update",
 }
-
-
-def _resolve_agent_resource_id(cli_ctx, agent_name, resource_group):
-    invoke = partial(_cli_invoke, cli_ctx)
-    agent = invoke(
-        "sre", "agent", "show", "--name", agent_name, "--resource-group", resource_group,
-    )
-    if not isinstance(agent, dict):
-        raise ResourceNotFoundError(
-            f"Could not resolve SRE Agent '{agent_name}' in resource group '{resource_group}'."
-        )
-    agent_resource_id = agent.get("id")
-    if not agent_resource_id:
-        raise CLIError(f"Could not resolve the resource ID of agent '{agent_name}'.")
-    return agent_resource_id
 
 
 INTERNAL_TENANT_ONLY_MARKER = "restricted to internal tenants only"
@@ -4041,7 +4141,7 @@ def _direct_extension_to_arm_shape(extension_type, envelope):
 
 
 def _direct_extension_create(cli_ctx, agent_name, resource_group, extension_type, name, raw_value, overwrite):
-    _encode_extension_value(raw_value, extension_type)
+    raw_value = _normalize_extension_value(raw_value, extension_type)
     properties = json.loads(raw_value)
     properties.pop("name", None)
     path = _direct_extension_path(extension_type, name)
@@ -4049,13 +4149,19 @@ def _direct_extension_create(cli_ctx, agent_name, resource_group, extension_type
     if envelope_type is None:
         result = _direct_extension_request(cli_ctx, agent_name, resource_group, "PUT", path, body=properties)
         return _direct_extension_to_arm_shape(extension_type, {"name": name, "properties": result})
-    if not overwrite and extension_type not in DIRECT_SKIP_EXISTS_CHECK and _direct_extension_request(
-            cli_ctx, agent_name, resource_group, "GET", path, missing_ok=True) is not None:
+    check_exists = not overwrite and extension_type not in DIRECT_SKIP_EXISTS_CHECK
+    http_client_tool = _is_http_client_tool(extension_type, raw_value)
+    existing = None
+    if check_exists or http_client_tool:
+        existing = _direct_extension_request(cli_ctx, agent_name, resource_group, "GET", path, missing_ok=True)
+    if check_exists and existing is not None:
         raise ResourceExistsError(
             f"An extension named '{name}' of type '{extension_type}' already exists on "
             f"agent '{agent_name}'. Pass --overwrite to replace it intentionally, or "
             "choose another name."
         )
+    if http_client_tool:
+        _require_existing_http_client_tool(existing.get("properties") if isinstance(existing, dict) else None)
     envelope = {"name": name, "type": envelope_type, "properties": properties}
     result = _direct_extension_request(cli_ctx, agent_name, resource_group, "PUT", path, body=envelope)
     return _direct_extension_to_arm_shape(
@@ -4125,20 +4231,14 @@ def _arm_extension_create(
                 "Pass --overwrite to replace it intentionally, or choose "
                 "another name."
             )
-    encoded_value = _encode_extension_value(raw_value, extension_type)
-    if extension_type == "tools" and json.loads(raw_value).get("type") == "HttpClientTool":
+    raw_value = _normalize_extension_value(raw_value, extension_type)
+    encoded_value = _encode_extension_value(raw_value)
+    if _is_http_client_tool(extension_type, raw_value):
         if overwrite:
             existing = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
         existing = _decode_extension_envelope(existing)
         properties = existing.get("properties") if isinstance(existing, dict) else None
-        existing_tool = properties.get("value") if isinstance(properties, dict) else None
-        if not isinstance(existing_tool, dict) or existing_tool.get("type") != "HttpClientTool":
-            raise CLIError(
-                "Creating new HttpClientTool tools is no longer supported. "
-                "--overwrite can update an existing HttpClientTool of the same name, "
-                "but cannot create one or replace a different tool type. "
-                "Use PythonFunctionTool or an MCP server for new HTTP integrations."
-            )
+        _require_existing_http_client_tool(properties.get("value") if isinstance(properties, dict) else None)
     body = {
         "type": f"microsoft.app/agents/{extension_type}",
         "properties": {"value": encoded_value},
@@ -4523,7 +4623,7 @@ def _parse_skill_md(file_path):
     """
     if not os.path.isfile(file_path):
         raise CLIError(f"--file-path '{file_path}' does not exist.")
-    with open(file_path, "r", encoding="utf-8") as handle:
+    with open(file_path, "r", encoding="utf-8-sig") as handle:
         text = handle.read()
 
     description = None
@@ -5576,7 +5676,7 @@ class SubagentCreate(_PinnedExtensionCreate):
             raise CLIError(f"--value must be a JSON document: {ex}") from ex
         if not isinstance(parsed, dict):
             raise CLIError("--value must be a JSON object.")
-        with open(script_file, "r", encoding="utf-8") as handle:
+        with open(script_file, "r", encoding="utf-8-sig") as handle:
             script = handle.read()
         hooks = parsed.setdefault("hooks", {})
         hooks["PreToolUse"] = [
@@ -6075,35 +6175,45 @@ def _github_token(explicit_token=None, hostname="github.com"):
     for env_var in ("GITHUB_TOKEN", "GH_TOKEN"):
         env_token = os.environ.get(env_var)
         if env_token:
+            logger.warning(
+                "Using the GitHub token from the %s environment variable; it will be stored on the "
+                "agent. Pass a fine-grained, repo-scoped token with --github-token to control this.",
+                env_var,
+            )
             return env_token
 
     return _github_device_flow(hostname=hostname)
 
 
-def _devops_pat_token(cli_ctx, organization, display_name):
-    """Mint a short-lived Azure DevOps PAT via the vssps REST API.
-
-    `az devops` has no PAT-creation command, so this calls the same
-    vssps.dev.azure.com/_apis/tokens/pats endpoint the Portal's "New token"
-    button uses, authenticated with an AAD token scoped to Azure DevOps's own
-    resource ID (499b84ac-1321-427f-aa17-267ca6975798). Confirmed live this
-    session against a real Azure DevOps org.
-    """
-    import datetime
-
+def _devops_access_token(cli_ctx):
     # Reuses the public `az account get-access-token` command (via
     # _cli_invoke, same pattern as every other cross-command call in this
     # file) instead of touching azure.cli.core internals directly -- the
     # resource is the bare Azure DevOps application ID GUID, NOT an
-    # "https://<guid>" URI (that form was tried first and fails tenant-wide
-    # with AADSTS500011, confirmed live 2026-10-27).
+    # "https://<guid>" URI (that form fails tenant-wide with AADSTS500011).
     token_response = _cli_invoke(
         cli_ctx, "account", "get-access-token", "--resource", ADO_PAT_RESOURCE_ID,
     )
     token = (token_response or {}).get("accessToken")
     if not token:
         raise CLIError("Could not acquire an Azure DevOps access token.")
-    valid_to = (datetime.datetime.utcnow() + datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return token
+
+
+def _devops_pat_token(cli_ctx, organization, display_name):
+    """Mint a short-lived Azure DevOps PAT via the vssps REST API and return
+    (pat, authorization_id); the authorization ID is what revokes it.
+
+    `az devops` has no PAT-creation command, so this calls the same
+    vssps.dev.azure.com/_apis/tokens/pats endpoint the Portal's "New token"
+    button uses, authenticated with an AAD token scoped to Azure DevOps's own
+    resource ID (499b84ac-1321-427f-aa17-267ca6975798).
+    """
+    import datetime
+
+    token = _devops_access_token(cli_ctx)
+    valid_to = (datetime.datetime.now(datetime.timezone.utc)
+                + datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     body = {
         "displayName": display_name,
         "scope": "vso.code",
@@ -6118,15 +6228,30 @@ def _devops_pat_token(cli_ctx, organization, display_name):
         headers=[f"Authorization=Bearer {token}", "Content-Type=application/json"],
         body=json.dumps(body),
     )
-    pat = response.json().get("patToken", {}).get("token")
+    pat_token = response.json().get("patToken") or {}
+    pat = pat_token.get("token")
     if not pat:
         raise CLIError("Azure DevOps did not return a PAT token.")
-    return pat
+    return pat, pat_token.get("authorizationId")
+
+
+def _revoke_devops_pat(cli_ctx, organization, authorization_id):
+    """Best-effort revoke of a PAT minted by _devops_pat_token."""
+    if not authorization_id:
+        logger.warning("Could not revoke the Azure DevOps PAT created for this agent; revoke it "
+                       "manually in Azure DevOps (User settings > Personal access tokens).")
+        return
+    try:
+        token = _devops_access_token(cli_ctx)
+        url = (f"https://vssps.dev.azure.com/{organization}/_apis/tokens/pats"
+               f"?authorizationId={quote(authorization_id, safe='')}&api-version=7.1-preview.1")
+        send_raw_request(cli_ctx, "DELETE", url, headers=[f"Authorization=Bearer {token}"])
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.warning("Could not revoke the Azure DevOps PAT created for this agent (%s); revoke "
+                       "it manually in Azure DevOps (User settings > Personal access tokens).", ex)
 
 
 def _detect_repo_provider(repo_url):
-    from urllib.parse import urlparse
-
     host = (urlparse(repo_url).hostname or "").lower()
     if host == "github.com":
         return "GitHub"
@@ -6136,6 +6261,25 @@ def _detect_repo_provider(repo_url):
         f"Could not detect the repo provider from '{repo_url}'. Pass "
         "--provider GitHub or --provider AzureDevOps explicitly."
     )
+
+
+# Characters ARM rejects in resource names; the repository name becomes one.
+_INVALID_REPO_NAME_CHARS = ("/", "\\", "?", "#", "%", "&", ":", "<", ">", "*")
+
+
+def _repo_name_from_url(repo_url):
+    name = urlparse(repo_url).path.rstrip("/").rsplit("/", 1)[-1]
+    if name.lower().endswith(".git"):
+        name = name[:-4]
+    return name
+
+
+def _devops_organization_from_url(repo_url):
+    parsed = urlparse(repo_url)
+    host = (parsed.hostname or "").lower()
+    if host.endswith(".visualstudio.com"):
+        return host.split(".", 1)[0]
+    return parsed.path.strip("/").split("/", 1)[0]
 
 
 @register_command("sre repo connect")
@@ -6186,7 +6330,7 @@ class RepoConnect(AAZCommand):
         )
         schema.display_name = AAZStrArg(
             options=["--display-name", "--name", "-n"],
-            help="Display name for the repo. Defaults to the last path segment of --repo-url.",
+            help="Display name for the repo. Defaults to the repo name from --repo-url (without .git).",
         )
         schema.branch = AAZStrArg(
             options=["--branch"],
@@ -6194,7 +6338,8 @@ class RepoConnect(AAZCommand):
         )
         schema.github_token = AAZStrArg(
             options=["--github-token"],
-            help="GitHub token. Default: GITHUB_TOKEN/GH_TOKEN, else browser sign-in.",
+            help="GitHub token. Default: GITHUB_TOKEN/GH_TOKEN, else browser sign-in. "
+                 "A fine-grained, repo-scoped token is recommended; it is stored on the agent.",
         )
         schema.devops_organization = AAZStrArg(
             options=["--devops-organization"],
@@ -6227,7 +6372,7 @@ class RepoConnect(AAZCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         repo_url = _arg_value(self.ctx.args.repo_url)
         provider = _arg_value(self.ctx.args.provider) or _detect_repo_provider(repo_url)
-        display_name = _arg_value(self.ctx.args.display_name) or repo_url.rstrip("/").rsplit("/", 1)[-1]
+        display_name = _arg_value(self.ctx.args.display_name) or _repo_name_from_url(repo_url)
         branch = _arg_value(self.ctx.args.branch)
         github_token = _arg_value(self.ctx.args.github_token)
         devops_organization = _arg_value(self.ctx.args.devops_organization)
@@ -6235,6 +6380,20 @@ class RepoConnect(AAZCommand):
         devops_identity = _arg_value(self.ctx.args.devops_identity)
         devops_federated_client_id = _arg_value(self.ctx.args.devops_federated_client_id)
         devops_federated_tenant_id = _arg_value(self.ctx.args.devops_federated_tenant_id)
+        pat_authorization_id = None
+
+        # Validate the repository before touching auth: the auth write below
+        # replaces any existing credentials for the host/org.
+        if not display_name or any(ch in display_name for ch in _INVALID_REPO_NAME_CHARS):
+            raise InvalidArgumentValueError(
+                f"'{display_name}' is not a valid repository name. Pass --display-name with a name "
+                "that is not empty and has none of these characters: " + " ".join(_INVALID_REPO_NAME_CHARS)
+            )
+        repo_type = provider
+        repo_body = {"url": repo_url, "type": repo_type, "description": display_name}
+        if branch:
+            repo_body["branch"] = branch
+        repo_value = _normalize_extension_value(json.dumps(repo_body), "repositories")
 
         if provider == "GitHub":
             token = _github_token(explicit_token=github_token)
@@ -6246,11 +6405,8 @@ class RepoConnect(AAZCommand):
                 self.cli_ctx, agent_name, resource_group, "githubAuths", "github_com",
                 auth_value, overwrite=True,
             )
-            repo_type = "GitHub"
         else:
-            from urllib.parse import urlparse
-
-            organization = devops_organization or urlparse(repo_url).path.strip("/").split("/", 1)[0]
+            organization = devops_organization or _devops_organization_from_url(repo_url)
             if not organization:
                 raise CLIError(
                     "Could not detect the Azure DevOps organization from --repo-url. "
@@ -6275,7 +6431,8 @@ class RepoConnect(AAZCommand):
                 auth_value = json.dumps(auth_dict)
             else:
                 try:
-                    pat = _devops_pat_token(self.cli_ctx, organization, f"sre-agent-{agent_name}")
+                    pat, pat_authorization_id = _devops_pat_token(
+                        self.cli_ctx, organization, f"sre-agent-{agent_name}")
                 except Exception as ex:
                     if "DisablePatCreationPolicyViolation" in str(ex):
                         raise CLIError(
@@ -6289,17 +6446,28 @@ class RepoConnect(AAZCommand):
                     auth_value = json.dumps({"authType": "Pat", "pat": pat})
                 finally:
                     pat = None
-            auth_result = _extension_resource_create(
-                self.cli_ctx, agent_name, resource_group, "azureDevOpsAuths", organization,
-                auth_value, overwrite=True,
-            )
-            repo_type = "AzureDevOps"
+            try:
+                auth_result = _extension_resource_create(
+                    self.cli_ctx, agent_name, resource_group, "azureDevOpsAuths", organization,
+                    auth_value, overwrite=True,
+                )
+            except Exception:
+                if devops_auth_type != "managed-identity":
+                    _revoke_devops_pat(self.cli_ctx, organization, pat_authorization_id)
+                raise
 
-        repo_body = {"url": repo_url, "type": repo_type, "description": display_name}
-        if branch:
-            repo_body["branch"] = branch
-        repo_result = _extension_resource_create(
-            self.cli_ctx, agent_name, resource_group, "repositories", display_name,
-            json.dumps(repo_body), overwrite=True,
-        )
+        try:
+            repo_result = _extension_resource_create(
+                self.cli_ctx, agent_name, resource_group, "repositories", display_name,
+                repo_value, overwrite=True,
+            )
+        except Exception:
+            # The auth write above already replaced the old credentials, so
+            # the agent can't fall back to them.
+            auth_name = "github_com" if provider == "GitHub" else organization
+            logger.warning(
+                "Saved new %s credentials ('%s') on agent '%s', but connecting repository '%s' failed. "
+                "Re-run 'az sre repo connect' to finish.", repo_type, auth_name, agent_name, display_name,
+            )
+            raise
         return {"auth": _redact_auth_result(auth_result), "repository": repo_result}
