@@ -5947,13 +5947,23 @@ class ResponsePlanDelete(AAZCommand):
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
         name = _arg_value(self.ctx.args.extension_name)
-        for handler in _response_plan_handlers_for(self.cli_ctx, agent_name, resource_group, name):
+        handlers = _response_plan_handlers_for(self.cli_ctx, agent_name, resource_group, name)
+        # Deleting a plan that doesn't exist still reports success, so look it up first.
+        try:
+            _extension_resource_show(self.cli_ctx, agent_name, resource_group, "incidentFilters", name)
+            has_filter = True
+        except ResourceNotFoundError:
+            has_filter = False
+        if not has_filter and not handlers:
+            raise ResourceNotFoundError(f"Response plan '{name}' not found on agent '{agent_name}'.")
+        for handler in handlers:
             handler_id = handler.get("id") or name
             _data_plane_request(
                 self.cli_ctx, agent_name, resource_group, "DELETE",
                 _incident_handler_path(handler_id), missing_ok=True)
-        return _extension_resource_delete(
-            self.cli_ctx, agent_name, resource_group, "incidentFilters", name)
+        if has_filter:
+            _extension_resource_delete(
+                self.cli_ctx, agent_name, resource_group, "incidentFilters", name)
 
 
 @register_command("sre response-plan enable")

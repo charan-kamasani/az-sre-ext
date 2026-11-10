@@ -1346,7 +1346,9 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
     def _arm_delete(self, cli_ctx, agent, group, extension_type, name):
         if extension_type != "incidentFilters":
             raise ResourceNotFoundError("The ARM handler proxy is unavailable.")
-        del self.filters[name]
+        # ARM answers {} whether or not the plan exists.
+        self.filters.pop(name, None)
+        return {}
 
     def _agent_request(self, cli_ctx, agent, group, method, path, body=None,
                        missing_ok=False, agent_url=None):
@@ -1477,9 +1479,20 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
         self.handlers["extra"] = {"id": "extra", "incidentFilterId": "plan"}
         unrelated = {"id": "other", "incidentFilterId": "other-plan", "customInstructions": "Keep"}
         self.handlers["other"] = unrelated
-        self._command(ResponsePlanDelete)
+        self.assertIsNone(self._command(ResponsePlanDelete))
         self.assertEqual(self.handlers, {"other": unrelated})
         self.assertNotIn("plan", self.filters)
+
+    def test_delete_of_a_missing_plan_is_not_found(self):
+        from azext_sre.custom import ResponsePlanDelete
+        with self.assertRaises(ResourceNotFoundError):
+            self._command(ResponsePlanDelete)
+
+    def test_delete_removes_instructions_whose_filter_is_already_gone(self):
+        from azext_sre.custom import ResponsePlanDelete
+        self.handlers["plan"] = {"id": "plan", "incidentFilterId": "plan", "customInstructions": "Check logs"}
+        self._command(ResponsePlanDelete)
+        self.assertEqual(self.handlers, {})
 
     def test_duplicate_handler_is_rejected_without_overwriting_its_instructions(self):
         from azext_sre.custom import _incident_handler_path, _incident_resource_create
@@ -3505,6 +3518,29 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
             {"agent_name": "myagent", "resource_group": "rg", "extension_name": "myplugin"},
             fake_result={"properties": {"value": {}}},
         )
+
+
+class EmptyListWarningTests(unittest.TestCase):
+    """A list command on an agent with nothing to list prints one warning,
+    whichever API answers. 'response-plan list' prints its own, so the shared
+    list helper must not add another."""
+
+    _AGENT = {"id": "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"}
+
+    def test_each_list_command_warns_once(self):
+        from azext_sre.custom import ResponsePlanList
+        for command_cls, extra_args in ((ResponsePlanList, {"agent_url": None}), (ToolList, {})):
+            for route in ("arm", "direct"):
+                with self.subTest(command=command_cls.__name__, route=route):
+                    command = _bare_command(command_cls, agent_name="myagent", resource_group="rg", **extra_args)
+                    with patch.dict(os.environ, {"AZSRE_EXTENSION_ROUTE": route}), \
+                         patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+                         patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                         patch("azext_sre.custom._arm_request", return_value={"value": []}), \
+                         patch("azext_sre.custom._data_plane_request", return_value={"value": []}), \
+                         self.assertLogs("cli.azext_sre.custom", level="WARNING") as logs:
+                        command._handler(None)
+                    self.assertEqual(len(logs.output), 1, logs.output)
 
 
 class AgentSettingsTests(unittest.TestCase):
