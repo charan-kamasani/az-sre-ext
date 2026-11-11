@@ -149,6 +149,38 @@ def _bare_command(command_cls, **args_kwargs):
     return command
 
 
+class VersionTests(unittest.TestCase):
+    """'sre version' reports package metadata and the pinned API versions
+    without any Azure call."""
+
+    def test_reports_extension_and_api_versions(self):
+        from importlib import metadata
+        from azext_sre import custom
+        command = _bare_command(custom.Version)
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+                patch.object(metadata, "version", return_value="9.9.9") as version, \
+                patch("azext_sre.custom._arm_request") as arm:
+            result = command._handler(None)
+        version.assert_called_once_with("sre")
+        arm.assert_not_called()
+        self.assertEqual(result, {
+            "extensionName": "sre",
+            "extensionVersion": "9.9.9",
+            "apiVersions": {
+                "agents": custom.API_VERSION,
+                "networking": custom.NETWORK_API_VERSION,
+                "extensions": custom.EXTENSION_API_VERSION,
+            },
+        })
+
+    def test_missing_package_metadata_is_a_clear_error(self):
+        from importlib import metadata
+        from azext_sre import custom
+        with patch.object(metadata, "version", side_effect=metadata.PackageNotFoundError("sre")):
+            with self.assertRaisesRegex(CLIError, "Reinstall the extension"):
+                custom._version_info()
+
+
 class ModelProviderNormalizationTests(unittest.TestCase):
     """--default-model.provider accepts real API values case-insensitively
     and rejects the Portal's friendly label ('Azure OpenAI' is NOT a real
@@ -4227,7 +4259,7 @@ class CommandRegistrationTests(unittest.TestCase):
             "sre connector create", "sre connector show", "sre connector list",
             "sre connector update", "sre connector delete", "sre connector list-secret",
             "sre identity assign", "sre identity remove", "sre identity show",
-            "sre agent list-models",
+            "sre agent list-models", "sre version",
             "sre managed-resource grant", "sre managed-resource revoke", "sre managed-resource list",
             "sre agent settings show", "sre agent settings update",
             "sre repo connect",

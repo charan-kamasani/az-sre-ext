@@ -2210,6 +2210,46 @@ class IdentityWait(_GeneratedIdentityWait):
 # blank, unhelpful '--help' (confirmed live: 'az sre supported-agent-model
 # -h' showed no description at all before this fix).
 # --------------------------------------------------------------------------------------------
+def _version_info():
+    """Installed extension version and the Azure API versions it calls."""
+    from importlib import metadata
+
+    try:
+        extension_version = metadata.version("sre")
+    except metadata.PackageNotFoundError as ex:
+        raise CLIError(
+            "Unable to determine the installed sre extension version: Python package "
+            "metadata for 'sre' is unavailable. Reinstall the extension from a valid wheel."
+        ) from ex
+    return {
+        "extensionName": "sre",
+        "extensionVersion": extension_version,
+        "apiVersions": {
+            "agents": API_VERSION,
+            "networking": NETWORK_API_VERSION,
+            "extensions": EXTENSION_API_VERSION,
+        },
+    }
+
+
+@register_command("sre version")
+class Version(AAZCommand):
+    """Show the installed extension version and the Azure API versions it uses.
+
+    Reads installed package metadata only, so it works without signing in.
+    Include the output when you report a bug.
+
+    :example: Show version information
+        az sre version
+    :example: Print only the extension version
+        az sre version --query extensionVersion -o tsv
+    """
+
+    def _handler(self, command_args):
+        super()._handler(command_args)
+        return _version_info()
+
+
 @register_command("sre agent list-models")
 class SupportedAgentModelList(_GeneratedSupportedAgentModelList):
     """List the models supported for new agents in a region.
