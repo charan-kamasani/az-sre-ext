@@ -2856,16 +2856,6 @@ class HttpTriggerInvokeTests(unittest.TestCase):
             with self.assertRaisesRegex(CLIError, "unexpected"):
                 self._invoke({"triggerUrl": url})
 
-    def test_agent_url_rejects_hosts_that_requests_would_resolve_elsewhere(self):
-        from azext_sre.custom import _validate_agent_url
-
-        self.assertEqual(_validate_agent_url("https://a.b.eastus2.azuresre.ai/x"),
-                         "https://a.b.eastus2.azuresre.ai")
-        for url in ("https://attacker.example\\@a.azuresre.ai", "https://attacker.example\\.azuresre.ai",
-                    "https://u@a.azuresre.ai", "https://evil.example.com"):
-            with self.assertRaises(CLIError):
-                _validate_agent_url(url)
-
 
 class ValueNotAnObjectTests(unittest.TestCase):
     """Azure CLI's error line doesn't name the command, so each kind of

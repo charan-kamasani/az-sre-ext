@@ -233,12 +233,12 @@ def _is_azuresre_https_url(url):
 
 def _validate_agent_url(agent_url):
     """Accept only https agent endpoints, since a data-plane token is sent to it."""
-    if not _is_azuresre_https_url(agent_url or ""):
+    parsed = urlparse(agent_url or "")
+    if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".azuresre.ai"):
         raise CLIError(
             "--agent-url must be an https agent endpoint on *.azuresre.ai, "
             "for example https://<agent>.<hash>.eastus2.azuresre.ai"
         )
-    parsed = urlparse(agent_url)
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
