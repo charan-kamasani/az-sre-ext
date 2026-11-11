@@ -32,6 +32,7 @@ from azure.cli.core.azclierror import CLIError, InvalidArgumentValueError, Resou
 from azure.cli.core.extension import DevExtension
 from azure.cli.core.mock import DummyCli
 from azure.core.exceptions import HttpResponseError, ResourceExistsError
+from azure.core.polling.base_polling import OperationFailed
 
 from azext_sre import SreCommandsLoader
 from azext_sre.custom import (
@@ -4573,7 +4574,7 @@ class GeneratedCommandNamingTests(unittest.TestCase):
         )
         self.assertEqual(packages, ["sre"])
         for base in (IdentityAssign, SupportedAgentModelList):
-            generated = base.__mro__[1]
+            generated = next(cls for cls in base.__mro__[1:] if cls.__module__.startswith("azext_sre.aaz."))
             self.assertTrue(generated.__module__.startswith("azext_sre.aaz.latest.sre."))
             self.assertEqual(generated.AZ_NAME, base.AZ_NAME)
 
@@ -4756,7 +4757,7 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
         pass
 
     def test_agent_icm_platform_blocked_outside_microsoft_tenants(self):
-        config = SimpleNamespace(type="Icm")
+        config = {"type": "Icm"}
         for tenant, blocked in (
                 ("e0a62563-74af-4081-8ae3-fb94b692e394", True),
                 (self.MICROSOFT_CORP_TENANT_ID, False),
@@ -4773,7 +4774,7 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
     def test_agent_non_icm_platform_is_never_blocked(self):
         command = _bare_command(
             self._TestIcmPlatformGate,
-            incident_management_configuration=SimpleNamespace(type="PagerDuty"))
+            incident_management_configuration={"type": "PagerDuty"})
         with patch("azext_sre.custom._resolve_signed_in_tenant_id", lambda cli_ctx: "e0a62563-74af-4081-8ae3-fb94b692e394"):
             command.pre_operations()
 
@@ -6005,6 +6006,15 @@ class _FakePolling:
             raise self.error
 
 
+def _service_reported_failure_error(message):
+    """The error chain AAZ raises when the service reports the operation Failed."""
+    polling_error = HttpResponseError(message="Operation failed or canceled")
+    polling_error.__cause__ = OperationFailed("Operation failed or canceled")
+    error = CLIError(message)
+    error.__context__ = polling_error
+    return error
+
+
 class AutoIdentityCleanupTests(unittest.TestCase):
     """The identity auto-created for 'agent create' is deleted again if the
     agent itself is never created."""
@@ -6048,7 +6058,7 @@ class AutoIdentityCleanupTests(unittest.TestCase):
         self._assert_identity_deleted(command)
 
     def test_lro_failure_deletes_the_identity(self):
-        command = self._command(polling=_FakePolling(CLIError("provisioning failed")))
+        command = self._command(polling=_FakePolling(_service_reported_failure_error("provisioning failed")))
         with self.assertRaisesRegex(CLIError, "provisioning failed"):
             self._drive(command)
         self._assert_identity_deleted(command)
@@ -6079,10 +6089,11 @@ class AutoIdentityCleanupTests(unittest.TestCase):
         command.arm.assert_not_called()
 
     def test_cleanup_failure_warns_and_keeps_the_original_error(self):
-        command = self._command(polling=_FakePolling(CLIError("provisioning failed")))
+        command = self._command(polling=_FakePolling(_service_reported_failure_error("provisioning failed")))
         with self.assertRaisesRegex(CLIError, "provisioning failed"):
             self._drive(command, arm_side_effect=CLIError("delete failed"))
         message = command.log.warning.call_args[0][0] % command.log.warning.call_args[0][1:]
+        self.assertIn("could not be deleted (delete failed)", message)
         self.assertIn("az identity delete --ids " + self.IDENTITY_ID, message)
 
 

@@ -75,8 +75,10 @@ from azure.cli.core.aaz import (
     register_command_group,
 )
 from azure.cli.core.aaz._operation import AAZHttpOperation
+from azure.cli.core.aaz.exceptions import AAZUnknownFieldError
 from azure.cli.core.azclierror import CLIError, InvalidArgumentValueError, ResourceNotFoundError
 from azure.core.exceptions import ResourceExistsError
+from azure.core.polling.base_polling import OperationFailed
 from azure.cli.core.util import send_raw_request
 from azure.mgmt.core.tools import parse_resource_id
 from knack.log import get_logger
@@ -89,6 +91,7 @@ from .aaz.latest.sre.agent import Show as _GeneratedShow
 from .aaz.latest.sre.agent import Start as _GeneratedStart
 from .aaz.latest.sre.agent import Stop as _GeneratedStop
 from .aaz.latest.sre.agent import Update as _GeneratedUpdate
+from .aaz.latest.sre.agent import Wait as _GeneratedWait
 from .aaz.latest.sre.connector import Create as _GeneratedConnectorCreate
 from .aaz.latest.sre.connector import Update as _GeneratedConnectorUpdate
 from .aaz.latest.sre.connector import Show as _GeneratedConnectorShow
@@ -473,6 +476,14 @@ def _normalize_model_provider(value):
     return normalized
 
 
+def _arg_field(arg, name):
+    """One field of an AAZ object argument as a plain value, or None when the
+    argument or the field is unset or null (for example '--default-model null',
+    the AAZ way to clear a property)."""
+    value = _arg_value(arg) if arg is not None else None
+    return value.get(name) if isinstance(value, dict) else None
+
+
 class _ModelProviderArgMixin:
     """Shared --default-model.provider help/validation for create and update.
 
@@ -516,12 +527,10 @@ class _ModelProviderArgMixin:
         return schema
 
     def pre_operations(self):
-        args = self.ctx.args
-        default_model = getattr(args, "default_model", None)
-        if default_model is not None and has_value(default_model.provider):
-            default_model.provider = _normalize_model_provider(
-                default_model.provider.to_serialized_data()
-            )
+        default_model = getattr(self.ctx.args, "default_model", None)
+        provider = _arg_field(default_model, "provider")
+        if provider is not None:
+            default_model.provider = _normalize_model_provider(provider)
         super().pre_operations()
 
 
@@ -785,7 +794,7 @@ def _create_user_assigned_identity(cli_ctx, subscription_id, resource_group, loc
 
 
 class _CleanupOnFailurePolling:
-    """Wraps an LRO polling method so a failed run triggers a cleanup callback."""
+    """Wraps an LRO polling method so a failed run calls a cleanup callback with the error."""
 
     def __init__(self, polling, on_failure):
         self._polling = polling
@@ -794,12 +803,29 @@ class _CleanupOnFailurePolling:
     def run(self):
         try:
             self._polling.run()
-        except Exception:
-            self._on_failure()
+        except Exception as ex:
+            self._on_failure(ex)
             raise
 
     def __getattr__(self, name):
         return getattr(self._polling, name)
+
+
+def _service_reported_failure(error):
+    """True if a long-running operation failed because the service reported it
+    Failed or Canceled, not because a status poll or the final read failed.
+
+    AAZ re-raises polling errors through the command's on_error callback, so
+    azure-core's error is in the chain, caused by OperationFailed only when the
+    service reported the operation as failed.
+    """
+    seen = set()
+    while error is not None and id(error) not in seen:
+        if isinstance(error, OperationFailed):
+            return True
+        seen.add(id(error))
+        error = error.__cause__ or error.__context__
+    return False
 
 
 class _DefaultSystemIdentityMixin:
@@ -835,10 +861,46 @@ class _DefaultSystemIdentityMixin:
         # synchronous part (pre_operations and the initial PUT) is covered.
         try:
             for polling in super()._execute_operations():
-                yield _CleanupOnFailurePolling(polling, self._delete_auto_identity)
+                yield _CleanupOnFailurePolling(polling, self._on_wait_failure)
         except Exception:
             self._delete_auto_identity()
             raise
+
+    def _on_wait_failure(self, error):
+        # The service accepted the create. Unless it then reported the
+        # operation Failed or Canceled, the agent may exist and use the
+        # identity: a status poll can fail transiently, and a read right after
+        # success can still answer 404.
+        if _service_reported_failure(error):
+            self._delete_auto_identity()
+            return
+        identity_id = self._auto_identity_id
+        if not identity_id or self._agent_created:
+            return
+        try:
+            agent = _arm_request(self.cli_ctx, "GET", _ctx_agent_id(self.ctx), API_VERSION, missing_ok=True)
+        except Exception:  # pylint: disable=broad-except
+            agent = None
+        state = ((agent.get("properties") or {}).get("provisioningState")
+                 if isinstance(agent, dict) else None)
+        if str(state).lower() in ("failed", "canceled"):
+            self._delete_auto_identity()
+            return
+        self._auto_identity_id = None
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        identity_name = identity_id.rsplit("/", 1)[-1]
+        if agent:
+            logger.warning(
+                "Agent '%s' exists (provisioningState: %s), but waiting for it to finish failed. "
+                "Kept the identity '%s' made for it. Check the agent with: az sre agent show -g %s -n %s",
+                agent_name, state, identity_name, resource_group, agent_name)
+        else:
+            logger.warning(
+                "Couldn't confirm whether agent '%s' was created, so the identity '%s' made for it "
+                "was kept. If 'az sre agent show -g %s -n %s' doesn't find the agent, delete the "
+                "identity: az identity delete --ids %s",
+                agent_name, identity_name, resource_group, agent_name, identity_id)
 
     def _delete_auto_identity(self):
         identity_id = self._auto_identity_id
@@ -933,9 +995,7 @@ class _IcmIncidentPlatformGateMixin:
     """Block type=Icm in --incident-management-configuration outside Microsoft tenants."""
 
     def pre_operations(self):
-        args = self.ctx.args
-        config = getattr(args, "incident_management_configuration", None)
-        platform = _arg_value(config.type) if config is not None else None
+        platform = _arg_field(getattr(self.ctx.args, "incident_management_configuration", None), "type")
         if platform and str(platform).lower() == "icm":
             tenant_id = (_resolve_signed_in_tenant_id(self.cli_ctx) or "").lower()
             if tenant_id not in ICM_MANAGED_IDENTITY_TENANT_IDS and not _is_microsoft_first_party_tenant(tenant_id):
@@ -1005,11 +1065,21 @@ class _ExperimentalSettingsOnCreateMixin:
         properties = _extra_agent_properties(self.ctx.args)
         if not properties:
             return
-        resource_id = (
-            f"/subscriptions/{self.ctx.subscription_id}/resourceGroups/{_arg_value(self.ctx.args.resource_group)}"
-            f"/providers/Microsoft.App/agents/{_arg_value(self.ctx.args.agent_name)}"
-        )
-        _arm_request(self.cli_ctx, "PATCH", resource_id, API_VERSION, body={"properties": properties})
+        try:
+            _arm_request(self.cli_ctx, "PATCH", _ctx_agent_id(self.ctx), API_VERSION,
+                         body={"properties": properties})
+        except Exception as ex:
+            agent_name = _arg_value(self.ctx.args.agent_name)
+            resource_group = _arg_value(self.ctx.args.resource_group)
+            flags = " and ".join(flag for key, flag in (
+                ("experimentalSettings", "--experimental-settings"),
+                ("monthlyAgentUnitLimit", "--monthly-unit-limit"),
+            ) if key in properties)
+            raise CLIError(
+                f"Agent '{agent_name}' was created, but applying {flags} failed: {ex}\n"
+                f"Retry with 'az sre agent update --name {agent_name} --resource-group {resource_group}' "
+                f"and the same {flags}."
+            ) from ex
 
 
 class _ActionModeEnum(AAZArgEnum):
@@ -1047,11 +1117,124 @@ class _ActionModeArgMixin:
         return schema
 
 
+class _SecretAgentWriteMixin:
+    """Keeps an agent PUT or PATCH out of HTTP trace logs (--debug and az.log).
+
+    The body can carry the incident platform's connection key and the App
+    Insights connection string. Same as _SecretHttpOperationMixin, which is
+    defined further down with the connector commands.
+    """
+
+    def __call__(self, *args, **kwargs):
+        kwargs["logging_enable"] = False
+        with _no_http_trace():
+            return super().__call__(*args, **kwargs)
+
+
+class _AgentSecretArgWarningMixin:
+    """Warns when the incident connection key or the App Insights connection
+    string was typed on the command line, where knack's --debug argument echo
+    and shell history keep it."""
+
+    def pre_operations(self):
+        args = self.ctx.args
+        if _arg_field(getattr(args, "incident_management_configuration", None), "connection_key"):
+            for flag in ("--incident-management-configuration", "--incident-config"):
+                _warn_if_secret_typed(flag, f"put the configuration in a JSON file and pass {flag} @file")
+        app_insights = _arg_field(getattr(args, "log_configuration", None), "application_insights_configuration")
+        if isinstance(app_insights, dict) and app_insights.get("connection_string"):
+            _warn_if_secret_typed(
+                "--log-configuration", "put the configuration in a JSON file and pass --log-configuration @file")
+        super().pre_operations()
+
+
+class _AgentExistenceGuardMixin:
+    """Refuses 'agent create' for an agent that already exists.
+
+    The create is a PUT, which replaces the agent: a PUT that leaves out
+    logConfiguration or monthlyAgentUnitLimit clears them (see Update), and the
+    default identity flow attaches a brand-new identity in place of the old one.
+    Use 'agent update' to change an existing agent. An agent left Failed by an
+    earlier create may reference an identity that rollback deleted, so 'agent
+    update' can't repair it, while a working agent whose last update failed is
+    Failed too. So a Failed agent still blocks the PUT, and the error offers
+    both 'agent update' and deleting the agent first.
+    """
+
+    def pre_operations(self):
+        existing = _arm_request(self.cli_ctx, "GET", _ctx_agent_id(self.ctx), API_VERSION, missing_ok=True)
+        if existing is not None:
+            agent_name = _arg_value(self.ctx.args.agent_name)
+            resource_group = _arg_value(self.ctx.args.resource_group)
+            state = ((existing.get("properties") or {}).get("provisioningState")
+                     if isinstance(existing, dict) else None)
+            if str(state).lower() in ("failed", "canceled"):
+                raise ResourceExistsError(
+                    f"An agent named '{agent_name}' already exists in resource group '{resource_group}' "
+                    f"(provisioningState: {state}). If it's in use, change it with 'az sre agent update'. "
+                    "If an earlier 'agent create' left it behind, delete it before creating it again: "
+                    f"az sre agent delete --name {agent_name} --resource-group {resource_group}"
+                )
+            raise ResourceExistsError(
+                f"An agent named '{agent_name}' already exists in resource group '{resource_group}'. "
+                "Use 'az sre agent update' to change it, or choose another --name."
+            )
+        super().pre_operations()
+
+
+class _RaiseOnWaitTimeoutMixin:
+    """Fails a 'wait' command when it times out.
+
+    azure-cli-core (2.92) returns the timeout error instead of raising it, so
+    the command printed {} and exited 0 while the resource still wasn't ready.
+    """
+
+    def __call__(self, *args, **kwargs):
+        result = super().__call__(*args, **kwargs)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+# Agent properties the CLI sets (--monthly-unit-limit, --experimental-settings)
+# that the generated 2026-01-01 schema doesn't model, so its output drops them.
+_UNMODELED_AGENT_PROPERTIES = ("monthlyAgentUnitLimit", "experimentalSettings")
+
+
+def _add_removals(after, before):
+    """Sets to null, in place, each key of `before` that `after` lacks or nulls,
+    recursing into objects present in both, so a JSON merge patch removes what
+    a PUT of `after` would."""
+    for key, old in before.items():
+        new = after.get(key)
+        if new is None:
+            after[key] = None
+        elif isinstance(old, dict) and isinstance(new, dict):
+            _add_removals(new, old)
+
+
+def _remember_unmodeled_properties(operation, session):
+    data = operation.deserialize_http_content(session)
+    properties = data.get("properties") if isinstance(data, dict) else None
+    if isinstance(properties, dict):
+        operation.ctx.sre_unmodeled_properties = {
+            key: properties[key] for key in _UNMODELED_AGENT_PROPERTIES if key in properties}
+
+
+def _with_unmodeled_properties(ctx, result):
+    extra = getattr(ctx, "sre_unmodeled_properties", None)
+    if extra and isinstance(result, dict):
+        if not isinstance(result.get("properties"), dict):
+            result["properties"] = {}
+        result["properties"].update(extra)
+    return result
+
+
 @register_command("sre agent create")
 class Create(  # pylint: disable=too-many-ancestors
-        _IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeArgMixin,
-        _GrantAccessToMeMixin, _ExperimentalSettingsOnCreateMixin, _DefaultSystemIdentityMixin,
-        _LogConfigurationWarningMixin, _GeneratedCreate):
+        _IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeArgMixin, _AgentSecretArgWarningMixin,
+        _GrantAccessToMeMixin, _ExperimentalSettingsOnCreateMixin, _AgentExistenceGuardMixin,
+        _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
     :example: Create an agent with an Anthropic default model
@@ -1095,9 +1278,13 @@ class Create(  # pylint: disable=too-many-ancestors
         cls._args_schema = schema
         return cls._args_schema
 
+    class AgentsCreateOrUpdate(_SecretAgentWriteMixin, _GeneratedCreate.AgentsCreateOrUpdate):
+        pass
+
 
 @register_command("sre agent update")
-class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeArgMixin, _GeneratedUpdate):
+class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeArgMixin, _AgentSecretArgWarningMixin,
+             _GeneratedUpdate):
     """Update an SRE Agent.
 
     PagerDuty and ServiceNow set the same agent property as the portal's
@@ -1111,6 +1298,12 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
     ServiceNow uses Basic Auth: set --connection-url to the instance URL
     and --connection-key to the credentials.
 
+    The connection key is a secret. Typed on the command line, it shows up in
+    --debug output and shell history, so put the configuration in a JSON file
+    and pass it with @file instead, for example a pagerduty.json holding
+    {"type": "PagerDuty", "connectionName": "pagerduty", "connectionKey":
+    "<api-key>", "oboUser": "oncall@contoso.com"}.
+
     Azure Monitor must also be connected before a response plan can use it.
     A new agent has no incident platform set.
 
@@ -1122,17 +1315,17 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
         az sre agent update --name myagent --resource-group myrg \\
             --incident-management-configuration "{type:AzMonitor,connection-name:azmonitor}"
 
-    :example: Connect PagerDuty as the incident platform
+    :example: Connect PagerDuty as the incident platform, reading the configuration and its key from a file
         az sre agent update --name myagent --resource-group myrg \\
-            --incident-management-configuration "{type:PagerDuty,connection-name:pagerduty,connection-key:<api-key>,obo-user:oncall@contoso.com}"
+            --incident-management-configuration "@pagerduty.json"
 
     :example: Connect ServiceNow as the incident platform with Basic Auth
         az sre agent update --name myagent --resource-group myrg \\
-            --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:https://contoso.service-now.com,connection-key:<credentials>}"
+            --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:'https://contoso.service-now.com',connection-key:<credentials>}"
 
     :example: Turn on preview feature flags from a file
         az sre agent update --name myagent --resource-group myrg \\
-            --experimental-settings @experimental.json
+            --experimental-settings "@experimental.json"
     """
 
     _args_schema = None
@@ -1145,6 +1338,12 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
         _add_experimental_settings_arg(schema)
         cls._args_schema = schema
         return cls._args_schema
+
+    def pre_instance_update(self, instance):
+        super().pre_instance_update(instance)
+        # The agent as a request body before the update, to find what a PATCH
+        # has to remove explicitly.
+        self.ctx.sre_body_before = _arg_value(instance) or {}
 
     def post_instance_update(self, instance):
         super().post_instance_update(instance)
@@ -1161,6 +1360,7 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
             else:
                 del instance.properties.log_configuration
             self.ctx.sre_use_patch = True
+            self.ctx.sre_kept_log_configuration = True
         # A PUT replaces the whole experimentalSettings map; PATCH merges it.
         if _extra_agent_properties(self.ctx.args):
             self.ctx.sre_use_patch = True
@@ -1176,7 +1376,7 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
                 self.ctx.sre_monthly_unit_limit = properties.get("monthlyAgentUnitLimit")
             super().on_200(session)
 
-    class AgentsCreateOrUpdate(_GeneratedUpdate.AgentsCreateOrUpdate):
+    class AgentsCreateOrUpdate(_SecretAgentWriteMixin, _GeneratedUpdate.AgentsCreateOrUpdate):
 
         @property
         def method(self):
@@ -1189,9 +1389,28 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
             current_limit = getattr(self.ctx, "sre_monthly_unit_limit", None)
             if current_limit is not None and self.method == "PUT":
                 extra.setdefault("monthlyAgentUnitLimit", current_limit)
+            if self.method == "PATCH":
+                # A PATCH merges, so what the update removed (a property set to
+                # null or --remove'd, a field of a replaced object) is sent as
+                # null, except the App Insights link left out on purpose above.
+                before = getattr(self.ctx, "sre_body_before", None) or {}
+                before_properties = dict(before.get("properties") or {})
+                if getattr(self.ctx, "sre_kept_log_configuration", False):
+                    before_properties.pop("logConfiguration", None)
+                _add_removals(body.setdefault("properties", {}), before_properties)
+                # A PATCH that leaves tags out keeps them; an empty map replaces them.
+                if before.get("tags") and "tags" not in body:
+                    body["tags"] = {}
             if extra:
                 body.setdefault("properties", {}).update(extra)
             return body
+
+        def on_200_201(self, session):
+            _remember_unmodeled_properties(self, session)
+            super().on_200_201(session)
+
+    def _output(self, *args, **kwargs):
+        return _with_unmodeled_properties(self.ctx, super()._output(*args, **kwargs))
 
 
 # Real wire values confirmed via the control-plane source
@@ -2202,7 +2421,7 @@ class ConnectorDelete(_GeneratedConnectorDelete):
 
 
 @register_command("sre connector wait")
-class ConnectorWait(_GeneratedConnectorWait):
+class ConnectorWait(_RaiseOnWaitTimeoutMixin, _GeneratedConnectorWait):
     """Wait for a connector to reach a desired state.
 
     :example: Wait until a connector created with --no-wait exists
@@ -2273,8 +2492,113 @@ class _IdentityGroup(AAZCommandGroup):
     """
 
 
+def _requested_identities(args, remove):
+    """(system-assigned requested, user-assigned IDs or None) from the identity flags."""
+    system = _arg_value(args.mi_system_assigned)
+    system = system is not None and str(system).strip().lower() not in ("", "false")
+    user_assigned = _arg_value(args.mi_user_assigned)
+    if not system and user_assigned is None:
+        raise CLIError("Specify --system-assigned, --user-assigned, or both.")
+    if not remove and user_assigned == []:
+        raise CLIError("--user-assigned needs one or more identity resource IDs.")
+    return system, user_assigned
+
+
+def _identity_patch(current, system, user_assigned, remove, agent_name):
+    """The identity block of a PATCH that assigns or removes managed identities.
+
+    Removed user-assigned identities are sent as null, as an ARM PATCH expects.
+    When none remain, the type alone drops them (as 'az vm identity remove'
+    does). '--user-assigned' with no IDs on remove removes them all.
+    """
+    types = {part.strip().lower() for part in str(current.get("type") or "").split(",")}
+    has_system = "systemassigned" in types
+    kept = list(current.get("userAssignedIdentities") or {}) if "userassigned" in types else []
+    removed = []
+    if remove:
+        has_system = has_system and not system
+        if user_assigned is not None:
+            attached = {identity_id.lower() for identity_id in kept}
+            missing = [identity_id for identity_id in user_assigned if identity_id.lower() not in attached]
+            if missing:
+                raise CLIError(
+                    f"Agent '{agent_name}' doesn't have these user-assigned identities: {', '.join(missing)}")
+            targets = {identity_id.lower() for identity_id in user_assigned} or attached
+            removed = [identity_id for identity_id in kept if identity_id.lower() in targets]
+            kept = [identity_id for identity_id in kept if identity_id.lower() not in targets]
+    else:
+        has_system = has_system or system
+        attached = {identity_id.lower() for identity_id in kept}
+        for identity_id in user_assigned or []:
+            if identity_id.lower() not in attached:
+                kept.append(identity_id)
+                attached.add(identity_id.lower())
+    if has_system and kept:
+        identity_type = "SystemAssigned,UserAssigned"
+    elif has_system:
+        identity_type = "SystemAssigned"
+    else:
+        identity_type = "UserAssigned" if kept else "None"
+    patch = {"type": identity_type}
+    if kept:
+        patch["userAssignedIdentities"] = {
+            **{identity_id: {} for identity_id in kept}, **{identity_id: None for identity_id in removed}}
+    return patch
+
+
+class _IdentityPatchMixin:
+    """Sends 'identity assign' and 'identity remove' as a PATCH of only the
+    identity block.
+
+    The generated commands read the agent and PUT all of it back. The service
+    never returns the App Insights connection string or the incident
+    connection key, so on an agent linked to App Insights that PUT was rejected
+    (InvalidApplicationInsightsConfiguration), and on other agents it dropped
+    what the generated schema doesn't model, such as monthlyAgentUnitLimit,
+    which a PUT resets to the default. The identity block is computed here, not
+    by the generated merge: in azure-cli-core 2.92 that merge removes every
+    user-assigned identity when 'identity remove' names just one.
+    """
+
+    _removes_identities = False
+
+    def pre_operations(self):
+        self.ctx.sre_requested_identities = _requested_identities(self.ctx.args, self._removes_identities)
+        super().pre_operations()
+
+    def pre_instance_update(self, instance):
+        super().pre_instance_update(instance)
+        current = instance.to_serialized_data()
+        system, user_assigned = self.ctx.sre_requested_identities
+        self.ctx.sre_identity_patch = _identity_patch(
+            current if isinstance(current, dict) else {}, system, user_assigned,
+            self._removes_identities, _arg_value(self.ctx.args.agent_name))
+
+    def _output(self, *args, **kwargs):
+        # Runs after the poller has passed the final result to on_200_201; a
+        # result without a body never gets there, so read the agent back.
+        if not getattr(self.ctx, "sre_identity_written", False):
+            self.AgentsGet(ctx=self.ctx)()
+        return super()._output(*args, **kwargs)
+
+
+class _IdentityPatchOperationMixin:
+
+    @property
+    def method(self):
+        return "PATCH"
+
+    @property
+    def content(self):
+        return {"identity": self.ctx.sre_identity_patch}
+
+    def on_200_201(self, session):
+        super().on_200_201(session)
+        self.ctx.sre_identity_written = True
+
+
 @register_command("sre identity assign")
-class IdentityAssign(_GeneratedIdentityAssign):
+class IdentityAssign(_IdentityPatchMixin, _GeneratedIdentityAssign):
     """Assign a managed identity to an agent.
 
     :example: Turn on the agent's system-assigned identity
@@ -2287,16 +2611,27 @@ class IdentityAssign(_GeneratedIdentityAssign):
 
     _args_schema = None
 
+    class AgentsCreateOrUpdate(_IdentityPatchOperationMixin, _GeneratedIdentityAssign.AgentsCreateOrUpdate):
+        pass
+
 
 @register_command("sre identity remove")
-class IdentityRemove(_GeneratedIdentityRemove):
+class IdentityRemove(_IdentityPatchMixin, _GeneratedIdentityRemove):
     """Remove a managed identity from an agent.
 
     :example: Turn off the agent's system-assigned identity
         az sre identity remove --agent-name myagent --resource-group myrg --system-assigned
+
+    :example: Remove one user-assigned identity
+        az sre identity remove --agent-name myagent --resource-group myrg \\
+            --user-assigned "/subscriptions/.../resourceGroups/myrg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/myid"
     """
 
     _args_schema = None
+    _removes_identities = True
+
+    class AgentsCreateOrUpdate(_IdentityPatchOperationMixin, _GeneratedIdentityRemove.AgentsCreateOrUpdate):
+        pass
 
 
 @register_command("sre identity show")
@@ -2311,7 +2646,7 @@ class IdentityShow(_GeneratedIdentityShow):
 
 
 @register_command("sre identity wait")
-class IdentityWait(_GeneratedIdentityWait):
+class IdentityWait(_RaiseOnWaitTimeoutMixin, _GeneratedIdentityWait):
     """Wait for an agent's identity update to finish.
 
     :example: Wait for an identity assignment started with --no-wait
@@ -3200,6 +3535,15 @@ class Show(_GeneratedShow):
         az sre agent show --name myagent --resource-group myrg
     """
 
+    class AgentsGet(_GeneratedShow.AgentsGet):
+
+        def on_200(self, session):
+            _remember_unmodeled_properties(self, session)
+            super().on_200(session)
+
+    def _output(self, *args, **kwargs):
+        return _with_unmodeled_properties(self.ctx, super()._output(*args, **kwargs))
+
 
 @register_command("sre agent list")
 class List(_GeneratedList):
@@ -3232,8 +3576,21 @@ class Delete(_GeneratedDelete):
         super().pre_operations()
 
 
+class _EmptyOperationResultMixin:
+    """'agent start' and 'agent stop' print the operation's final result. When
+    that result has no body, the generated output step raised an unexpected
+    error although the agent did start or stop; print nothing instead."""
+
+    def _output(self, *args, **kwargs):
+        try:
+            _ = self.ctx.vars.instance
+        except AAZUnknownFieldError:
+            return None
+        return super()._output(*args, **kwargs)
+
+
 @register_command("sre agent start")
-class Start(_GeneratedStart):
+class Start(_EmptyOperationResultMixin, _GeneratedStart):
     """Start a stopped SRE Agent.
 
     :example: Start a stopped agent
@@ -3242,12 +3599,23 @@ class Start(_GeneratedStart):
 
 
 @register_command("sre agent stop")
-class Stop(_GeneratedStop):
+class Stop(_EmptyOperationResultMixin, _GeneratedStop):
     """Stop a running SRE Agent.
 
     :example: Stop a running agent
         az sre agent stop --name myagent --resource-group myrg
     """
+
+
+@register_command("sre agent wait")
+class Wait(_RaiseOnWaitTimeoutMixin, _GeneratedWait):
+    """Wait for an SRE Agent to reach a desired state.
+
+    :example: Wait until an agent created with --no-wait finishes provisioning
+        az sre agent wait -g myrg --agent-name myagent --created
+    """
+
+    _args_schema = None
 
 
 @register_command("sre endpoint show")
@@ -3387,22 +3755,24 @@ class ListUsage(AAZCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         daily = _arg_value(self.ctx.args.daily)
 
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        agent = invoke(
-            "sre", "agent", "show", "--name", name, "--resource-group", resource_group,
+        agent_id = (
+            f"/subscriptions/{self.ctx.subscription_id}/resourceGroups/{resource_group}"
+            f"/providers/Microsoft.App/agents/{name}"
         )
-        if not isinstance(agent, dict):
-            raise ResourceNotFoundError(
-                f"Could not resolve SRE Agent '{name}' in resource group '{resource_group}'."
-            )
-        resource_id = agent.get("id")
-        if not resource_id:
-            raise CLIError(f"Could not resolve the resource ID of agent '{name}'.")
+        _require_arm_resource(
+            self.cli_ctx, agent_id, f"Agent '{name}' not found in resource group '{resource_group}'.")
 
+        # Return the items, not the raw page, so -o table can show them, and
+        # follow nextLink like 'agent list-models' does.
         suffix = "dailyusages" if daily else "usages"
-        return _arm_request(
-            self.cli_ctx, "GET", f"{resource_id}/{suffix}", API_VERSION,
-        )
+        items = []
+        page = _arm_request(self.cli_ctx, "GET", f"{agent_id}/{suffix}", API_VERSION)
+        while True:
+            items.extend((page or {}).get("value") or [])
+            next_link = (page or {}).get("nextLink")
+            if not next_link:
+                return items
+            page = _arm_request(self.cli_ctx, "GET", next_link, API_VERSION)
 
 
 @register_command_group("sre agent")
@@ -3767,28 +4137,51 @@ class UpdateNetwork(AAZCommand):
                 "Specify at least one of --vnet-configuration or --sandbox-configuration."
             )
 
-        resource_id = _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
-
         # PATCH only the networking properties. A GET-then-PUT of the whole
         # agent fails on agents with App Insights logging, because the GET
         # hides the connection string and the PUT then sends an appId alone.
         # `network show` prints unset fields as null; drop them so its output
         # can be passed back here unchanged.
         properties = {}
-        if vnet_configuration is not None:
-            properties["vnetConfiguration"] = _drop_nulls(_camelize_keys(vnet_configuration))
-        if sandbox_configuration is not None:
-            properties["sandboxConfiguration"] = _drop_nulls(_camelize_keys(sandbox_configuration))
+        for flag, key, value in (
+            ("--vnet-configuration", "vnetConfiguration", vnet_configuration),
+            ("--sandbox-configuration", "sandboxConfiguration", sandbox_configuration),
+        ):
+            if value is None:
+                continue
+            properties[key] = _drop_nulls(_camelize_keys(value))
+            if not _has_network_setting(properties[key]):
+                raise CLIError(
+                    f"{flag} has nothing to set. Fields set to null are ignored, so this command "
+                    "can't clear a setting.")
+        proxy = ((sandbox_configuration or {}).get("egress") or {}).get("http_proxy") or {}
+        if any("@" in urlparse(url).netloc for url in (proxy.get("http_url"), proxy.get("https_url"))
+               if isinstance(url, str)):
+            _warn_if_secret_typed(
+                "--sandbox-configuration",
+                "put the configuration in a JSON file and pass --sandbox-configuration @file")
 
-        updated = _arm_request(
-            self.cli_ctx, "PATCH", resource_id, NETWORK_API_VERSION, body={"properties": properties},
-        )
-        if not (isinstance(updated, dict) and updated.get("properties")):
-            updated = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION)
+        # Proxy URLs can carry credentials, in this request and in the agent the
+        # service sends back, so keep the bodies out of --debug and az.log.
+        with _no_http_trace():
+            resource_id = _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
+            updated = _arm_request(
+                self.cli_ctx, "PATCH", resource_id, NETWORK_API_VERSION, body={"properties": properties},
+            )
+            if not (isinstance(updated, dict) and updated.get("properties")):
+                updated = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION)
 
         # The PATCH targets the agent resource itself, so trim the response to
         # the networking fields like the other extension commands do.
         return _network_view(updated)
+
+
+def _has_network_setting(value):
+    """True if a null-free network configuration still sets something. A list
+    counts, even an empty one: it replaces the stored list."""
+    if isinstance(value, dict):
+        return any(_has_network_setting(item) for item in value.values())
+    return value is not None
 
 
 def _network_view(agent):

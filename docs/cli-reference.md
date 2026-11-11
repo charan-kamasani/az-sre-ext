@@ -397,7 +397,7 @@ Stop a running SRE Agent.
 
 Update an SRE Agent.
 
-PagerDuty and ServiceNow set the same agent property as the portal's Incidents > Connect an incident platform workflow, not the separate Connector Gateway used by Jira, Slack and SharePoint. The portal also saves which PagerDuty services or ServiceNow assignment group to index; set that in the portal. --connection-key is the PagerDuty REST API access key; --obo-user is the identity the agent acts under when resolving or commenting on incidents. ServiceNow uses Basic Auth: set --connection-url to the instance URL and --connection-key to the credentials. Azure Monitor must also be connected before a response plan can use it. A new agent has no incident platform set.
+PagerDuty and ServiceNow set the same agent property as the portal's Incidents > Connect an incident platform workflow, not the separate Connector Gateway used by Jira, Slack and SharePoint. The portal also saves which PagerDuty services or ServiceNow assignment group to index; set that in the portal. --connection-key is the PagerDuty REST API access key; --obo-user is the identity the agent acts under when resolving or commenting on incidents. ServiceNow uses Basic Auth: set --connection-url to the instance URL and --connection-key to the credentials. The connection key is a secret. Typed on the command line, it shows up in --debug output and shell history, so put the configuration in a JSON file and pass it with @file instead, for example a pagerduty.json holding {"type": "PagerDuty", "connectionName": "pagerduty", "connectionKey": "<api-key>", "oboUser": "oncall@contoso.com"}. Azure Monitor must also be connected before a response plan can use it. A new agent has no incident platform set.
 
 **Syntax**
 
@@ -437,28 +437,28 @@ PagerDuty and ServiceNow set the same agent property as the portal's Incidents >
   az sre agent update --name myagent --resource-group myrg \
   --incident-management-configuration "{type:AzMonitor,connection-name:azmonitor}"
   ```
-- Connect PagerDuty as the incident platform
+- Connect PagerDuty as the incident platform, reading the configuration and its key from a file
 
   ```bash
   az sre agent update --name myagent --resource-group myrg \
-  --incident-management-configuration "{type:PagerDuty,connection-name:pagerduty,connection-key:<api-key>,obo-user:oncall@contoso.com}"
+  --incident-management-configuration "@pagerduty.json"
   ```
 - Connect ServiceNow as the incident platform with Basic Auth
 
   ```bash
   az sre agent update --name myagent --resource-group myrg \
-  --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:https://contoso.service-now.com,connection-key:<credentials>}"
+  --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:'https://contoso.service-now.com',connection-key:<credentials>}"
   ```
 - Turn on preview feature flags from a file
 
   ```bash
   az sre agent update --name myagent --resource-group myrg \
-  --experimental-settings @experimental.json
+  --experimental-settings "@experimental.json"
   ```
 
 ### `az sre agent wait`
 
-Place the CLI in a waiting state until a condition is met.
+Wait for an SRE Agent to reach a desired state.
 
 **Syntax**
 
@@ -471,7 +471,7 @@ Place the CLI in a waiting state until a condition is met.
 
 **Examples**
 
-- Wait until the agent finishes provisioning
+- Wait until an agent created with --no-wait finishes provisioning
 
   ```bash
   az sre agent wait -g myrg --agent-name myagent --created
@@ -958,6 +958,12 @@ Remove a managed identity from an agent.
 
   ```bash
   az sre identity remove --agent-name myagent --resource-group myrg --system-assigned
+  ```
+- Remove one user-assigned identity
+
+  ```bash
+  az sre identity remove --agent-name myagent --resource-group myrg \
+  --user-assigned "/subscriptions/.../resourceGroups/myrg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/myid"
   ```
 
 ### `az sre identity show`
