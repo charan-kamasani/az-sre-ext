@@ -492,7 +492,7 @@ Create an Agent Connector.
 | `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
 | `--oauth-scopes` | String | No |  |  | For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. |
 | `--oauth-client-name` | String | No |  |  | For Mcp with --oauth-dcr: client name to register. Optional. |
-| `--partner-type` | String | No |  |  | For Mcp: the partner integration this server belongs to, for example DynatraceMcp. |
+| `--partner-type` | String | No |  |  | For Mcp: the partner integration this server belongs to, for example DynatraceMcp. On update, also pass --data-source and --extended-properties, since the service doesn't return the endpoint or credentials. |
 
 **Examples**
 
@@ -660,7 +660,7 @@ Update an Agent Connector.
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. |
 | `--identity` | String | No |  |  | 'system' for the agent's system-assigned identity, or a user-assigned identity resource ID. If omitted, no identity is set. |
-| `--partner-type` | String | No |  |  | For Mcp: the partner integration this server belongs to, for example DynatraceMcp. |
+| `--partner-type` | String | No |  |  | For Mcp: the partner integration this server belongs to, for example DynatraceMcp. On update, also pass --data-source and --extended-properties, since the service doesn't return the endpoint or credentials. |
 
 **Examples**
 

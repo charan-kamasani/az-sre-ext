@@ -2849,6 +2849,22 @@ class HttpTriggerInvokeTests(unittest.TestCase):
             self._invoke({"triggerUrl": "https://evil.example.com/hook"})
         with self.assertRaisesRegex(CLIError, "JSON"):
             self._invoke({"triggerUrl": "https://a.azuresre.ai/hook"}, payload="not json")
+        for url in ("https://attacker.example\\@a.swedencentral.azuresre.ai/api/v1/httptriggers/trigger/hook",
+                    "https://attacker.example\\.azuresre.ai/hook",
+                    "https://user@attacker.example@a.azuresre.ai/hook",
+                    "http://a.azuresre.ai/hook"):
+            with self.assertRaisesRegex(CLIError, "unexpected"):
+                self._invoke({"triggerUrl": url})
+
+    def test_agent_url_rejects_hosts_that_requests_would_resolve_elsewhere(self):
+        from azext_sre.custom import _validate_agent_url
+
+        self.assertEqual(_validate_agent_url("https://a.b.eastus2.azuresre.ai/x"),
+                         "https://a.b.eastus2.azuresre.ai")
+        for url in ("https://attacker.example\\@a.azuresre.ai", "https://attacker.example\\.azuresre.ai",
+                    "https://u@a.azuresre.ai", "https://evil.example.com"):
+            with self.assertRaises(CLIError):
+                _validate_agent_url(url)
 
 
 class ValueNotAnObjectTests(unittest.TestCase):
@@ -4426,6 +4442,19 @@ class ConnectorPartnerTypeTests(unittest.TestCase):
         command.post_instance_update(instance)
         self.assertEqual(extended, {"endpoint": "https://x", "partnerType": "DynatraceMcp"})
 
+    def test_partner_type_on_update_requires_the_full_connector_definition(self):
+        from azext_sre.custom import _GeneratedConnectorUpdate
+
+        class _Update(_ConnectorPartnerTypeMixin, _GeneratedConnectorUpdate):
+            pass
+
+        with patch.object(_GeneratedConnectorUpdate, "pre_operations", lambda self: None):
+            with self.assertRaisesRegex(CLIError, "--data-source and --extended-properties"):
+                _bare_command(_Update, partner_type="DynatraceMcp", data_connector_type=None,
+                              data_source=None, extended_properties=None).pre_operations()
+            _bare_command(_Update, partner_type="DynatraceMcp", data_connector_type=None,
+                          data_source="https://x", extended_properties={"endpoint": "https://x"}).pre_operations()
+
 
 class ConnectorConvenienceArgsTests(unittest.TestCase):
     """--file-path/--mcp-endpoint/--github on 'connector create' build the
@@ -4819,6 +4848,22 @@ class SkillCreateFilePathTests(unittest.TestCase):
         command = _bare_command(SkillCreate, extension_name="my-skill", file_path=path, value=None, description=None, tools=None)
         with self.assertRaises(CLIError):
             command._prepare_value()
+
+    def test_prepare_value_rejects_a_path_like_frontmatter_name(self):
+        for bad in ("../tools/victim", "a/b", ".."):
+            path = self._write(f"---\nname: {bad}\ndescription: D\n---\nBody\n")
+            command = _bare_command(SkillCreate, extension_name=None, file_path=path, value=None,
+                                    description=None, tools=None)
+            with self.assertRaisesRegex(CLIError, "valid skill name"):
+                command._prepare_value()
+
+    def test_arm_extension_paths_quote_the_name(self):
+        from azext_sre.custom import _arm_extension_resource_id
+
+        self.assertEqual(_arm_extension_resource_id("/agents/a", "skills", "../tools/victim"),
+                         "/agents/a/skills/..%2Ftools%2Fvictim")
+        with self.assertRaises(CLIError):
+            _arm_extension_resource_id("/agents/a", "skills", "..")
 
     def test_prepare_value_both_file_path_and_value_raises(self):
         path = self._write("---\ndescription: D\n---\nBody\n")

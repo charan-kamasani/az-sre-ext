@@ -212,14 +212,33 @@ def _resolve_agent_endpoint(cli_ctx, agent_name, resource_group):
     return endpoint
 
 
+def _is_azuresre_https_url(url):
+    """True only for a plain https URL whose host is under .azuresre.ai.
+
+    urlparse and requests/urllib3 disagree on backslashes and userinfo, so
+    'https://evil\\@x.azuresre.ai' passes a urlparse host check but is sent
+    to 'evil'. Reject anything either parser could read differently.
+    """
+    if not isinstance(url, str) or "\\" in url or any(ord(c) < 33 for c in url):
+        return False
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    return (
+        parsed.scheme == "https"
+        and "@" not in parsed.netloc
+        and parsed.netloc.lower().split(":")[0] == hostname
+        and hostname.endswith(".azuresre.ai")
+    )
+
+
 def _validate_agent_url(agent_url):
     """Accept only https agent endpoints, since a data-plane token is sent to it."""
-    parsed = urlparse(agent_url or "")
-    if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".azuresre.ai"):
+    if not _is_azuresre_https_url(agent_url or ""):
         raise CLIError(
             "--agent-url must be an https agent endpoint on *.azuresre.ai, "
             "for example https://<agent>.<hash>.eastus2.azuresre.ai"
         )
+    parsed = urlparse(agent_url)
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
@@ -1749,7 +1768,9 @@ class _ConnectorPartnerTypeMixin:
             schema.partner_type = AAZStrArg(
                 options=["--partner-type"],
                 arg_group="MCP",
-                help="For Mcp: the partner integration this server belongs to, for example DynatraceMcp.",
+                help="For Mcp: the partner integration this server belongs to, for example DynatraceMcp. "
+                     "On update, also pass --data-source and --extended-properties, since the service "
+                     "doesn't return the endpoint or credentials.",
             )
         return schema
 
@@ -1759,6 +1780,16 @@ class _ConnectorPartnerTypeMixin:
         connector_type = _arg_value(getattr(args, "data_connector_type", None))
         if partner_type and connector_type is not None and connector_type != "Mcp":
             raise CLIError("--partner-type requires --data-connector-type Mcp.")
+        if partner_type and isinstance(self, _GeneratedConnectorUpdate) and (
+                _arg_value(getattr(args, "data_source", None)) is None
+                or _arg_value(getattr(args, "extended_properties", None)) is None):
+            # GET never returns the endpoint or bearer token, so a PUT built
+            # from it alone would wipe them from the connector.
+            raise CLIError(
+                "--partner-type on update also needs --data-source and --extended-properties "
+                "(including the endpoint and credentials), because the service doesn't return "
+                "them and they would otherwise be cleared."
+            )
         if partner_type and not isinstance(self, _GeneratedConnectorUpdate):
             existing = _arg_value(getattr(args, "extended_properties", None)) or {}
             if not isinstance(existing, dict):
@@ -4505,6 +4536,18 @@ def _direct_extension_delete(cli_ctx, agent_name, resource_group, extension_type
     return _direct_extension_request(cli_ctx, agent_name, resource_group, "DELETE", path, missing_ok=True)
 
 
+def _is_safe_extension_name(name):
+    return (isinstance(name, str) and name not in (".", "..")
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) is not None)
+
+
+def _arm_extension_resource_id(agent_resource_id, extension_type, extension_name):
+    """Quote the name so '/' or '..' can't retarget the request to another resource."""
+    if not extension_name or extension_name in (".", ".."):
+        raise CLIError(f"'{extension_name}' isn't a valid extension name.")
+    return f"{agent_resource_id}/{extension_type}/{quote(extension_name, safe='')}"
+
+
 def _arm_extension_create(
     cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False
 ):
@@ -4512,7 +4555,7 @@ def _arm_extension_create(
     specific 'create'/'update' facade (tool/skill/hook/instructions/
     automation/plugin/repo connect/agent settings)."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
-    resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    resource_id = _arm_extension_resource_id(agent_resource_id, extension_type, extension_name)
     existing = None
     if not overwrite:
         existing = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
@@ -4543,7 +4586,7 @@ def _arm_extension_show(cli_ctx, agent_name, resource_group, extension_type, ext
     """Show an agent extension resource. Shared by every noun-specific
     'show' facade."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
-    resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    resource_id = _arm_extension_resource_id(agent_resource_id, extension_type, extension_name)
     result = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
     if result is None:
         raise ResourceNotFoundError(
@@ -4573,7 +4616,7 @@ def _arm_extension_delete(cli_ctx, agent_name, resource_group, extension_type, e
     """Delete an agent extension resource. Shared by every noun-specific
     'delete' facade."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
-    resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    resource_id = _arm_extension_resource_id(agent_resource_id, extension_type, extension_name)
     return _extension_arm_request(cli_ctx, extension_type, "DELETE", resource_id, EXTENSION_API_VERSION, missing_ok=True)
 
 
@@ -5214,8 +5257,7 @@ class AutomationHttpTriggerInvoke(_PinnedExtensionShow):
         trigger_url = value.get("triggerUrl") if isinstance(value, dict) else None
         if not trigger_url:
             raise CLIError("This HTTP trigger has no triggerUrl yet, so it can't be called.")
-        parsed_url = urlparse(trigger_url)
-        if parsed_url.scheme != "https" or not (parsed_url.hostname or "").endswith(".azuresre.ai"):
+        if not _is_azuresre_https_url(trigger_url):
             raise CLIError(f"Refusing to send a token to unexpected trigger URL '{trigger_url}'.")
         if value.get("triggerEnabled") is False:
             raise CLIError("This HTTP trigger is disabled.")
@@ -6041,6 +6083,11 @@ class SkillCreate(_PinnedExtensionCreate):
 
         frontmatter, content = _read_skill_md(file_path)
         md_name = frontmatter.get("name")
+        if md_name is not None and not _is_safe_extension_name(md_name):
+            raise CLIError(
+                f"SKILL.md frontmatter name '{md_name}' isn't a valid skill name. Use letters, "
+                "digits, '.', '_' or '-', or pass --name."
+            )
         if not name:
             if not md_name:
                 raise CLIError("Pass --name, or add a 'name:' line to the SKILL.md frontmatter.")
