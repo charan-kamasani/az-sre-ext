@@ -14,21 +14,32 @@ The E2E gates run against live Azure.
 
 ## Status at a glance
 
-**Decision: NOT READY.** No gate has been run against a release wheel yet.
+**Decision: NOT READY to ship.**
 
-| # | Gate | Blocking? | Status |
+**Testing is blocked** until the release wheel exists. Every gate must run against the
+exact wheel being released, and that wheel has not been built yet.
+
+To unblock testing:
+
+1. Merge the CI hardening PR (#78), then the install and release scripts PR (#35).
+2. Fix #54 (LICENSE file and package metadata), because it changes the wheel.
+3. Tag the release commit and build the release wheel (gate 1).
+
+Testing in AME and PME (gates 4 to 6) is also blocked until the sign-off owners decide
+whether it is required and a SAW is available (see [Decisions needed](#decisions-needed)).
+
+Every gate below is required to ship.
+
+| # | Gate | Status | Blocked by |
 |---|---|---|---|
-| 1 | [Candidate artifact](#gate-1-candidate-artifact) | Yes | Not started |
-| 2 | [Automated validation](#gate-2-automated-validation) | Yes | Not started |
-| 3 | [Package smoke](#gate-3-package-smoke) | Yes | Not started |
-| 4 | [Core E2E](#gate-4-core-e2e) | Yes | Not started |
-| 5 | [Security E2E](#gate-5-security-e2e) | Yes | Not started |
-| 6 | [Feature-specific E2E](#gate-6-feature-specific-e2e) | Yes | Not started |
-| 7 | [Defect bar](#gate-7-defect-bar) | Yes | Not met: #54 is open |
-| 8 | [Release owner sign-off](#gate-8-release-owner-sign-off) | Yes | Not started |
-
-Open decisions for the sign-off owners are listed in
-[Decisions needed](#decisions-needed).
+| 1 | [Candidate artifact](#gate-1-candidate-artifact) | 🔴 Blocked | #78 and #35 not merged; #54 open; release not tagged |
+| 2 | [Automated validation](#gate-2-automated-validation) | 🔴 Blocked | Gate 1 (needs the release commit) |
+| 3 | [Package smoke](#gate-3-package-smoke) | 🔴 Blocked | Gate 1 (needs the release wheel) |
+| 4 | [Core E2E](#gate-4-core-e2e) | 🔴 Blocked | Gate 1 (needs the release wheel) |
+| 5 | [Security E2E](#gate-5-security-e2e) | 🔴 Blocked | Gate 1 (needs the release wheel) |
+| 6 | [Feature-specific E2E](#gate-6-feature-specific-e2e) | 🔴 Blocked | Gate 1 (needs the release wheel) |
+| 7 | [Defect bar](#gate-7-defect-bar) | 🔴 Not met | #54 open |
+| 8 | [Release owner sign-off](#gate-8-release-owner-sign-off) | 🔴 Blocked | Gates 1 to 7 |
 
 ---
 
