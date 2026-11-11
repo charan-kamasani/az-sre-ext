@@ -1191,6 +1191,26 @@ before anything is saved. If the instructions write fails after the filter
 was saved, the command fails and names the saved filter fields; re-run it
 with only `--instructions` or `--processing-guide` to retry.
 
+`--instructions` and `--processing-guide` change every handler linked to the
+plan and keep the handler's other fields, such as `tools` set in the portal.
+`create --overwrite` does the same. A plan without instructions gets a new
+handler whose `id` is the plan name. If a handler with that `id` belongs to
+another plan, or the agent has no handler API (it answers with a web page),
+`create` and `update` fail before anything is saved. An empty value, such as
+`--title-contains=""` or `--instructions=""`, removes that criterion or clears
+the instructions. Write it with `=`: PowerShell drops a separate `""` argument.
+
+`response-plan delete` deletes the filter first and the linked handlers after
+it, so a failure part-way never leaves an active plan without its
+instructions; running the delete again removes leftover handlers. When ARM
+refuses the filter delete with `AuthorizationFailed` (SRE Agent Administrator
+has the agent's delete permission but not the ARM delete action), the CLI
+warns and deletes the filter through the agent's own API. Any other ARM
+refusal, such as Azure Policy (`RequestDisallowedByPolicy`) or a deny
+assignment, fails the command. If the agent's API doesn't delete the plan
+either, including a 404 for a plan ARM still lists, the command fails and
+shows both errors.
+
 Earlier filter ARM requests returned "The extension configuration is invalid".
 Live testing showed the filter ARM routes work. The failures came from agents with
 no incident platform configured, or a `handlingAgent` that did not exist, with
@@ -1205,8 +1225,10 @@ Configure `incidentManagementConfiguration.type` to match the filter's
 Azure Monitor, so run
 `az sre agent update --incident-management-configuration '{type:AzMonitor,connection-name:azmonitor}'`
 before creating an Azure Monitor plan. For Azure Monitor, PagerDuty, and ServiceNow,
-set `handlingAgent` to an existing subagent name. When the service rejects
-a plan, `response-plan create` checks both and names the one that failed. The plural
+set `handlingAgent` to an existing subagent name, or `meta_agent` for the main
+agent. When the service rejects a plan's settings (HTTP 400),
+`response-plan create` checks both, names the one that failed and adds the
+service's own message. Permission and server errors are shown unchanged. The plural
 `handlingAgents` field is IcM-specific. Both create commands refuse to
 replace existing resources unless `--overwrite` is supplied.
 Creating and reading configuration does not prove that a real alert has
