@@ -51,6 +51,14 @@ jobs:
         working-directory: src/sre
         run: python -m build --wheel
 
+      - name: Ensure repository tree is clean
+        if: runner.os == 'Linux'
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --short >&2
+            exit 1
+          fi
+
       - name: Upload wheel artifact
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -61,8 +69,8 @@ jobs:
           retention-days: 7
 
   azdev-lint:
-    # Same checks as the ADC OneBranch Python pipeline
-    # (.pipelines/templates/jobs/devx-python.yml): command-loader, azdev style,
+    # Same checks as the ADC OneBranch Python pipeline (coreai/adc
+    # .pipelines/templates/jobs/devx-python.yml): command-loader, azdev style,
     # azdev linter. Lint config is vendored in .github/lint-config.
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -189,7 +197,6 @@ jobs:
 # NOTE: This CI runs unit tests on Windows/macOS/Linux, the CLI reference
 # check, azdev style + linter, a clean-install smoke of the built wheel on
 # every OS at the minimum and pinned Azure CLI versions, and a byte-for-byte
-# regeneration check of the generated aaz code. Swagger-drift
-# validation, SBOM generation and signed releases are parked in
-# .github/workflows-future/ until the missing supporting scripts
-# (validate_swagger.py, validate_release_metadata.py, etc.) are actually built.
+# regeneration check of the generated aaz code. Releases are built by
+# .github/workflows/release.yml. Swagger-drift validation stays parked in
+# .github/workflows-future/.
