@@ -1,11 +1,12 @@
 #!/usr/bin/env sh
 # Install the `az sre` extension from a GitHub release.
 #
-# Verifies the wheel against the release SHA256SUMS and, when an authenticated
-# GitHub CLI is available, against its GitHub build-provenance attestation.
+# The repository is private, so downloads go through the signed-in GitHub CLI
+# (gh auth login). Verifies the wheel against the release SHA256SUMS and its
+# GitHub build-provenance attestation.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/charan-kamasani/az-sre-ext/master/scripts/install.sh | sh
+#   gh api -H 'Accept: application/vnd.github.raw+json' repos/charan-kamasani/az-sre-ext/contents/scripts/install.sh | sh
 #   sh install.sh --release-tag v1.0.0b1
 #
 # Options (each has a matching SRE_INSTALL_* environment variable):
@@ -45,12 +46,17 @@ while [ "$#" -gt 0 ]; do
 done
 
 command -v az >/dev/null 2>&1 || fail "Azure CLI not found. Install it from https://learn.microsoft.com/cli/azure/install-azure-cli"
-command -v curl >/dev/null 2>&1 || fail "curl is required"
+if [ -n "$BASE_URL" ]; then
+  command -v curl >/dev/null 2>&1 || fail "curl is required with --base-url"
+else
+  command -v gh >/dev/null 2>&1 || fail "GitHub CLI not found. Install it from https://cli.github.com and run: gh auth login"
+  gh auth status >/dev/null 2>&1 || fail "GitHub CLI is not signed in. Run: gh auth login"
+fi
 
 if [ -z "$RELEASE_TAG" ]; then
-  RELEASE_TAG="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=1" |
-    sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)" ||
-    fail "release lookup failed for ${REPO}"
+  [ -z "$BASE_URL" ] || fail "--base-url needs --release-tag"
+  RELEASE_TAG="$(gh api "repos/${REPO}/releases?per_page=20" --jq '[.[] | select(.draft | not)][0].tag_name // empty')" ||
+    fail "release lookup failed for ${REPO}. Check that your GitHub account can see the repository."
   [ -n "$RELEASE_TAG" ] || fail "no release found in ${REPO}"
 fi
 
@@ -59,15 +65,20 @@ case "$RELEASE_TAG" in
   *) fail "release tag '$RELEASE_TAG' must look like v1.0.0b1" ;;
 esac
 
-DOWNLOAD_URL="${BASE_URL:-https://github.com/${REPO}/releases/download/${RELEASE_TAG}}"
 WHEEL="sre-${RELEASE_TAG#v}-py3-none-any.whl"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 printf 'Downloading %s (%s)\n' "$WHEEL" "$RELEASE_TAG"
-curl -fsSL -o "$WORK/$WHEEL" "$DOWNLOAD_URL/$WHEEL" || fail "could not download $DOWNLOAD_URL/$WHEEL"
-curl -fsSL -o "$WORK/SHA256SUMS" "$DOWNLOAD_URL/SHA256SUMS" || fail "could not download SHA256SUMS"
+if [ -n "$BASE_URL" ]; then
+  curl -fsSL -o "$WORK/$WHEEL" "$BASE_URL/$WHEEL" || fail "could not download $BASE_URL/$WHEEL"
+  curl -fsSL -o "$WORK/SHA256SUMS" "$BASE_URL/SHA256SUMS" || fail "could not download SHA256SUMS"
+else
+  gh release download "$RELEASE_TAG" --repo "$REPO" --dir "$WORK" \
+    --pattern "$WHEEL" --pattern SHA256SUMS ||
+    fail "could not download $WHEEL and SHA256SUMS from release $RELEASE_TAG"
+fi
 
 MATCHES="$(grep -c " $WHEEL\$" "$WORK/SHA256SUMS" || true)"
 [ "$MATCHES" = "1" ] || fail "SHA256SUMS must list $WHEEL exactly once (found $MATCHES)"
@@ -86,7 +97,7 @@ echo "Checksum verified."
 ATTESTED=0
 if [ -n "$BASE_URL" ]; then
   echo "Skipping attestation: custom --base-url."
-elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+else
   gh attestation verify "$WORK/$WHEEL" \
     --repo "$REPO" \
     --signer-workflow "$REPO/.github/workflows/release.yml" \
@@ -95,8 +106,6 @@ elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     fail "attestation verification failed for $WHEEL"
   ATTESTED=1
   echo "Attestation verified."
-else
-  echo "Attestation not checked: sign in to the GitHub CLI (gh auth login) to enable it."
 fi
 if [ "$REQUIRE_ATTESTATION" = "1" ] && [ "$ATTESTED" != "1" ]; then
   fail "attestation verification was required but did not run"

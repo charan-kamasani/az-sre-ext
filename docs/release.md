@@ -47,7 +47,7 @@ count, then publishes. A failed run deletes its draft.
 Check the release page lists the three assets, then install from a clean shell:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/charan-kamasani/az-sre-ext/master/scripts/install.sh | sh -s -- --release-tag v1.0.0b2 --require-attestation
+gh api -H 'Accept: application/vnd.github.raw+json' repos/charan-kamasani/az-sre-ext/contents/scripts/install.sh | sh -s -- --release-tag v1.0.0b2 --require-attestation
 az sre --help
 ```
 
@@ -60,8 +60,11 @@ Record the workflow run URL and the release URL in the release tracking issue.
 | `--release-tag` / `-ReleaseTag` | `SRE_INSTALL_RELEASE_TAG` | Install this tag. |
 | `--latest-release` / `-LatestRelease` | | Install the newest release. Default. |
 | `--repo` / `-Repo` | `SRE_INSTALL_REPO` | Source repository. Defaults to `charan-kamasani/az-sre-ext`. |
-| `--require-attestation` / `-RequireAttestation` | `SRE_INSTALL_REQUIRE_ATTESTATION` | Fail unless attestation verification ran. Needs an authenticated `gh`. |
-| `--base-url` / `-BaseUrl` | `SRE_INSTALL_BASE_URL` | Download from a directory instead of GitHub. Skips attestation. For testing. |
+| `--require-attestation` / `-RequireAttestation` | `SRE_INSTALL_REQUIRE_ATTESTATION` | Fail unless attestation verification ran. It always runs for GitHub downloads; this guards against `--base-url`. |
+| `--base-url` / `-BaseUrl` | `SRE_INSTALL_BASE_URL` | Download over HTTP from a directory instead of GitHub. Needs a release tag, doesn't need `gh`, skips attestation. For testing. |
+
+Without `--base-url`, both scripts need a signed-in GitHub CLI (`gh auth login`) whose
+account can see the repository, because the repository is private.
 
 The installer never falls back to another version. If the release lookup, the checksum or
 the attestation check fails, it stops.

@@ -17,26 +17,25 @@ response plans under `az sre`.
 ## Install
 
 You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or
-later. The install script downloads the latest release wheel, verifies its SHA-256
-checksum and adds it with `az extension add`.
+later and the [GitHub CLI](https://cli.github.com), signed in (`gh auth login`) with an
+account that can see this repository. The repository is private, so the script downloads
+through `gh`. It installs the latest release wheel after verifying its SHA-256 checksum
+and build-provenance attestation.
 
 macOS, Linux and WSL:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/charan-kamasani/az-sre-ext/master/scripts/install.sh | sh
+gh api -H 'Accept: application/vnd.github.raw+json' repos/charan-kamasani/az-sre-ext/contents/scripts/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/charan-kamasani/az-sre-ext/master/scripts/install.ps1 | iex
+gh api -H 'Accept: application/vnd.github.raw+json' repos/charan-kamasani/az-sre-ext/contents/scripts/install.ps1 | Out-String | iex
 ```
 
 To pin a release, pass `--release-tag v1.0.0b1` (PowerShell: `-ReleaseTag`), or set
-`SRE_INSTALL_RELEASE_TAG`. If the [GitHub CLI](https://cli.github.com) is installed and
-signed in, the script also verifies the release's build-provenance attestation. Add
-`--require-attestation` to make that check mandatory. Check the install with
-`az sre --help`.
+`SRE_INSTALL_RELEASE_TAG`. Check the install with `az sre --help`.
 
 ## Quick start
 

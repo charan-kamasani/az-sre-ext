@@ -1,10 +1,11 @@
 # Install the `az sre` extension from a GitHub release.
 #
-# Verifies the wheel against the release SHA256SUMS and, when an authenticated
-# GitHub CLI is available, against its GitHub build-provenance attestation.
+# The repository is private, so downloads go through the signed-in GitHub CLI
+# (gh auth login). Verifies the wheel against the release SHA256SUMS and its
+# GitHub build-provenance attestation.
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/charan-kamasani/az-sre-ext/master/scripts/install.ps1 | iex
+#   gh api -H 'Accept: application/vnd.github.raw+json' repos/charan-kamasani/az-sre-ext/contents/scripts/install.ps1 | Out-String | iex
 #   .\install.ps1 -ReleaseTag v1.0.0b1
 #
 # Parameters (each has a matching SRE_INSTALL_* environment variable):
@@ -29,17 +30,25 @@ if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
     throw 'Azure CLI not found. Install it from https://learn.microsoft.com/cli/azure/install-azure-cli'
 }
 
+if (-not $BaseUrl) {
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        throw 'GitHub CLI not found. Install it from https://cli.github.com and run: gh auth login'
+    }
+    gh auth status 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI is not signed in. Run: gh auth login' }
+}
+
 if ($LatestRelease) { $ReleaseTag = '' }
 if (-not $ReleaseTag) {
-    $releases = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases?per_page=1"
-    $ReleaseTag = @($releases)[0].tag_name
+    if ($BaseUrl) { throw '-BaseUrl needs -ReleaseTag' }
+    $ReleaseTag = gh api "repos/$Repo/releases?per_page=20" --jq '[.[] | select(.draft | not)][0].tag_name // empty'
+    if ($LASTEXITCODE -ne 0) { throw "Release lookup failed for $Repo. Check that your GitHub account can see the repository." }
     if (-not $ReleaseTag) { throw "No release found in $Repo" }
 }
 if ($ReleaseTag -notmatch '^v\d+\.\d+\.\d+b\d+$') {
     throw "Release tag '$ReleaseTag' must look like v1.0.0b1"
 }
 
-$downloadUrl = if ($BaseUrl) { $BaseUrl } else { "https://github.com/$Repo/releases/download/$ReleaseTag" }
 $wheel = "sre-$($ReleaseTag.TrimStart('v'))-py3-none-any.whl"
 
 $work = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
@@ -48,8 +57,14 @@ New-Item -ItemType Directory -Path $work | Out-Null
 try {
     Write-Host "Downloading $wheel ($ReleaseTag)"
     $wheelPath = Join-Path $work $wheel
-    Invoke-WebRequest "$downloadUrl/$wheel" -OutFile $wheelPath
-    Invoke-WebRequest "$downloadUrl/SHA256SUMS" -OutFile (Join-Path $work 'SHA256SUMS')
+    if ($BaseUrl) {
+        Invoke-WebRequest "$BaseUrl/$wheel" -OutFile $wheelPath
+        Invoke-WebRequest "$BaseUrl/SHA256SUMS" -OutFile (Join-Path $work 'SHA256SUMS')
+    }
+    else {
+        gh release download $ReleaseTag --repo $Repo --dir $work --pattern $wheel --pattern SHA256SUMS
+        if ($LASTEXITCODE -ne 0) { throw "Could not download $wheel and SHA256SUMS from release $ReleaseTag" }
+    }
 
     $lines = @(Get-Content (Join-Path $work 'SHA256SUMS') | Where-Object { $_ -match "\s$([regex]::Escape($wheel))$" })
     if ($lines.Count -ne 1) { throw "SHA256SUMS must list $wheel exactly once (found $($lines.Count))" }
@@ -59,15 +74,10 @@ try {
     Write-Host 'Checksum verified.'
 
     $attested = $false
-    $ghReady = $false
-    if (-not $BaseUrl -and (Get-Command gh -ErrorAction SilentlyContinue)) {
-        gh auth status 2>$null | Out-Null
-        $ghReady = ($LASTEXITCODE -eq 0)
-    }
     if ($BaseUrl) {
         Write-Host 'Skipping attestation: custom -BaseUrl.'
     }
-    elseif ($ghReady) {
+    else {
         gh attestation verify $wheelPath --repo $Repo `
             --signer-workflow "$Repo/.github/workflows/release.yml" `
             --source-ref "refs/tags/$ReleaseTag" `
@@ -75,9 +85,6 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Attestation verification failed for $wheel" }
         $attested = $true
         Write-Host 'Attestation verified.'
-    }
-    else {
-        Write-Host 'Attestation not checked: sign in to the GitHub CLI (gh auth login) to enable it.'
     }
     if ($RequireAttestation -and -not $attested) {
         throw 'Attestation verification was required but did not run'
