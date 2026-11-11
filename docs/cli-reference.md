@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **24 groups** and **83 commands**.
+Public surface: **24 groups** and **84 commands**.
 
 ## Important caveats
 
@@ -61,6 +61,33 @@ In PowerShell, pass JSON with --value @file.json instead of inline.
 | `subagent` | Manage named sub-agents the meta-agent can hand off work to. |
 | `tool` | Manage custom tools the agent can call. |
 | `usage` | Read an SRE Agent's usage and billing stats. |
+
+| Verb | Exact syntax |
+| --- | --- |
+| `version` | `az sre version` |
+
+### `az sre version`
+
+Show the installed extension version and the Azure API versions it uses.
+
+Reads installed package metadata only, so it works without signing in. Include the output when you report a bug.
+
+**Syntax**
+
+`az sre version`
+
+**Examples**
+
+- Show version information
+
+  ```bash
+  az sre version
+  ```
+- Print only the extension version
+
+  ```bash
+  az sre version --query extensionVersion -o tsv
+  ```
 
 ## `az sre access`
 
