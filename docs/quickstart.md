@@ -46,8 +46,9 @@ az sre agent show \
 
 ## Connect a repository
 
-GitHub asks you to sign in in the browser. In CI, pass `--github-token` or set
-`GITHUB_TOKEN` instead.
+For GitHub, the command shows a one-time code and opens GitHub's sign-in page in
+your browser; enter the code there. In CI, set `GITHUB_TOKEN` or pass
+`--github-token` instead.
 
 ```bash
 az sre repo connect \
