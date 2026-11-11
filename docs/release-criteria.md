@@ -188,6 +188,7 @@ them.
 | SRE Agent engineering | Dalibor | | |
 | SRE Agent PM | Deepthi | | |
 | Developer tools | Paul Yuknewicz | | |
+| Developer tools PM | Matt | | |
 
 ---
 
