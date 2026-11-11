@@ -391,7 +391,7 @@ Stop a running SRE Agent.
 
 Update an SRE Agent.
 
-PagerDuty and ServiceNow set the same agent property as the portal's Incidents > Connect an incident platform workflow, not the separate Connector Gateway used by Jira, Slack and SharePoint. The portal also saves which PagerDuty services or ServiceNow assignment group to index; set that in the portal. --connection-key is the PagerDuty REST API access key; --obo-user is the identity the agent acts under when resolving or commenting on incidents. ServiceNow uses Basic Auth: set --connection-url to the instance URL and --connection-key to the credentials. Azure Monitor needs no configuration here. It connects automatically when the agent is created, and AzMonitor is the enum's implicit default.
+PagerDuty and ServiceNow set the same agent property as the portal's Incidents > Connect an incident platform workflow, not the separate Connector Gateway used by Jira, Slack and SharePoint. The portal also saves which PagerDuty services or ServiceNow assignment group to index; set that in the portal. --connection-key is the PagerDuty REST API access key; --obo-user is the identity the agent acts under when resolving or commenting on incidents. ServiceNow uses Basic Auth: set --connection-url to the instance URL and --connection-key to the credentials. Azure Monitor must also be connected before a response plan can use it. A new agent has no incident platform set.
 
 **Syntax**
 
@@ -424,6 +424,12 @@ PagerDuty and ServiceNow set the same agent property as the portal's Incidents >
   ```bash
   az sre agent update --name myagent --resource-group myrg \
   --default-model "{provider:MicrosoftFoundry,name:gpt-5}"
+  ```
+- Connect Azure Monitor as the incident platform
+
+  ```bash
+  az sre agent update --name myagent --resource-group myrg \
+  --incident-management-configuration "{type:AzMonitor,connection-name:azmonitor}"
   ```
 - Connect PagerDuty as the incident platform
 

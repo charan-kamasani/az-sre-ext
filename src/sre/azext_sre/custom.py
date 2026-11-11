@@ -1028,12 +1028,16 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
     ServiceNow uses Basic Auth: set --connection-url to the instance URL
     and --connection-key to the credentials.
 
-    Azure Monitor needs no configuration here. It connects automatically
-    when the agent is created, and AzMonitor is the enum's implicit default.
+    Azure Monitor must also be connected before a response plan can use it.
+    A new agent has no incident platform set.
 
     :example: Switch an agent's default model to MicrosoftFoundry
         az sre agent update --name myagent --resource-group myrg \\
             --default-model "{provider:MicrosoftFoundry,name:gpt-5}"
+
+    :example: Connect Azure Monitor as the incident platform
+        az sre agent update --name myagent --resource-group myrg \\
+            --incident-management-configuration "{type:AzMonitor,connection-name:azmonitor}"
 
     :example: Connect PagerDuty as the incident platform
         az sre agent update --name myagent --resource-group myrg \\
@@ -5676,6 +5680,19 @@ def _response_plan_handler_fields(args):
     return handler
 
 
+def _raise_if_subagent_missing(cli_ctx, agent_name, resource_group, subagent, error):
+    """The service rejects a plan whose subagent doesn't exist with a generic error; explain it."""
+    try:
+        _extension_resource_show(cli_ctx, agent_name, resource_group, "subagents", subagent)
+    except ResourceNotFoundError:
+        raise CLIError(
+            f"Subagent '{subagent}' doesn't exist, so the response plan can't hand incidents to it. "
+            "Create it first with 'az sre subagent create'."
+        ) from error
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.debug("Could not check subagent '%s': %s", subagent, ex)
+
+
 @register_command("sre response-plan create")
 class ResponsePlanCreate(AAZCommand):
     """Create or update an incident response plan.
@@ -5761,8 +5778,11 @@ class ResponsePlanCreate(AAZCommand):
             result = {"filter": _incident_resource_create(
                 self.cli_ctx, agent_name, resource_group, "incidentFilters", name,
                 flt, _incident_filter_path(name), filter_body, overwrite)}
+        except ResourceExistsError:
+            raise
         except Exception as ex:  # pylint: disable=broad-except
             _raise_if_platform_not_connected(self.cli_ctx, agent_name, resource_group, platform, ex)
+            _raise_if_subagent_missing(self.cli_ctx, agent_name, resource_group, flt["handlingAgent"], ex)
             raise
         handler_fields = _response_plan_handler_fields(args)
         if handler_fields:

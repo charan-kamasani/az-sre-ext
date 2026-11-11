@@ -31,7 +31,7 @@ from azure.cli.core.aaz import AAZCommand, AAZUndefined
 from azure.cli.core.azclierror import CLIError, InvalidArgumentValueError, ResourceNotFoundError
 from azure.cli.core.extension import DevExtension
 from azure.cli.core.mock import DummyCli
-from azure.core.exceptions import ResourceExistsError
+from azure.core.exceptions import HttpResponseError, ResourceExistsError
 
 from azext_sre import SreCommandsLoader
 from azext_sre.custom import (
@@ -1786,6 +1786,33 @@ class IncidentDataPlaneTests(unittest.TestCase):
         flt = created[0][1]
         self.assertEqual((flt["handlingAgent"], flt["agentMode"], flt["isEnabled"]), ("responder", "review", True))
         self.assertEqual(created[1][1]["incidentFilterId"], "plan")
+
+    def _rejected_create(self, agent, subagent_exists):
+        from azext_sre.custom import ResponsePlanCreate
+        command = _bare_command(
+            ResponsePlanCreate, agent_name="a", resource_group="rg", extension_name="plan",
+            platform="AzMonitor", subagent="responder", priorities=None, title_contains=None,
+            incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
+            title_not_contains=None, mode="review", disabled=None,
+            instructions=None, processing_guide=None, overwrite=None)
+        show = MagicMock() if subagent_exists else MagicMock(side_effect=ResourceNotFoundError("missing"))
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._incident_resource_create",
+                   side_effect=HttpResponseError("The extension configuration is invalid.")), \
+             patch("azext_sre.custom._cli_invoke", return_value=agent), \
+             patch("azext_sre.custom._extension_resource_show", show):
+            return command._handler(None)
+
+    def test_response_plan_rejection_names_missing_subagent(self):
+        agent = {"properties": {"incidentManagementConfiguration": {"type": "AzMonitor"}}}
+        with self.assertRaisesRegex(CLIError, "Subagent 'responder' doesn't exist") as ctx:
+            self._rejected_create(agent, subagent_exists=False)
+        self.assertNotIn("incident platform", str(ctx.exception))
+
+    def test_response_plan_rejection_keeps_service_error_when_cause_unknown(self):
+        agent = {"properties": {"incidentManagementConfiguration": {"type": "AzMonitor"}}}
+        with self.assertRaisesRegex(HttpResponseError, "configuration is invalid"):
+            self._rejected_create(agent, subagent_exists=True)
 
     def test_response_plan_rejects_bad_mode(self):
         from azext_sre.custom import ResponsePlanCreate
