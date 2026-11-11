@@ -79,8 +79,9 @@ az sre agent show \
   --output table
 ```
 
-Connect a repository. GitHub asks you to sign in in the browser. In CI, pass
-`--github-token` or set `GITHUB_TOKEN` instead:
+Connect a repository. For GitHub, the command shows a one-time code and opens
+GitHub's sign-in page in your browser; enter the code there. In CI, set
+`GITHUB_TOKEN` or pass `--github-token` instead:
 
 ```bash
 az sre repo connect \
@@ -146,7 +147,7 @@ az group delete \
 | `subagent` | `create, show, list, delete` | Manage named subagents the main agent hands work to (portal: Agent Canvas). |
 | `tool` | `create, show, list, delete` | Manage custom tools the agent can invoke. |
 | `usage` | `list` | View agent usage and billing statistics. |
-| `automation` | **scheduled-task:** `create, show, list, delete`<br>**http-trigger:** `create, show, list, delete` | Manage scheduled runs and inbound webhook triggers. |
+| `automation` | **scheduled-task:** `create, show, list, delete, pause, resume`<br>**http-trigger:** `create, show, list, delete, invoke` | Manage scheduled runs and inbound webhook triggers. |
 
 Run `az sre <group> --help` for any group.
 
@@ -203,6 +204,7 @@ Most commands are generated from the `Microsoft.App/agents` API spec under
 |---|---|
 | [CLI ergonomics reference](docs/cli-reference.md) | Every group, command, exact syntax, option, and default — generated, never drifts |
 | [Quickstart](docs/quickstart.md) | Create an agent, connect sources and route incidents, from the CLI |
+| [Portal and CLI handoff](docs/portal-cli-handoff.md) | Each Microsoft Learn tutorial step, with the `az sre` command to run or the portal page to use |
 | [Connector types](docs/connector-types.md) | Values for `--data-connector-type` and their portal names |
 | [CLI shape design](docs/shape-design.md) | Why the command surface is flat top-level nouns instead of everything nested under `agent`, and why each runbook-extension type gets its own noun instead of one generic `extension --type` |
 | [Operations](docs/operations.md) | Agent lifecycle, RBAC, connectors, and confirmed/unconfirmed runbook extension payload shapes |

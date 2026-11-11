@@ -4,7 +4,7 @@
 
 1. **Unit tests** (`src/sre/azext_sre/tests/latest/test_custom.py`) — fully
    credential-free, cover every hand-written behavior in `custom.py`: RBAC
-   role-name mapping, the networking GET-merge-PUT logic, extension
+   role-name mapping, the networking-only PATCH, extension
    create/show/list/delete resource-ID and payload shape, the base64/JSON
    extension-value codec, model-provider and data-connector-type
    normalization (including that invalid values raise `CLIError`, not a
@@ -20,6 +20,9 @@
    enforcement for `access grant`/`revoke` and `knowledge create`. Each
    rejected argument list has an accepted twin that reaches the command, so a
    retired or renamed command fails instead of passing as unrecognized.
+   `test_action_configuration_mode.py` uses the same offline harness to show
+   that `agent create`/`agent update` reject `--action-configuration` mode
+   `ReadOnly` while arguments are parsed, before a managed identity is created.
    The documented test dependencies include `msrest` and `azure-common`
    because Azure CLI's real error formatter imports them even for local
    argument-validation errors.

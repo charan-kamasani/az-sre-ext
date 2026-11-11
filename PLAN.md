@@ -20,7 +20,7 @@ hard part, creating a useful agent is.
 
 | Feature | Status | Blocker | Next step |
 |---|---|---|---|
-| Agent CRUD (create/show/list/update/delete/start/stop/wait) | Done | None | Live-verified end-to-end against a real resource. All `agent create`/`agent update` Properties/Identity args (`--action-configuration`, `--knowledge-graph-configuration`, `--log-configuration`, `--incident-management-configuration`, `--tags`, `--upgrade-channel`, `--mi-system-assigned`/`--mi-user-assigned`) live-verified this pass against real resources (disposable App Insights + user-assigned identity); `--agent-identity` not independently tested (needs a real tenant AAD sponsor group ID, out of scope). Found and fixed a real create-time bug (service requires a managed identity; CLI now defaults to `--mi-system-assigned` with a warning instead of failing with a raw ARM error) and documented two real, non-CLI-fixable findings: a Swagger/service `--action-configuration` mode enum mismatch (`ReadOnly` rejected live) and a `--log-configuration` + `identity assign`/`remove` GET-merge-PUT interaction bug (write-only `connectionString` lost on merge). See docs/operations.md. |
+| Agent CRUD (create/show/list/update/delete/start/stop/wait) | Done | None | Live-verified end-to-end against a real resource. All `agent create`/`agent update` Properties/Identity args (`--action-configuration`, `--knowledge-graph-configuration`, `--log-configuration`, `--incident-management-configuration`, `--tags`, `--upgrade-channel`, `--mi-system-assigned`/`--mi-user-assigned`) live-verified this pass against real resources (disposable App Insights + user-assigned identity); `--agent-identity` not independently tested (needs a real tenant AAD sponsor group ID, out of scope). Found and fixed a real create-time bug (service requires a managed identity; CLI now defaults to `--mi-system-assigned` with a warning instead of failing with a raw ARM error) and a Swagger/service `--action-configuration` mode enum mismatch (`ReadOnly` is rejected live; the CLI now rejects it client-side with a clear error), and documented one real, non-CLI-fixable finding: a `--log-configuration` + `identity assign`/`remove` GET-merge-PUT interaction bug (write-only `connectionString` lost on merge). See docs/operations.md. |
 | `endpoint show` (was `connection show`) / `usage list` | Done | None | Live-verified. Found and fixed a real bug this pass: `dataPlaneAudience` rendered as `{"isDefault": true}` instead of the URL string when left at its default (a `knack.validators.DefaultStr` subclass leaking through az's output formatter); fixed with an explicit `str(...)` coercion. Renamed from `connection show` to `endpoint show` per live naming feedback (too visually similar to `connector`). See docs/operations.md. |
 | Identity (`--system-assigned`/`--user-assigned`) | Done | None | Live-verified against a real managed identity. |
 | RBAC (`access grant --role admin\|user\|author\|reader`) | Done | None | Live-verified; a real role-name-mapping bug (wrong role names, not matching Azure's actual built-ins) was found and fixed this session, now locked in with a regression test. |
@@ -71,11 +71,9 @@ hard part, creating a useful agent is.
   predate this correction. Real incident ingestion/investigation is not yet
   qualified by these configuration checks.
 - The command surface is generated from the `Microsoft.App/agents` Swagger
-  using `aaz-dev`, under the public command name `az app agent ...` (the
-  swagger's RP folder is literally `app`). `custom.py` subclasses every
-  generated command to rename the public surface to `sre agent ...` — the
-  only reason the subclasses exist, since there is no behavioral difference
-  the generator could not already produce on its own.
+  using `aaz-dev` (`scripts/generate_sre_extension.py`), directly under the
+  final `az sre ...` names; `custom.py` subclasses generated commands only
+  to add behavior and help the generator cannot produce.
 - `API_VERSION = "2026-01-01"` is pinned to match the already-generated
   `aaz/latest` recipes. The officially published docs reference
   `2025-05-01-preview` — an unresolved discrepancy, flagged for
@@ -156,8 +154,8 @@ hard part, creating a useful agent is.
 
 - Build a private Azure CLI extension first, following the standard
   AAZ-generation-plus-hand-written-overlay pattern.
-- Use `az sre` as the top-level command (the generated Swagger's own command
-  name, `az app agent ...`, is renamed via thin `custom.py` subclasses).
+- Use `az sre` as the top-level command (the generator renames the Swagger's
+  default `app` group to `sre` in the aaz-dev workspace).
 - Keep the noun hierarchy flat (`agent`, `connector`, `tool`, `skill`, etc.
   as independent top-level groups) rather than nesting everything under
   `agent`, and give each of the 15 runbook-extension types its own dedicated
