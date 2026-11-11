@@ -13,11 +13,6 @@ needs signed release artifacts. See [PLAN.md](../PLAN.md) for the full
 status/roadmap.
 
 ## What's still manual
-- The `app` → `sre` command-group rename is done via thin `custom.py`
-  subclasses of each generated command (see `azext_sre/custom.py`), not at
-  generation time — generated recipes under `aaz/latest/app/agent/...` still
-  use the Swagger's own `app` folder name, which is expected and should not
-  be "fixed".
 - Client-side validation logic not expressible in the Swagger (model-provider
   enum normalization, the planned `--data-connector-type` enum) is
   hand-written in `custom.py` regardless of CI maturity.

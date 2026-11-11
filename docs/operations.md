@@ -58,8 +58,9 @@ inspection). Status:
 | `--upgrade-channel` | Live-verified | `Preview`/`Stable` both accepted. |
 | `--action-configuration` | Live-verified; one real enum/server mismatch found, now rejected client-side | `identity` must be the literal string `"system"` (not a resource ID) to reference the agent's own system-assigned identity, or a user-assigned identity's resource ID. **The generated `mode` enum (from Swagger) lists `Autonomous`/`ReadOnly`/`Review`, but the live service only accepts `Autonomous`/`Review` -- `ReadOnly` is rejected with `(InvalidActionMode)`.** `agent create`/`agent update` drop `ReadOnly` from the `mode` choices (`_ActionModeArgMixin` in `custom.py`; generated code untouched), so it fails while arguments are parsed, with an error naming the supported values -- before `agent create` auto-creates a managed identity or anything is sent. Raw generic updates (`--set properties.actionConfiguration.mode=...`) are not checked client-side. Remove the mixin if the service starts accepting `ReadOnly`. |
 | `--knowledge-graph-configuration` | Live-verified | Same `identity: "system"` convention as `--action-configuration`. |
-| `--log-configuration` | Live-verified, with a real identity-assign interaction bug found | `applicationInsightsConfiguration.connectionString` is write-only (never echoed back on `agent show`), same pattern as connector `extendedProperties`/`dataSource`. **Known gotcha**: if an agent has `--log-configuration` set, a subsequent `sre identity assign`/`sre identity remove` call will fail with `(InvalidApplicationInsightsConfiguration) The AppId and ConnectionString fields must be provided together` -- these are generated GET-merge-PUT commands, and the GET can never recover the write-only `connectionString`, so the merged PUT re-submits `appId` alone. Not fixable at the CLI layer without either (a) silently dropping the user's existing log configuration as a side effect of an unrelated identity change (worse), or (b) a service-side change. **Workaround**: re-apply `--log-configuration` with the same `app-id`/`connection-string` immediately after any `identity assign`/`identity remove` call on an agent that has one configured. The same risk likely applies to `--incident-management-configuration`'s `connection-key` (also a write-only/password field), though not independently reproduced. |
+| `--log-configuration` | Live-verified, with a real identity-assign interaction bug found | `applicationInsightsConfiguration.connectionString` is write-only (never echoed back on `agent show`), same pattern as connector `extendedProperties`/`dataSource`. `agent update` and `network update` handle this: when the agent already has an App Insights link and you don't pass `--log-configuration`, they send a PATCH without `logConfiguration`, so the existing link is kept (a PUT that omits it would clear the link). **Known gotcha**: if an agent has `--log-configuration` set, a subsequent `sre identity assign`/`sre identity remove` call will fail with `(InvalidApplicationInsightsConfiguration) The AppId and ConnectionString fields must be provided together` -- these are generated GET-merge-PUT commands, and the GET can never recover the write-only `connectionString`, so the merged PUT re-submits `appId` alone. Not fixable at the CLI layer without either (a) silently dropping the user's existing log configuration as a side effect of an unrelated identity change (worse), or (b) a service-side change. **Workaround**: re-apply `--log-configuration` with the same `app-id`/`connection-string` immediately after any `identity assign`/`identity remove` call on an agent that has one configured. The same risk likely applies to `--incident-management-configuration`'s `connection-key` (also a write-only/password field), though not independently reproduced. |
 | `--incident-management-configuration` | Live-verified, with a real validation message found | `connection-url` must be omitted for production IcM connections (it's auto-wired via the Agent Space proxy); if set for testing it must be an `https://*.microsofticm.com` URL -- any other host is rejected with `(InvalidIcmConnectionUrl)` and a clear, actionable error message. |
+| `--experimental-settings` | Live-verified | Preview feature flags (`properties.experimentalSettings`), e.g. `{"EnableWorkspaceTools": true}`. Not in the generated schema, so the CLI applies it with a PATCH (after provisioning on `create`, which therefore rejects `--no-wait`). PATCH merges keys into the existing map; a PUT carrying the property would replace it and drop service-set flags such as `EnableConnectorsV2`. |
 | `--agent-identity` | Not independently tested | Requires `initial-sponsor-group-id`, a real tenant-specific AAD "sponsor group" GUID used for agent-identity/Teams-user provisioning -- out of scope without guidance from the SRE Agent team on which group is valid to use in this tenant. |
 
 ## RBAC
@@ -93,15 +94,18 @@ clear `CLIError` instead of silently never granting access.
 The mirror image is `az sre managed-resource grant/revoke/list` — instead of
 granting a person access *to* the agent, it grants the agent's own managed
 identity Reader + Monitoring Contributor *on* an external subscription,
-resource group, or management group (matches the portal's Build + setup >
-Context > Managed resources page):
+resource group, or management group. This is the role-assignment half of the
+portal's Build + setup > Context > Managed resources page: the portal also
+adds the scope to `properties.knowledgeGraphConfiguration.managedResources`,
+and this command doesn't, so the scope isn't listed on that page (see the
+[portal and CLI handoff guide](portal-cli-handoff.md#what-the-cli-does-differently)):
 
 ```bash
 az sre managed-resource grant -g myrg --agent-name myagent \
-  --target-subscription <sub-id> --target-resource-group monitored-rg
+  --target-subscription <sub-id> --target-rg monitored-rg
 az sre managed-resource list -g myrg --agent-name myagent
 az sre managed-resource revoke -g myrg --agent-name myagent \
-  --target-subscription <sub-id> --target-resource-group monitored-rg
+  --target-subscription <sub-id> --target-rg monitored-rg
 ```
 
 All three commands default to the agent's **system-assigned managed identity
@@ -114,10 +118,10 @@ UAMI_ID="/subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.
 
 az sre identity show -g myrg --agent-name myagent
 az sre managed-resource grant -g myrg --agent-name myagent \
-  --identity "$UAMI_ID" --target-subscription <sub-id> --target-resource-group monitored-rg
+  --identity "$UAMI_ID" --target-subscription <sub-id> --target-rg monitored-rg
 az sre managed-resource list -g myrg --agent-name myagent --identity "$UAMI_ID"
 az sre managed-resource revoke -g myrg --agent-name myagent \
-  --identity "$UAMI_ID" --target-subscription <sub-id> --target-resource-group monitored-rg
+  --identity "$UAMI_ID" --target-subscription <sub-id> --target-rg monitored-rg
 ```
 
 `--identity system` explicitly selects the default SAMI. UAMI resource IDs
@@ -130,8 +134,18 @@ The selected identity and principal ID are logged on stderr (unless
 These commands do not attach identities, change runtime identity settings,
 restart the agent, or select the first attached UAMI automatically.
 
-Grant and revoke still operate on Reader + Monitoring Contributor as a pair.
-Revoke is limited to the chosen identity and exact requested scope, preserving
+Grant and revoke operate on Reader + Monitoring Contributor as a pair by
+default, matching the portal. Pass `--roles` to use a different set, e.g. the
+zava-aks-postgres lab also grants Contributor and Monitoring Reader:
+
+```bash
+az sre managed-resource grant -g myrg --agent-name myagent \
+  --target-subscription <sub-id> --target-rg monitored-rg \
+  --roles Reader "Monitoring Reader" "Monitoring Contributor" Contributor
+```
+
+`--roles` replaces the default pair rather than adding to it, so list every
+role you want. Revoke is limited to the chosen identity and exact requested scope, preserving
 other principals, other roles, and assignments on parent or child scopes.
 List retains `az role assignment list --all`'s current-subscription scope and
 returns every role, not just the managed pair, for the chosen identity.
@@ -777,7 +791,10 @@ only its own scoped sub-resource, `network update` returned the *entire*
 parent `Microsoft.App/agents` resource (every property, including dozens of
 unrelated `null` fields) because the underlying call is a PUT directly on
 the agent resource itself (there's no separate ARM child resource for
-networking). Fixed to trim the response to `id`/`name`/`resourceGroup`/
+networking). The update itself is now a PATCH carrying only
+`vnetConfiguration`/`sandboxConfiguration`; writing the whole agent back failed
+on agents with App Insights logging because the service never returns the
+connection string. Fixed to trim the response to `id`/`name`/`resourceGroup`/
 `type`/`provisioningState`/`vnetConfiguration`/`sandboxConfiguration` only,
 matching the output shape convention used everywhere else. Until 2026-11-10,
 `resourceGroup` in this output (and in `network show`) was always `null`,
@@ -930,7 +947,10 @@ github-actions` already use -- `_github_token()` tries, in order:
 1. **Explicit/CI**: `--github-token`, or `GITHUB_TOKEN`/`GH_TOKEN` env vars.
    This remains required for any non-interactive use (CI/CD pipelines,
    scheduled jobs, headless containers) -- device flow needs a human in a
-   browser, so it can never substitute for this tier.
+   browser, so it can never substitute for this tier. A token picked up from
+   the environment is stored on the agent, so the command warns and names the
+   variable it used; a fine-grained, repo-scoped token passed with
+   `--github-token` is the recommended option.
 2. **Native GitHub OAuth Device Flow (RFC 8628)** fallback, implemented
    directly in Python with `requests` + Azure CLI's own
    `azure.cli.core.util.open_page_in_browser` -- no `gh` CLI, no client
@@ -1007,6 +1027,14 @@ Azure DevOps PAT path (`_devops_pat_token`) was already dependency-free
 `requests` is a hard transitive dependency of `azure-cli-core` itself, not
 something this extension adds.
 
+`repo connect` validates the repository name and payload before it writes
+any credentials, because the auth write replaces existing credentials for
+that host or org. If a later step fails, a freshly minted Azure DevOps PAT
+is revoked again, and a failed repository write after new credentials were
+saved is called out in a warning. For `*.visualstudio.com` URLs the Azure
+DevOps organization comes from the host name; the default repository name
+drops a trailing `.git`.
+
 ```bash
 # No token needed up front -- opens a browser-based device-flow prompt
 # automatically if no token is already available:
@@ -1038,10 +1066,13 @@ type-name-to-C#-model table in `AAPT-SREAgent-ControlPlane`.
 
 Noun-specific commands include:
 
-- `az sre automation scheduled-task create/show/list/delete` -- run the
-  agent on a cron schedule against a prompt.
-- `az sre automation http-trigger create/show/list/delete` -- run the
-  agent from an inbound webhook call.
+- `az sre automation scheduled-task create/show/list/delete/pause/resume` -- run the
+  agent on a cron schedule against a prompt. `isEnabled: false` in `--value`
+  (or `pause`) sets the task's `status` to `Paused`; the service has no
+  `isEnabled` field on scheduled tasks.
+- `az sre automation http-trigger create/show/list/delete/invoke` -- run the
+  agent from an inbound webhook call. `invoke` POSTs to the trigger's
+  `triggerUrl` with your Azure CLI token, which is handy for testing.
 - `az sre response-plan create/show/list/delete/enable/disable` -- match
   incoming incidents (by platform/title/team/etc.) and route matches to
   a handling agent (portal: Incidents > "Triggers & response plans", a
@@ -1091,8 +1122,12 @@ Remaining control-plane bug: some downstream validation errors are still
 masked by the generic message, which is why create replays on the data plane.
 
 Configure `incidentManagementConfiguration.type` to match the filter's
-`incidentPlatform` first. For Azure Monitor, PagerDuty, and ServiceNow,
-set `handlingAgent` to an existing subagent name. The plural
+`incidentPlatform` first. A new agent has no incident platform, including
+Azure Monitor, so run
+`az sre agent update --incident-management-configuration '{type:AzMonitor,connection-name:azmonitor}'`
+before creating an Azure Monitor plan. For Azure Monitor, PagerDuty, and ServiceNow,
+set `handlingAgent` to an existing subagent name. When the service rejects
+a plan, `response-plan create` checks both and names the one that failed. The plural
 `handlingAgents` field is IcM-specific. Both create commands refuse to
 replace existing resources unless `--overwrite` is supplied.
 Creating and reading configuration does not prove that a real alert has
@@ -1134,7 +1169,14 @@ az sre automation http-trigger create -g myrg --agent-name myagent \
 az sre response-plan create -g myrg --agent-name myagent -n disk-space \
   --platform AzMonitor --subagent storage-oncall-agent --title-contains "disk space" \
   --mode review --disabled --instructions "Gather disk-usage evidence and report findings."
+
+az sre response-plan create -g myrg --agent-name myagent -n sev1-main \
+  --platform AzMonitor --subagent meta_agent --priority Sev1 --max-investigation-attempts 2
 ```
+
+`--subagent meta_agent` routes matching incidents to the main agent instead of
+a custom subagent. `--max-investigation-attempts` sets the filter's
+`maxAutomatedInvestigationAttempts` (the service default is 3).
 
 ## Networking
 

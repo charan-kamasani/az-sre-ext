@@ -71,11 +71,9 @@ hard part, creating a useful agent is.
   predate this correction. Real incident ingestion/investigation is not yet
   qualified by these configuration checks.
 - The command surface is generated from the `Microsoft.App/agents` Swagger
-  using `aaz-dev`, under the public command name `az app agent ...` (the
-  swagger's RP folder is literally `app`). `custom.py` subclasses every
-  generated command to rename the public surface to `sre agent ...` — the
-  only reason the subclasses exist, since there is no behavioral difference
-  the generator could not already produce on its own.
+  using `aaz-dev` (`scripts/generate_sre_extension.py`), directly under the
+  final `az sre ...` names; `custom.py` subclasses generated commands only
+  to add behavior and help the generator cannot produce.
 - `API_VERSION = "2026-01-01"` is pinned to match the already-generated
   `aaz/latest` recipes. The officially published docs reference
   `2025-05-01-preview` — an unresolved discrepancy, flagged for
@@ -156,8 +154,8 @@ hard part, creating a useful agent is.
 
 - Build a private Azure CLI extension first, following the standard
   AAZ-generation-plus-hand-written-overlay pattern.
-- Use `az sre` as the top-level command (the generated Swagger's own command
-  name, `az app agent ...`, is renamed via thin `custom.py` subclasses).
+- Use `az sre` as the top-level command (the generator renames the Swagger's
+  default `app` group to `sre` in the aaz-dev workspace).
 - Keep the noun hierarchy flat (`agent`, `connector`, `tool`, `skill`, etc.
   as independent top-level groups) rather than nesting everything under
   `agent`, and give each of the 15 runbook-extension types its own dedicated
