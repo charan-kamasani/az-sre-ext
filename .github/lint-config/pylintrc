@@ -1,0 +1,71 @@
+# Vendored from https://raw.githubusercontent.com/Azure/azure-cli-extensions/main/pylintrc on 2026-09-11. Refresh periodically.
+[MASTER]
+ignore=tests,generated,vendored_sdks,privates
+ignore-patterns=test.*,azure_devops_build.*
+ignore-paths=.*/aaz
+reports=no
+
+[MESSAGES CONTROL]
+disable=
+    arguments-out-of-order,
+    bad-option-value,
+    consider-using-with,
+    cyclic-import,
+    duplicate-code,
+    fixme,
+    import-outside-toplevel,
+    inconsistent-return-statements,
+    invalid-name,
+    invalid-str-returned,
+    locally-disabled,
+    missing-docstring,
+    missing-kwoa,
+    no-member,
+    no-value-for-parameter,
+    raise-missing-from,
+    subprocess-run-check,
+    super-with-arguments,
+    too-many-arguments,
+    too-many-positional-arguments,
+    too-many-function-args,
+    too-many-lines,
+    using-constant-test,
+    wrong-import-order,
+    consider-using-f-string,
+    unspecified-encoding,
+    use-maxsplit-arg,
+    arguments-renamed,
+    consider-using-in,
+    use-dict-literal,
+    consider-using-dict-items,
+    consider-using-enumerate,
+    redundant-u-string-prefix,
+    raising-bad-type,
+    unused-private-member,
+    used-before-assignment,
+    missing-timeout,
+    superfluous-parens,
+    implicit-str-concat,
+    unnecessary-dunder-call,
+    broad-exception-caught,
+    too-many-return-statements,
+    too-many-boolean-expressions,
+    too-many-locals,
+    protected-access,
+    logging-fstring-interpolation,
+    too-many-nested-blocks,
+    line-too-long,
+
+[FORMAT]
+max-line-length=120
+
+[VARIABLES]
+init-import=yes
+
+[DESIGN]
+max-locals=25
+max-branches=20
+max-statements=500
+
+[SIMILARITIES]
+min-similarity-lines=10

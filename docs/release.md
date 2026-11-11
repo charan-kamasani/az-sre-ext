@@ -19,8 +19,10 @@ The workflow refuses to publish unless all of these hold:
 - The tag, `VERSION` in `src/sre/setup.py`, the wheel filename and the wheel metadata
   agree (`scripts/validate_release_metadata.py`).
 - Unit tests pass and `docs/cli-reference.md` is current.
-- The wheel installs into a clean, pinned Azure CLI and every `az sre` command in
-  `docs/cli-reference.md` answers `--help` (`scripts/verify_installed_wheel.sh`).
+- The wheel installs into a clean, pinned Azure CLI, `az extension show` and `az sre version`
+  report the release version, every command and group in `docs/cli-reference.md` answers
+  `--help`, and the installed command inventory matches that reference exactly
+  (`scripts/verify_installed_wheel.py`).
 - `scripts/install.sh` installs the built wheel.
 - Build-provenance attestations for all assets verify against this workflow.
 - No release with the tag exists yet.

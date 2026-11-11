@@ -131,7 +131,7 @@ from azext_sre.custom import (
     _resolve_signed_in_tenant_id,
     _IcmIncidentPlatformGateMixin,
     _show_internal_features,
-    _listed_connector_types,    _resolve_signed_in_user_object_id,
+    _listed_connector_types,
     _ExperimentalSettingsOnCreateMixin,
     MICROSOFT_FIRST_PARTY_TENANT_IDS,
 )
@@ -225,8 +225,6 @@ class DataConnectorTypeNormalizationTests(unittest.TestCase):
         self.assertEqual(_normalize_data_connector_type("KUSTO"), "Kusto")
         self.assertEqual(_normalize_data_connector_type("Mcp"), "Mcp")
         self.assertEqual(_normalize_data_connector_type("mcp"), "Mcp")
-        self.assertEqual(_normalize_data_connector_type("outlook"), "Outlook")
-        self.assertEqual(_normalize_data_connector_type("TEAMS"), "Teams")
 
     def test_accepts_newly_confirmed_values_case_insensitively(self):
         # Confirmed via KnownDataConnectorTypes.cs and DataConnectorValidator.cs
@@ -281,6 +279,20 @@ class DataConnectorTypeNormalizationTests(unittest.TestCase):
             "--data-connector-type must be one of", str(raised.exception)
         )
 
+    def test_managed_connectors_point_to_the_portal(self):
+        # The service now creates Outlook and Teams as managed connectors, like Gmail.
+        for value, card in (
+                ("outlook", "Office 365 Outlook"),
+                ("Office 365 Outlook", "Office 365 Outlook"),
+                ("TEAMS", "Microsoft Teams"),
+                ("Microsoft Teams", "Microsoft Teams"),
+                ("gmail", "Gmail"),
+                ("Viva Engage", "Yammer")):
+            with self.subTest(value=value):
+                with self.assertRaises(CLIError) as raised:
+                    _normalize_data_connector_type(value)
+                self.assertIn(f"Set up {card} in the portal", str(raised.exception))
+
     def test_accepts_friendly_product_names_case_insensitively(self):
         # Friendly names confirmed against sreagent-runtime's own portal
         # i18n strings (SREAgentResources.ts), not invented -- see
@@ -295,8 +307,6 @@ class DataConnectorTypeNormalizationTests(unittest.TestCase):
         self.assertEqual(_normalize_data_connector_type("Azure Data Explorer Cluster"), "Kusto")
         self.assertEqual(_normalize_data_connector_type("Custom MCP"), "Mcp")
         self.assertEqual(_normalize_data_connector_type("User Provided Connector"), "Mcp")
-        self.assertEqual(_normalize_data_connector_type("Office 365 Outlook"), "Outlook")
-        self.assertEqual(_normalize_data_connector_type("Microsoft Teams"), "Teams")
         self.assertEqual(_normalize_data_connector_type("Microsoft IcM"), "Icm")
         self.assertEqual(_normalize_data_connector_type("Microsoft DGrep"), "Dgrep")
         # Corrected Title-based names, added 2026-11-04 after the full
@@ -702,73 +712,172 @@ class GrantAccessRoleMappingTests(unittest.TestCase):
                 command._handler({})
 
 
+def _fake_jwt(claims):
+    def encode(value):
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+    return f"{encode({'alg': 'none'})}.{encode(claims)}.signature"
+
+
+_AGENT_ID = "/subscriptions/x/resourceGroups/myrg/providers/Microsoft.App/agents/myagent"
+
+
+class _GraphFreeNestedCli:
+    """Fake nested `az` for the access commands. Fails the test on anything
+    that would reach Microsoft Graph: any 'ad ...' command, a 'role
+    assignment' call with --assignee (unless allowed), or a list call that
+    fills in principal names (unless --show-names)."""
+
+    def __init__(self, test, claims=None, token=None, user_type="user", tenant="tenant-1",
+                 assignments=(), allow_names=False, allow_assignee=False):
+        self.test = test
+        self.token = token if token is not None else _fake_jwt(
+            claims if claims is not None else {"oid": "my-oid", "tid": tenant})
+        self.user_type = user_type
+        self.tenant = tenant
+        self.assignments = [dict(a) for a in assignments]
+        self.allow_names = allow_names
+        self.allow_assignee = allow_assignee
+        self.calls = []
+
+    @property
+    def role_calls(self):
+        return [call for call in self.calls if call[:2] == ("role", "assignment")]
+
+    def __call__(self, cli_ctx, *args, allow_missing=False):
+        self.calls.append(args)
+        test = self.test
+        test.assertNotEqual(args[:1], ("ad",), f"Microsoft Graph command: {args}")
+        if args[:2] == ("account", "get-access-token"):
+            return {"accessToken": self.token, "tokenType": "Bearer"}
+        if args[:2] == ("account", "show"):
+            return {"tenantId": self.tenant, "user": {"name": "me", "type": self.user_type}}
+        if args[:3] == ("sre", "agent", "show"):
+            return {"id": _AGENT_ID}
+        test.assertEqual(args[:2], ("role", "assignment"), f"Unexpected command: {args}")
+        if "--assignee" in args:
+            test.assertTrue(self.allow_assignee, f"--assignee resolves through Microsoft Graph: {args}")
+        options = dict(zip(args[3::2], args[4::2]))
+        principal = options.get("--assignee-object-id") or options.get("--assignee")
+        action = args[2]
+        if action == "list":
+            if not self.allow_names:
+                test.assertEqual(options.get("--fill-principal-name"), "false", f"Graph names: {args}")
+            return [
+                dict(a) for a in self.assignments
+                if a["scope"] == options["--scope"]
+                and (principal is None or a["principalId"] == principal)
+                and ("--role" not in options or a["roleDefinitionName"] == options["--role"])
+            ]
+        if action == "create":
+            assignment = {
+                "id": f"assignment-{len(self.assignments) + 1}",
+                "principalId": principal,
+                "principalType": options.get("--assignee-principal-type"),
+                "roleDefinitionName": options["--role"],
+                "scope": options["--scope"],
+            }
+            self.assignments.append(assignment)
+            return dict(assignment)
+        test.assertEqual(action, "delete")
+        before = len(self.assignments)
+        self.assignments = [
+            a for a in self.assignments
+            if (a["principalId"], a["roleDefinitionName"], a["scope"])
+            != (principal, options["--role"], options["--scope"])
+        ]
+        if len(self.assignments) == before:
+            raise CLIError("No matched assignments were found to delete")
+        return None
+
+
 class AssigneeMeTests(unittest.TestCase):
-    """--assignee-me on grant-access/revoke-access: resolves the signed-in
-    user's object ID via 'az ad signed-in-user show' instead of requiring
-    --assignee, mirroring --grant-access-to-me's resolution logic (shared
-    via _resolve_signed_in_user_object_id so both paths agree on what "me"
-    means).
-    """
+    """--assignee-me on access grant/revoke reads the signed-in account's
+    object ID from its Azure Resource Manager token and its principal type
+    from 'az account show' -- no Microsoft Graph, which Conditional Access
+    token protection blocks for Azure CLI on macOS."""
+
+    def _run(self, command_cls, fake, **args):
+        command = _bare_command(command_cls, name="myagent", resource_group="myrg",
+                                assignee=None, assignee_me=True, **args)
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake):
+            return command._handler({})
 
     def test_grant_access_assignee_me_resolves_signed_in_user(self):
-        command = _bare_command(
-            GrantAccess, name="myagent", resource_group="myrg", role="reader",
-            assignee=None, assignee_me=True,
-        )
-        calls = []
+        fake = _GraphFreeNestedCli(self)
+        result = self._run(GrantAccess, fake, role="reader")
 
-        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
-            calls.append(args)
-            if args[:3] == ("ad", "signed-in-user", "show"):
-                return {"id": "signed-in-object-id"}
-            if args[:3] == ("sre", "agent", "show"):
-                return {"id": "/subscriptions/x/resourceGroups/myrg/providers/Microsoft.App/agents/myagent"}
-            return {"result": "assigned"}
+        self.assertEqual(result["principalId"], "my-oid")
+        self.assertEqual(fake.role_calls, [
+            ("role", "assignment", "list", "--assignee-object-id", "my-oid",
+             "--role", "SRE Agent Reader", "--scope", _AGENT_ID, "--fill-principal-name", "false"),
+            ("role", "assignment", "create", "--role", "SRE Agent Reader",
+             "--assignee-object-id", "my-oid", "--assignee-principal-type", "User",
+             "--scope", _AGENT_ID),
+        ])
 
-        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
-            result = command._handler({})
+    def test_grant_access_assignee_me_service_principal_login(self):
+        fake = _GraphFreeNestedCli(self, claims={"oid": "sp-oid", "tid": "tenant-1"},
+                                   user_type="servicePrincipal")
+        result = self._run(GrantAccess, fake, role="admin")
 
-        self.assertEqual(result, {"result": "assigned"})
-        self.assertEqual(
-            calls[-1],
-            (
-                "role", "assignment", "create",
-                "--role", "SRE Agent Reader",
-                "--assignee", "signed-in-object-id",
-                "--scope", "/subscriptions/x/resourceGroups/myrg/providers/Microsoft.App/agents/myagent",
-            ),
-        )
+        self.assertEqual((result["principalId"], result["principalType"]), ("sp-oid", "ServicePrincipal"))
+        self.assertEqual([a["principalType"] for a in fake.assignments], ["ServicePrincipal"])
+
+    def test_grant_access_assignee_me_returns_existing_assignment_without_create(self):
+        existing = {"id": "existing", "principalId": "my-oid", "principalType": "User",
+                    "roleDefinitionName": "SRE Agent Reader", "scope": _AGENT_ID}
+        fake = _GraphFreeNestedCli(self, assignments=[existing])
+        result = self._run(GrantAccess, fake, role="reader")
+
+        self.assertEqual(result, existing)
+        self.assertEqual([call[2] for call in fake.role_calls], ["list"])
 
     def test_revoke_access_assignee_me_resolves_signed_in_user(self):
-        command = _bare_command(
-            RevokeAccess, name="myagent", resource_group="myrg", role="author",
-            assignee=None, assignee_me=True,
-        )
-        calls = []
+        mine = {"id": "a1", "principalId": "my-oid", "principalType": "User",
+                "roleDefinitionName": "SRE Agent Author", "scope": _AGENT_ID}
+        other = dict(mine, id="a2", principalId="someone-else")
+        fake = _GraphFreeNestedCli(self, assignments=[mine, other])
+        self._run(RevokeAccess, fake, role="author")
 
-        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
-            calls.append(args)
-            if args[:3] == ("ad", "signed-in-user", "show"):
-                return {"id": "signed-in-object-id"}
-            if args[:3] == ("sre", "agent", "show"):
-                return {"id": "/subscriptions/x/resourceGroups/myrg/providers/Microsoft.App/agents/myagent"}
-            return {"result": "revoked"}
+        self.assertEqual(fake.role_calls, [
+            ("role", "assignment", "delete", "--role", "SRE Agent Author",
+             "--assignee-object-id", "my-oid", "--scope", _AGENT_ID),
+        ])
+        self.assertEqual(fake.assignments, [other])
 
-        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
-            result = command._handler({})
+    def test_unreadable_token_is_a_clear_error_and_no_role_change(self):
+        cases = {
+            "not a JWT": "not-a-jwt",
+            "bad payload": "header.!!!.signature",
+            "payload not an object": _fake_jwt(["oid"]),
+            "no oid claim": _fake_jwt({"tid": "tenant-1"}),
+            "empty oid": _fake_jwt({"oid": " ", "tid": "tenant-1"}),
+        }
+        for label, token in cases.items():
+            for command_cls in (GrantAccess, RevokeAccess):
+                with self.subTest(label, command=command_cls.__name__):
+                    fake = _GraphFreeNestedCli(self, token=token)
+                    with self.assertRaises(CLIError) as raised:
+                        self._run(command_cls, fake, role="reader")
+                    message = str(raised.exception)
+                    self.assertIn("Could not read your object ID", message)
+                    self.assertNotIn(token, message)
+                    self.assertEqual(fake.role_calls, [])
 
-        self.assertEqual(result, {"result": "revoked"})
-        self.assertEqual(
-            calls[-1],
-            (
-                "role", "assignment", "delete",
-                "--role", "SRE Agent Author",
-                "--assignee", "signed-in-object-id",
-                "--scope", "/subscriptions/x/resourceGroups/myrg/providers/Microsoft.App/agents/myagent",
-            ),
-        )
+    def test_unsupported_account_type_is_rejected(self):
+        fake = _GraphFreeNestedCli(self, user_type="")
+        with self.assertRaises(CLIError) as raised:
+            self._run(GrantAccess, fake, role="reader")
+        self.assertIn("Unsupported signed-in account type", str(raised.exception))
+        self.assertEqual(fake.role_calls, [])
+
+    def test_token_from_another_tenant_is_rejected(self):
+        fake = _GraphFreeNestedCli(self, claims={"oid": "my-oid", "tid": "tenant-2"}, tenant="tenant-1")
+        with self.assertRaises(CLIError) as raised:
+            self._run(GrantAccess, fake, role="reader")
+        self.assertIn("tenant-2", str(raised.exception))
+        self.assertEqual(fake.role_calls, [])
 
     def test_both_assignee_and_assignee_me_rejected(self):
         command = _bare_command(
@@ -789,33 +898,31 @@ class AssigneeMeTests(unittest.TestCase):
                 command._handler({})
 
     def test_access_list_queries_role_assignments_on_agent_scope(self):
-        """New: 'az sre access list' -- the gap found live-testing the CLI
-        purely via --help (granting access had no documented way to verify
-        who has it afterward)."""
-        command = _bare_command(AccessList, name="myagent", resource_group="myrg")
-        calls = []
-
-        def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
-            calls.append(args)
-            if args[:3] == ("sre", "agent", "show"):
-                return {"id": "/subscriptions/x/resourceGroups/myrg/providers/Microsoft.App/agents/myagent"}
-            return [{"roleDefinitionName": "SRE Agent Reader"}]
-
+        """Default 'access list' returns object IDs without Microsoft Graph."""
+        assignment = {"id": "a1", "principalId": "my-oid", "principalType": "User",
+                      "roleDefinitionName": "SRE Agent Reader", "scope": _AGENT_ID}
+        fake = _GraphFreeNestedCli(self, assignments=[assignment])
+        command = _bare_command(AccessList, name="myagent", resource_group="myrg", show_names=False)
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
+             patch("azext_sre.custom._cli_invoke", fake):
             result = command._handler({})
 
-        self.assertEqual(result, [{"roleDefinitionName": "SRE Agent Reader"}])
-        self.assertEqual(
-            calls[-1],
-            (
-                "role", "assignment", "list",
-                "--scope", "/subscriptions/x/resourceGroups/myrg/providers/Microsoft.App/agents/myagent",
-            ),
-        )
+        self.assertEqual(result, [assignment])
+        self.assertEqual(fake.role_calls, [
+            ("role", "assignment", "list", "--scope", _AGENT_ID, "--fill-principal-name", "false"),
+        ])
+
+    def test_access_list_show_names_lets_azure_cli_fill_names(self):
+        fake = _GraphFreeNestedCli(self, allow_names=True)
+        command = _bare_command(AccessList, name="myagent", resource_group="myrg", show_names=True)
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._cli_invoke", fake):
+            command._handler({})
+
+        self.assertEqual(fake.role_calls, [("role", "assignment", "list", "--scope", _AGENT_ID)])
 
     def test_access_list_raises_when_agent_not_found(self):
-        command = _bare_command(AccessList, name="ghost", resource_group="rg")
+        command = _bare_command(AccessList, name="ghost", resource_group="rg", show_names=False)
 
         def fake_cli_invoke(cli_ctx, *args, allow_missing=False):
             return None
@@ -825,10 +932,62 @@ class AssigneeMeTests(unittest.TestCase):
             with self.assertRaises(ResourceNotFoundError):
                 command._handler({})
 
-    def test_resolve_signed_in_user_object_id_raises_when_missing(self):
-        with patch("azext_sre.custom._cli_invoke", lambda cli_ctx, *args, **kwargs: {}):
-            with self.assertRaises(CLIError):
-                _resolve_signed_in_user_object_id(SimpleNamespace())
+
+class AssigneeMeSubscriptionTenantTests(unittest.TestCase):
+    """Regression: 'az ad signed-in-user show' ignored --subscription and
+    used the default subscription's tenant, so with a login spanning several
+    tenants --assignee-me picked the wrong object ID (PrincipalNotFound).
+    Uses the real _cli_invoke so its --subscription forwarding is exercised."""
+
+    TOKENS = {
+        "sub-default": _fake_jwt({"oid": "oid-default", "tid": "tenant-default"}),
+        "sub-other": _fake_jwt({"oid": "oid-other", "tid": "tenant-other"}),
+    }
+    TENANTS = {"sub-default": "tenant-default", "sub-other": "tenant-other"}
+
+    def _grant(self, subscription):
+        seen = []
+        fake_cli = SimpleNamespace(out_file=None, result=None)
+
+        def invoke(args, out_file=None):  # pylint: disable=unused-argument
+            seen.append(list(args))
+            self.assertNotEqual(args[0], "ad")
+            self.assertNotIn("--assignee", args)
+            sub = args[args.index("--subscription") + 1] if "--subscription" in args else "sub-default"
+            if args[:2] == ["account", "get-access-token"]:
+                result = {"accessToken": self.TOKENS[sub]}
+            elif args[:2] == ["account", "show"]:
+                result = {"id": sub, "tenantId": self.TENANTS[sub], "user": {"type": "user"}}
+            elif args[:3] == ["sre", "agent", "show"]:
+                result = {"id": f"/subscriptions/{sub}/resourceGroups/myrg/providers/Microsoft.App/agents/myagent"}
+            elif args[:3] == ["role", "assignment", "list"]:
+                self.assertIn("--fill-principal-name", args)
+                result = []
+            else:
+                self.assertEqual(args[:3], ["role", "assignment", "create"])
+                result = {"principalId": args[args.index("--assignee-object-id") + 1]}
+            fake_cli.result = SimpleNamespace(result=result)
+            return 0
+
+        fake_cli.invoke = invoke
+        command = _bare_command(GrantAccess, name="myagent", resource_group="myrg", role="reader",
+                                assignee=None, assignee_me=True)
+        command.cli_ctx = SimpleNamespace(data={"subscription_id": subscription} if subscription else {})
+        with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azure.cli.core.get_default_cli", return_value=fake_cli):
+            return command._handler({}), seen
+
+    def test_assignee_me_uses_the_requested_subscriptions_tenant(self):
+        result, seen = self._grant("sub-other")
+
+        self.assertEqual(result["principalId"], "oid-other")
+        for args in seen:
+            self.assertEqual(args[-2:], ["--subscription", "sub-other"], args)
+        self.assertNotIn("oid-default", [arg for args in seen for arg in args])
+
+    def test_assignee_me_without_subscription_uses_the_default(self):
+        result, _ = self._grant(None)
+        self.assertEqual(result["principalId"], "oid-default")
 
 
 class ManagedResourceScopeResolutionTests(unittest.TestCase):
@@ -909,6 +1068,8 @@ class ManagedResourceCommandTests(unittest.TestCase):
                 return {"principalId": "agent-principal-id"}
             if args[:2] == ("account", "show"):
                 return {"id": "sub-guid"}
+            if args[:3] == ("role", "assignment", "list"):
+                return []
             return {"result": "created"}
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
@@ -917,17 +1078,16 @@ class ManagedResourceCommandTests(unittest.TestCase):
 
         self.assertEqual(result, [{"result": "created"}, {"result": "created"}])
         role_assignment_calls = [c for c in calls if c[:2] == ("role", "assignment")]
-        self.assertEqual(len(role_assignment_calls), 2)
-        self.assertEqual(
-            role_assignment_calls[0],
-            ("role", "assignment", "create", "--role", "Reader",
-             "--assignee", "agent-principal-id", "--scope", "/subscriptions/sub-guid"),
-        )
-        self.assertEqual(
-            role_assignment_calls[1],
-            ("role", "assignment", "create", "--role", "Monitoring Contributor",
-             "--assignee", "agent-principal-id", "--scope", "/subscriptions/sub-guid"),
-        )
+        expected = []
+        for role in ("Reader", "Monitoring Contributor"):
+            expected += [
+                ("role", "assignment", "list", "--assignee-object-id", "agent-principal-id",
+                 "--role", role, "--scope", "/subscriptions/sub-guid", "--fill-principal-name", "false"),
+                ("role", "assignment", "create", "--role", role,
+                 "--assignee-object-id", "agent-principal-id", "--assignee-principal-type", "ServicePrincipal",
+                 "--scope", "/subscriptions/sub-guid"),
+            ]
+        self.assertEqual(role_assignment_calls, expected)
 
     def test_revoke_deletes_both_role_assignments_on_target_scope(self):
         command = _bare_command(
@@ -952,7 +1112,7 @@ class ManagedResourceCommandTests(unittest.TestCase):
         for call, role in zip(role_assignment_calls, MANAGED_RESOURCE_ROLES):
             self.assertEqual(
                 call,
-                ("role", "assignment", "delete", "--role", role, "--assignee", "agent-principal-id",
+                ("role", "assignment", "delete", "--role", role, "--assignee-object-id", "agent-principal-id",
                  "--scope", "/providers/Microsoft.Management/managementGroups/my-mg"),
             )
 
@@ -972,7 +1132,8 @@ class ManagedResourceCommandTests(unittest.TestCase):
 
         self.assertEqual(result, [{"roleDefinitionName": "Reader"}])
         self.assertEqual(
-            calls[-1], ("role", "assignment", "list", "--assignee", "agent-principal-id", "--all"),
+            calls[-1], ("role", "assignment", "list", "--assignee-object-id", "agent-principal-id", "--all",
+                        "--fill-principal-name", "false"),
         )
 
     def test_grant_raises_when_agent_has_no_identity(self):
@@ -4523,7 +4684,7 @@ class InternalFeatureHelpVisibilityTests(unittest.TestCase):
         for hidden in ("Icm", "Dgrep", "GenevaMetrics", "S360"):
             self.assertNotIn(hidden, third_party)
             self.assertIn(hidden, internal)
-        for unlisted in ("Kusto", "Documentation", "KnowledgeText"):
+        for unlisted in ("Kusto", "Documentation", "KnowledgeText", "Outlook", "Teams"):
             self.assertNotIn(unlisted, internal)
         self.assertIn("MonitorClient", third_party)
         self.assertEqual(_normalize_data_connector_type(PORTAL_CONNECTOR_NAMES["MonitorClient"]), "MonitorClient")
@@ -5283,11 +5444,11 @@ class _TestGrantAccessToMe(_GrantAccessToMeMixin, _NoOpPostOperationsBase):
 
 
 class GrantAccessToMeTests(unittest.TestCase):
-    """--grant-access-to-me on 'agent create' collapses the
-    create -> `az ad signed-in-user show` -> grant-access dance the user
-    found confusing into a single flag."""
+    """--grant-access-to-me on 'agent create' runs
+    'sre access grant --assignee-me' after provisioning, so "me" is resolved
+    the same Graph-free way as 'access grant'."""
 
-    def _run(self, calls, signed_in_user=None, **extra_args):
+    def _run(self, calls, grant_result=None, **extra_args):
         args = {
             "agent_name": "myagent", "resource_group": "rg",
             "grant_access_to_me": None,
@@ -5297,9 +5458,9 @@ class GrantAccessToMeTests(unittest.TestCase):
 
         def fake_cli_invoke(cli_ctx, *cmd_args, allow_missing=False):
             calls.append(cmd_args)
-            if cmd_args[:3] == ("ad", "signed-in-user", "show"):
-                return signed_in_user if signed_in_user is not None else {"id": "user-object-id"}
-            return {"properties": {"value": "stub"}}
+            self.assertNotEqual(cmd_args[:1], ("ad",), f"Microsoft Graph command: {cmd_args}")
+            self.assertNotIn("--assignee", cmd_args)
+            return grant_result if grant_result is not None else {"principalId": "user-object-id"}
 
         with patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
             command.post_operations()
@@ -5310,20 +5471,14 @@ class GrantAccessToMeTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_resolves_signed_in_user_and_calls_grant_access(self):
-        calls = self._run([], grant_access_to_me="admin")
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0][:3], ("ad", "signed-in-user", "show"))
-        grant_call = calls[1]
-        self.assertEqual(grant_call[:3], ("sre", "access", "grant"))
-        self.assertIn("myagent", grant_call)
-        self.assertIn("rg", grant_call)
-        self.assertIn("admin", grant_call)
-        self.assertIn("user-object-id", grant_call)
-
-    def test_raises_if_signed_in_user_cannot_be_resolved(self):
-        with self.assertRaises(CLIError) as raised:
-            self._run([], grant_access_to_me="reader", signed_in_user={})
-        self.assertIn("signed-in user", str(raised.exception))
+        with self.assertLogs("cli.azext_sre.custom", level="WARNING") as logs:
+            calls = self._run([], grant_access_to_me="admin")
+        self.assertEqual(calls, [(
+            "sre", "access", "grant", "--agent-name", "myagent", "--resource-group", "rg",
+            "--role", "admin", "--assignee-me",
+        )])
+        self.assertIn("SRE Agent Administrator", logs.output[-1])
+        self.assertIn("user-object-id", logs.output[-1])
 
     def test_agent_create_schema_exposes_grant_access_to_me(self):
         schema = Create._build_arguments_schema()
@@ -5691,6 +5846,15 @@ class TableTransformerTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertIsNone(rows[0]["GrantedOn"])
 
+    def test_access_list_format_shows_object_id_when_names_are_not_filled(self):
+        from azext_sre._transformers import access_list_table_format
+
+        without_name = dict(self._ROLE_ASSIGNMENT)
+        del without_name["principalName"]
+        empty_name = dict(self._ROLE_ASSIGNMENT, principalName="")
+        rows = access_list_table_format([without_name, empty_name, self._ROLE_ASSIGNMENT])
+        self.assertEqual([row["Principal"] for row in rows], ["user-id", "user-id", "someone@example.com"])
+
     def test_table_transformers_registered_for_both_commands(self):
         from azext_sre._transformers import TABLE_TRANSFORMERS
 
@@ -5928,8 +6092,6 @@ class GrantAccessToMeFailureTests(unittest.TestCase):
                                 grant_access_to_me="admin")
 
         def fake_cli_invoke(cli_ctx, *cmd_args, allow_missing=False):
-            if cmd_args[:3] == ("ad", "signed-in-user", "show"):
-                return {"id": "user-object-id"}
             raise CLIError("AuthorizationFailed")
 
         with patch("azext_sre.custom._cli_invoke", fake_cli_invoke):

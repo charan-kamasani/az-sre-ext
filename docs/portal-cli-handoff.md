@@ -528,8 +528,9 @@ Learn: [Set up Teams connector](https://learn.microsoft.com/azure/sre-agent/set-
 | Edit the connector | Portal | Connectors, the connector's **...** > Edit connector. |
 | Delete the connector | CLI | `az sre connector delete -g "$RG" --agent-name "$AGENT" --name <connector> --yes` |
 
-`az sre connector create --data-connector-type "Microsoft Teams"` creates the connector
-resource, but it can't sign in to Teams, so create the connector in the portal.
+`az sre connector create` doesn't create Teams connectors and points to the portal. The
+service creates them as managed connectors, and one created without a Teams sign-in can't
+post anything.
 
 ## Tutorials: Diagnose
 
@@ -972,8 +973,9 @@ Learn: [Set up Outlook connector](https://learn.microsoft.com/azure/sre-agent/ou
 | Send a test email | Portal | New chat. |
 | Edit or delete the connector | Portal | Connectors, the connector's **...** menu. |
 
-`az sre connector create --data-connector-type "Office 365 Outlook"` can't sign in to Outlook,
-and in this project's tests the service rejected it with an internal server error.
+`az sre connector create` doesn't create Outlook connectors and points to the portal. The
+service creates them as managed connectors, and it rejects a create that doesn't choose a
+sign-in method.
 
 ### Set up MCP connector
 

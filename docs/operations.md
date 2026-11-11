@@ -77,12 +77,37 @@ exact mapping, confirmed against real `az role definition list` output.
 Pass `--assignee-me` instead of `--assignee` to grant yourself access without
 looking up your own object ID first (also available as
 `az sre agent create --grant-access-to-me <role>` at agent-creation time).
+`--assignee-me` reads your object ID (`oid`) from an Azure Resource Manager
+access token and your principal type (`User` or `ServicePrincipal`) from
+`az account show`, both for the command's `--subscription`, so it picks the
+right tenant when your login spans several. It then calls
+`az role assignment create --assignee-object-id ... --assignee-principal-type ...`
+after checking with `az role assignment list --fill-principal-name false`
+whether the assignment already exists (Azure CLI's own "already exists"
+handling looks up names in Microsoft Graph).
 Use `az sre access list -g myrg --agent-name myagent` to see every current
 role assignment on the agent (added after a help-only live walkthrough found
 no documented way to verify a grant afterward — a thin wrapper over
-`az role assignment list --scope <agent-id>`). `-o table` shows a curated
-`Principal`/`Type`/`Role`/`GrantedOn` view (not every raw field) — see the
+`az role assignment list --scope <agent-id> --fill-principal-name false`).
+It shows object IDs by default; add `--show-names` to fill in display names
+from Microsoft Graph. `-o table` shows a curated
+`Principal`/`Type`/`Role`/`GrantedOn` view (not every raw field), with the
+object ID in `Principal` when there's no name — see the
 same note under `sre managed-resource list` below for why.
+
+Only two paths need Microsoft Graph: `access grant/revoke --assignee <email,
+UPN or ID>` (Azure CLI resolves the value through Graph) and
+`access list --show-names`. Everything else, including `--assignee-me`,
+`--grant-access-to-me` and `managed-resource grant/revoke/list`, uses only
+Azure Resource Manager. **macOS note:** Conditional Access token protection
+in some organizations (for example Microsoft's) rejects Microsoft Graph
+tokens from Azure CLI on macOS (`AADSTS530084`), because Azure CLI doesn't
+use the sign-in broker there by default (`core.enable_broker_on_mac` is
+false). Azure CLI then falls back to an interactive browser sign-in, which
+can wait indefinitely in a non-interactive shell. On such machines, use
+`--assignee-me` and skip `--show-names`; to grant someone else, call
+`az role assignment create --assignee-object-id <id> --assignee-principal-type <type> --scope <agent id>`
+directly.
 
 **`--grant-access-to-me` cannot be combined with `--no-wait`** on
 `agent create`: the grant runs in the AAZ command's `post_operations()` hook,
@@ -193,9 +218,12 @@ other commands against real data: it can print secrets in request and response
 bodies.
 
 `--data-connector-type` also accepts the product's own friendly names
-(`"Azure Data Explorer"`, `"MCP server"`, `"Office 365 Outlook"`, etc. — see
+(`"Azure Data Explorer"`, `"MCP server"`, `"Log Analytics Workspace"`, etc. — see
 the friendly-names table below), case-insensitively, as an alias for the
-raw wire value. `--data-source` is required for `Kusto` connectors (learned
+raw wire value. Office 365 Outlook, Microsoft Teams and the portal's other
+managed connectors are rejected with a pointer to the portal (see
+[Managed connectors](#managed-connectors-outlook-teams-gmail-and-others)).
+`--data-source` is required for `Kusto` connectors (learned
 from a real server error, not documented in the generated help). Note:
 `"Azure Data Explorer"` (the bare friendly name, matching what the portal
 calls it) resolves to `KustoClient`, not `Kusto` — the portal's own picker
@@ -290,10 +318,12 @@ accepts as an alias, case-insensitively, alongside the raw wire value:
 | `KustoClient` | Azure Data Explorer — this is the exact type the portal creates when you pick "Azure Data Explorer" (confirmed: the portal's picker has no separate entry for plain `Kusto`, and always persists that selection as `KustoClient`) |
 | `Kusto` | Azure Data Explorer Cluster — pinned-single-cluster type; has no *direct* top-level portal picker entry, but the portal creates it indirectly as a per-cluster-group child connector under the "Azure Data Explorer" wizard's optional "Add clusters" step; requires `--data-source` |
 | `Mcp` | MCP server (a.k.a. "User provided connector"; portal Title corrected 2026-11-04 — not "Custom MCP") |
-| `Outlook` | Office 365 Outlook |
-| `Teams` | Microsoft Teams |
 | `Icm` | IcM connector (portal Title corrected 2026-11-04 — subtitle is "Microsoft IcM") |
 | `Dgrep` | DGrep (portal Title corrected 2026-11-04 — subtitle is "Microsoft DGrep") |
+
+`Outlook` (Office 365 Outlook) and `Teams` (Microsoft Teams) were in this
+table until 2026-11-10. The CLI now rejects them and points to the portal;
+see [Managed connectors](#managed-connectors-outlook-teams-gmail-and-others).
 
 `KnowledgeText`/`KnowledgeFile`/`KnowledgeWebPage`/`KnowledgeRepository`
 have no separate portal-facing connector name — they're reached through the
@@ -325,10 +355,10 @@ update it whenever a new wire value or portal card is confirmed.
 | Splunk | Splunk | *(none)* | **Not implemented** — same caveat |
 | Hawkeye | Hawkeye (NeuBird) | *(none)* | **Not implemented** — same caveat |
 | S360 connector | S360 | `S360` | **Implemented** — schema/create-level verified |
-| Gmail | Google Gmail | *(none)* | **Not implemented** — Connector Gateway/"Additional connectors" platform, no public ARM surface (see below) |
-| Yammer | Microsoft Viva Engage | *(none)* | **Not implemented** — same (Connector Gateway) |
-| Office 365 Outlook | Microsoft Outlook | `Outlook` | **Implemented** — live-verified (also listed under "Additional connectors" in the portal, but has its own dedicated wire value here, unlike the true Gateway connectors) |
-| Microsoft Teams | Microsoft Teams | `Teams` | **Implemented** — live-verified (same note as Outlook) |
+| Gmail | Google Gmail | *(none)* | **Not implemented** — managed connector (Connector Gateway/"Additional connectors"); `az sre` points to the portal (see [Managed connectors](#managed-connectors-outlook-teams-gmail-and-others)) |
+| Yammer | Microsoft Viva Engage | *(none)* | **Not implemented** — same (managed connector) |
+| Office 365 Outlook | Microsoft Outlook | *(none — `Outlook` rejected)* | **Not supported** — managed connector; `az sre` points to the portal. Corrected 2026-11-10: this row said "live-verified", but no create had been verified (see [Managed connectors](#managed-connectors-outlook-teams-gmail-and-others)) |
+| Microsoft Teams | Microsoft Teams | *(none — `Teams` rejected)* | **Not supported** — managed connector; `az sre` points to the portal. The create succeeds, but the connector is signed out and has no tools |
 | MCP server (custom) | User provided connector | `Mcp` | **Implemented** — same as "MCP server" above, listed twice in the portal under different categories |
 | Limn | Limn | *(none)* | **Not implemented** — no confirmed wire value |
 | Engineering Hub | Engineering Hub | *(none)* | **Not implemented** — no confirmed wire value |
@@ -427,7 +457,10 @@ fixed by renaming or adding more `--data-connector-type` values: adding
 `Jira`/`Slack`/`SharePoint` etc. as CLI-accepted values today would
 immediately fail server-side, because the ARM-exposed resource genuinely
 doesn't support them yet. Revisit this once/if the Connector Gateway
-control plane grows a public ARM surface.
+control plane grows a public ARM surface. (Update 2026-11-10: the service
+now backs the old `Outlook` and `Teams` ARM types with managed connectors
+too, and Learn documents a data-plane REST API for them; see
+[Managed connectors](#managed-connectors-outlook-teams-gmail-and-others).)
 
 **Confirmed authoritatively 2026-11-05** by Dalibor Kovacevic (SRE Agent
 team) in response to a direct question: "yes they are a separate rp and a
@@ -440,6 +473,51 @@ runtime calls into it, and it hands back a tools payload the agent renders
 extend into. Bruce Moe, Jitin John, and Jack Pa were named as the SMEs for
 deeper follow-up if/when `az`-level support for these connectors is
 pursued.
+
+### Managed connectors: Outlook, Teams, Gmail and others
+
+Checked live on 2026-11-10 against a disposable agent (Azure CLI 2.92.0,
+master `7175835`):
+
+- `az sre connector create --data-connector-type "Office 365 Outlook"` (or
+  `Outlook`) failed with a synchronous `400`:
+  `(InvalidRequestParameter) Managed connector 'Outlook' requires connectionParameterValueSet. is invalid.`
+  The service now creates the `Outlook` and `Teams` wire values as
+  Connector Gateway managed connectors. Office 365 Outlook's managed API
+  (`office365`) offers two sign-in methods, so the service needs
+  `extendedProperties.connectionParameterValueSet` to pick one, and the CLI
+  didn't send it. Even with it, the connector comes up signed out with no
+  tools, and the CLI can't do the OAuth sign-in. The `(InternalServerError)`
+  recorded on 2026-10-28 was probably the same failure: until a
+  control-plane fix merged on 2026-11-04, the control plane turned the data
+  plane's plain-string error into a 500.
+- `--data-connector-type "Microsoft Teams"` created the connector, plus a
+  gateway connection that was signed out (`overallStatus: Error`) and an
+  MCP server config with no tools. It can't post anything until it's set up
+  in the portal.
+- On agents with the `connectorGatewayEnabled` feature, the portal hides
+  the old Outlook and Teams cards. Its "Office 365 Outlook" and "Microsoft
+  Teams" cards create managed connectors through the agent's
+  `/api/v2/connectorV2` API instead, with a sign-in step and a Set up tools
+  step.
+
+So `connector create` and `connector update` now reject `Outlook`, `Teams`
+and the names of the managed connectors the portal's picker shows by
+default (Gmail, Yammer/Viva Engage, SharePoint, OneDrive for Business, Box,
+Confluence and the rest of `PORTAL_MANAGED_CONNECTORS` in `custom.py`) with
+`Set up <name> in the portal: Connectors > Add connector.` Connectors the
+portal only shows with its experimental-connectors flag (Slack, Jira,
+Outlook.com, ...) still get the generic "must be one of" error. Existing
+`Outlook` and `Teams` connectors still show up in `connector list`/`show`
+(`-o table` keeps their portal names), and `connector delete` removes the
+ARM connector, its gateway connection and its MCP server config (verified
+for both on 2026-11-10).
+
+Learn documents the managed connector REST API on the agent's data plane
+(`/api/v2/connectorV2/managedApis`, `connections` and `mcpservers`; see
+[Set up a managed connector with the REST API](https://learn.microsoft.com/azure/sre-agent/setup-managed-connector#set-up-a-managed-connector-with-the-rest-api)).
+`az sre` doesn't call it, and OAuth connectors still need the portal to
+sign in.
 
 ### Connector authentication reference: who actually needs consent?
 
@@ -462,7 +540,7 @@ plus source-level confirmation against `sreagent-runtime`
 | `Icm` | Fixed **platform-wide** service-managed identity (a single shared AME-tenant App ID, `a67bb1ee-091f-46eb-a5f3-d45f1aed9332` — confirmed via live portal wizard screenshot, not the agent's own identity) | **No** | RBAC-only, same shape as Kusto but the identity is shared across all agents/tenants, not per-agent. Portal explicitly states "Authentication via certificate is deprecated by ICM. Managed identity is the only supported authentication method" — confirms `IcmDataConnectorCertAuthService.cs`'s cert path is legacy/being phased out. |
 | `Dgrep` | Managed identity or Key Vault certificate, scope `https://monitor.azure.com/` | **No** | RBAC/cert-only, not user-facing. |
 | `Mcp` | One of 5 types set via `extendedProperties.authType` (confirmed in `McpDataConnector.cs`): `None`, `BearerToken` (static key/PAT), `OAuth` (per-user delegated token), `EntraOAuth` (feature-flagged **off** by default -- `EnableMcpEntraOAuth = false`), `SpecOAuth` (dynamic client registration / DCR) | **Depends on authType** -- `OAuth`/`SpecOAuth` yes, others no | **CLI flags added 2026-11-05**: `connector create --data-connector-type Mcp` now supports `--bearer-token`, `--managed-identity-auth`/`--mi-token-scope`, and `--oauth-dcr`/`--oauth-scopes`/`--oauth-client-name`, matching the real portal wizards 4 "Authentication method" choices -- no auth / static-token / managed identity / OAuth with Dynamic Client Registration (the DCR option is live today and is the one that shows a real "Authorize" browser redirect). All three were previously a real gap vs. the portal; now closed (schema/create-level verified, see custom.pys _ConnectorConvenienceArgsMixin). |
-| `Outlook` / `Teams` | Unresolved from code alone — likely resolves through the separate Connector Gateway platform at runtime, possibly pre-consented at tenant/platform level | **Unconfirmed** | Live-tested this session: `Outlook` create fails with a real `(InternalServerError)` in this tenant (pre-existing, documented below); `Teams` create succeeds but its ARM resource shows `extendedProperties: null` and `identity: ""` — **zero auth/consent signal visible from the CLI or ARM**, so this CLI's consent-status annotation can never fire for it regardless of what's actually happening at runtime. Flagged as an open question for the SRE Agent product team, not resolved here. |
+| `Outlook` / `Teams` | Connector Gateway managed connection: OAuth sign-in as a user (Office 365 Outlook also offers a federated identity credential) | **Yes**, in the portal | Updated 2026-11-10: the service creates both as managed connectors. The sign-in state is on the gateway connection (`GET /api/v2/connectorV2/connections/{name}` on the agent: `overallStatus`, `authenticatedUser`), not on the ARM resource, so `consentStatus` never appears for them. `az sre` no longer creates them; see [Managed connectors](#managed-connectors-outlook-teams-gmail-and-others). |
 | Connector Gateway types (Jira, Slack, SharePoint, ServiceNow, Salesforce, "Engineering Hub", and 30+ others, each suffixed `*CG` in the runtime) | OAuth, always | **Yes, always** | Confirmed live: a real `login.microsoftonline.com/.../oauth2/v2.0/authorize` redirect was observed for an "Engineering Hub" connector. The lightweight `Microsoft.App/agents/connectors` ARM resource this CLI talks to is not the full picture for these — real config lives in a separate `Microsoft.Web/connectorGateways`/`connections` resource fetched via `ConnectorGatewayArmClient.cs`. None of these types are reachable through this CLI today (see Connector Gateway section above). |
 
 **Practical takeaway for CLI users**: after `connector create` succeeds,
@@ -473,8 +551,8 @@ to grant RBAC (see `_connector_access_reminder()` in `custom.py`). For
 `_annotate_connector_consent_status()` output and the portal consent link
 (for `SpecOAuth`, use the new `--oauth-dcr true` flag to create the
 connector, then complete the browser consent in the portal).
-For `Outlook`/`Teams`, there is currently no reliable signal either way —
-verify by asking the agent to actually use the connector in chat.
+For `Outlook`/`Teams`, set the connector up in the portal, which shows
+whether its connection is signed in.
 
 ### Per-`--data-connector-type` live-verification status
 
@@ -485,14 +563,14 @@ show/list → delete) against a real agent on 2026-10-28:
 |---|---|---|
 | `Kusto` | Live-verified | Requires `--data-source`. |
 | `Mcp` | Live-verified | Both `--github true` and `--mcp-endpoint <url>` confirmed. A real server-side check rejects an MCP endpoint that shares a host with an existing `Kusto` connector ("HTTP MCP and Kusto requests on the same host cannot be distinguished safely") — not a CLI bug, pick a distinct host. |
-| `Teams` | Live-verified | No `--data-source` needed in this tenant; `extendedProperties` empty on read-back (write-only, same as other types). |
+| `Teams` | Create succeeded; connector unusable; no longer accepted | Create succeeded without `--data-source`. Rechecked 2026-11-10: the service backs it with a gateway connection that's signed out (`overallStatus: Error`) and an MCP server config with no tools, so it can't post anything until it's set up in the portal. The CLI now rejects `Teams` and points to the portal. |
 | `Icm` | Live-verified | Singleton per agent; service auto-populates `extendedProperties.icmEndpointMode: "ProdOnly"` regardless of `--data-source` passed. |
 | `KustoClient` | Live-verified | Kusto via the `@azure/mcp` server; `--data-source` accepted but not required. |
 | `KnowledgeText` | Live-verified | Use `--extended-properties '{"content": "..."}'` directly, or `sre knowledge create --type text --file-path <path>`. |
 | `KnowledgeFile` | Live-verified | Known service-side gap: `extendedProperties` (fileContent/fileName) always reads back empty — confirmed via the actual request body sent, not a CLI defect. |
 | `KnowledgeWebPage` | Live-verified (bug fixed this pass) | Correct shape is `--extended-properties '{"url": "..."}'` **only** — sending `--data-source` at the same time (the CLI's own prior behavior) made the service return a 500. `sre knowledge create --type webpage --url <url>` was fixed to match and now round-trips correctly. |
 | `KnowledgeRepository` | Live-verified | Use `--extended-properties '{"url": "..."}'`; `sre repo connect` is the dedicated front door for this type. |
-| `Outlook` | Blocked — real server error | `create` consistently returns `(InternalServerError) Internal server error occurred`, with and without `--data-source`. Reproduced twice; not a CLI defect (payload shape matches every other working type) — looks like this connector type isn't provisionable in this tenant/environment yet. Re-verify once a tenant known to support Outlook connectors is available. |
+| `Outlook` | Blocked — managed connector; no longer accepted | On 2026-10-28, `create` returned `(InternalServerError) Internal server error occurred`, with and without `--data-source`. Rechecked 2026-11-10: it fails with `400 (InvalidRequestParameter) Managed connector 'Outlook' requires connectionParameterValueSet. is invalid.`, because the service creates Outlook as a managed connector and needs to know which sign-in method to use. The CLI now rejects `Outlook` and points to the portal; see [Managed connectors](#managed-connectors-outlook-teams-gmail-and-others). |
 | `Dgrep` | Blocked — real server error | `create` returns `(InvalidRequestParameter) ... MDS endpoint is not approved.` — a real, environment-specific allowlist check on the service side, not a shape or CLI defect. |
 
 **2026-11-02: expanded from 11 to 25 real backend types.** The CLI's
@@ -611,11 +689,12 @@ SharePoint, Box, Power BI, Confluence, Planner, OneNote, Microsoft Forms,
 Google Sheets/Drive, Trello, RSS, Microsoft To-Do, Dropbox, FTP, Excel
 Online, Word Online, etc. — almost all marked "Preview") matches the
 already-documented `ConnectorGateway`/26-"Managed API type" story above —
-**consistent**, no new gap there. Note that `Outlook`/`Teams` already have
-their own dedicated, non-Preview, non-Gateway wire values in this CLI
-(confirmed live-verified in the table above) — they also happen to appear
-in this "Additional connectors" list, which is a portal UI grouping
-decision, not evidence they route through Connector Gateway.
+**consistent**, no new gap there. `Outlook`/`Teams` appear in this list
+because they are managed connectors too. Corrected 2026-11-10: this note
+used to call their wire values non-Gateway and live-verified, but the
+service backs both with Connector Gateway managed connectors, and on agents
+with `connectorGatewayEnabled` the portal shows only the managed cards. See
+[Managed connectors](#managed-connectors-outlook-teams-gmail-and-others).
 
 The raw export also included "Telemetry / Notification / MCP / Incidents /
 Deployment / Other" — these are portal **category filter tabs**, not
