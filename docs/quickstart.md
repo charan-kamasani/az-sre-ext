@@ -101,10 +101,10 @@ az sre managed-resource grant \
   --resource-group "$RG" \
   --agent-name "$AGENT" \
   --target-subscription "$SUBSCRIPTION_ID" \
-  --target-resource-group "<resource-group-to-monitor>"
+  --target-rg "<resource-group-to-monitor>"
 ```
 
-To cover a whole subscription, omit `--target-resource-group`. Check the result with
+To cover a whole subscription, omit `--target-rg`. Check the result with
 `az sre managed-resource list` and undo it with `az sre managed-resource revoke`.
 
 These commands default to the agent's system-assigned identity. If the runtime

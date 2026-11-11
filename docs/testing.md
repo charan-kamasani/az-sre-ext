@@ -4,7 +4,7 @@
 
 1. **Unit tests** (`src/sre/azext_sre/tests/latest/test_custom.py`) — fully
    credential-free, cover every hand-written behavior in `custom.py`: RBAC
-   role-name mapping, the networking GET-merge-PUT logic, extension
+   role-name mapping, the networking-only PATCH, extension
    create/show/list/delete resource-ID and payload shape, the base64/JSON
    extension-value codec, model-provider and data-connector-type
    normalization (including that invalid values raise `CLIError`, not a

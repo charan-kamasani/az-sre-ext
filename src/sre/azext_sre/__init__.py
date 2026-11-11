@@ -34,7 +34,7 @@ class SreCommandsLoader(AzCommandsLoader):
         # right generated module. commands.load_command_table then renames
         # every resulting "app ..." table entry back to "sre ...".
         aaz_args = args
-        if args[:1] == ["sre"]:
+        if args and args[:1] == ["sre"]:
             aaz_args = ["app", *args[1:]]
         if aaz:
             load_aaz_command_table(

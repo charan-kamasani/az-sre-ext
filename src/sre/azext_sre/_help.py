@@ -74,7 +74,7 @@ GROUP_EXAMPLES = {
     "sre agent": [
         {"name": "Create an agent with an Anthropic default model.",
          "text": ('az sre agent create --name myagent --resource-group myrg --location eastus2 '
-                   '--default-model "{provider:anthropic,name:automatic}"')},
+                  '--default-model "{provider:anthropic,name:automatic}"')},
         {"name": "Show one agent's details.",
          "text": "az sre agent show -g myrg -n myagent"},
         {"name": "List supported model providers/names in a region.",
@@ -142,10 +142,10 @@ GROUP_EXAMPLES = {
     "sre plugin": [
         {"name": "Connect a plugin marketplace, then install a plugin from it.",
          "text": ('az sre plugin marketplace create -g myrg --agent-name myagent -n contoso-plugins '
-                   '--value \'{"sourceType": "github", "sourceUrl": "https://github.com/contoso/sre-plugins"}\'\n'
-                   'az sre plugin install create -g myrg --agent-name myagent -n datadog --value '
-                   '\'{"marketplaceName": "contoso-plugins", "pluginName": "datadog", "source": '
-                   '{"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}\'')},
+                  '--value \'{"sourceType": "github", "sourceUrl": "https://github.com/contoso/sre-plugins"}\'\n'
+                  'az sre plugin install create -g myrg --agent-name myagent -n datadog --value '
+                  '\'{"marketplaceName": "contoso-plugins", "pluginName": "datadog", "source": '
+                  '{"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}\'')},
     ],
     "sre plugin marketplace": [
         {"name": "List an agent's connected plugin marketplaces.",
@@ -199,13 +199,13 @@ GROUP_EXAMPLES = {
          "text": "az sre automation http-trigger list -g myrg --agent-name myagent"},
     ],
     "sre response-plan": [
-        {"name": "Prerequisites: connect an incident platform, then create the subagent.",
+        {"name": "Connect an incident platform and subagent, then route Azure Monitor alerts "
+                 "mentioning 'disk space' to that subagent.",
          "text": "az sre agent update -g myrg -n myagent "
                  "--incident-management-configuration \"{type:AzMonitor}\"\n"
                  "az sre subagent create -g myrg --agent-name myagent "
-                 "-n incident-responder --value @subagent.json"},
-        {"name": "Route Azure Monitor alerts mentioning 'disk space' to a subagent.",
-         "text": "az sre response-plan create -g myrg --agent-name myagent "
+                 "-n incident-responder --value @subagent.json\n"
+                 "az sre response-plan create -g myrg --agent-name myagent "
                  "-n disk-space --platform AzMonitor --subagent incident-responder "
                  "--title-contains \"disk space\" --mode review "
                  "--instructions \"Gather disk-usage evidence.\""},
