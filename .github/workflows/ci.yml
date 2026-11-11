@@ -83,11 +83,13 @@ jobs:
           python -m venv "$RUNNER_TEMP/azdev-venv"
           source "$RUNNER_TEMP/azdev-venv/bin/activate"
           python -m pip install --upgrade pip
-          python -m pip install azdev wheel build flake8 pylint
+          # Pinned to the last green set so new azdev/pylint/azure-cli releases
+          # can't change lint results unannounced; bump deliberately.
+          python -m pip install azdev==0.2.15 pylint==4.1.3 astroid==4.3.4 flake8==7.5.0 wheel==0.48.0 build==1.6.1
 
           AZURE_CLI_DIR="$RUNNER_TEMP/azure-cli"
           AZDEV_REPO="$RUNNER_TEMP/azdev-ext-repo"
-          git clone --depth=1 https://github.com/Azure/azure-cli.git "$AZURE_CLI_DIR"
+          git clone --depth=1 --branch azure-cli-2.92.0 https://github.com/Azure/azure-cli.git "$AZURE_CLI_DIR"
 
           mkdir -p "$AZDEV_REPO/src"
           cp -r src/sre "$AZDEV_REPO/src/sre"

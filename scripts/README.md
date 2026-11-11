@@ -8,7 +8,8 @@
   upstream release can't break CI unannounced; bump pins deliberately.
 - **azdev-lint**: `check_command_loader.py`, `azdev style sre` and
   `azdev linter` at medium severity, using the AI Gateway lint config
-  vendored in `.github/lint-config/`. Fails if the linter cannot load the
+  vendored in `.github/lint-config/`. `azdev`, `pylint`, `flake8` and the
+  Azure CLI source (tag `azure-cli-2.92.0`) are pinned. Fails if the linter cannot load the
   extension (which would otherwise "pass" with zero commands checked).
 - **wheel-smoke** (Linux on Azure CLI 2.75.0 minimum and 2.81.0 pinned;
   Windows and macOS on 2.81.0): `verify_installed_wheel.py` installs the
