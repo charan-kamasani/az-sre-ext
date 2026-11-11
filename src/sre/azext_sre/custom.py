@@ -1017,11 +1017,13 @@ class Create(  # pylint: disable=too-many-ancestors
 class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeArgMixin, _GeneratedUpdate):
     """Update an SRE Agent.
 
-    PagerDuty matches the portal's Incidents > Connect an incident platform
-    > PagerDuty workflow. It uses an ARM PATCH on the agent resource, not
-    the separate Connector Gateway used by Jira, Slack and SharePoint.
-    --connection-key is the PagerDuty REST API access key; --obo-user is
-    the identity the agent acts under when resolving or commenting on incidents.
+    PagerDuty and ServiceNow set the same agent property as the portal's
+    Incidents > Connect an incident platform workflow, not the separate
+    Connector Gateway used by Jira, Slack and SharePoint. The portal also
+    saves which PagerDuty services or ServiceNow assignment group to index;
+    set that in the portal. --connection-key is the PagerDuty REST API
+    access key; --obo-user is the identity the agent acts under when
+    resolving or commenting on incidents.
 
     ServiceNow uses Basic Auth: set --connection-url to the instance URL
     and --connection-key to the credentials.

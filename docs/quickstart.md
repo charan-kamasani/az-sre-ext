@@ -190,7 +190,9 @@ az sre response-plan create \
   --mode review
 ```
 
-Pause the plan without deleting it with `az sre response-plan disable`.
+Pause the plan without deleting it with `az sre response-plan disable`. For PagerDuty or
+ServiceNow, and for the steps that still need the portal, see
+[Step 4: Set up incident response](portal-cli-handoff.md#step-4-set-up-incident-response).
 
 ## Clean up
 
@@ -212,6 +214,8 @@ az group delete \
 ## Next steps
 
 - [CLI reference](cli-reference.md): every command, option and example
+- [Portal and CLI handoff guide](portal-cli-handoff.md): each Microsoft Learn tutorial step, with
+  the command to run or the portal page to use
 - [Connector types](connector-types.md): the values for `--data-connector-type`
 - [Operations guide](operations.md): connectors, networking, RBAC and incident handling in depth
 - Questions or bugs: [open an issue](https://github.com/charan-kamasani/az-sre-ext/issues)

@@ -94,8 +94,11 @@ clear `CLIError` instead of silently never granting access.
 The mirror image is `az sre managed-resource grant/revoke/list` — instead of
 granting a person access *to* the agent, it grants the agent's own managed
 identity Reader + Monitoring Contributor *on* an external subscription,
-resource group, or management group (matches the portal's Build + setup >
-Context > Managed resources page):
+resource group, or management group. This is the role-assignment half of the
+portal's Build + setup > Context > Managed resources page: the portal also
+adds the scope to `properties.knowledgeGraphConfiguration.managedResources`,
+and this command doesn't, so the scope isn't listed on that page (see the
+[portal and CLI handoff guide](portal-cli-handoff.md#what-the-cli-does-differently)):
 
 ```bash
 az sre managed-resource grant -g myrg --agent-name myagent \

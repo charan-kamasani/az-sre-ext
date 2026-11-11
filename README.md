@@ -181,6 +181,7 @@ Most commands are generated from the `Microsoft.App/agents` API spec under
 |---|---|
 | [CLI ergonomics reference](docs/cli-reference.md) | Every group, command, exact syntax, option, and default — generated, never drifts |
 | [Quickstart](docs/quickstart.md) | Create an agent, connect sources and route incidents, from the CLI |
+| [Portal and CLI handoff](docs/portal-cli-handoff.md) | Each Microsoft Learn tutorial step, with the `az sre` command to run or the portal page to use |
 | [Connector types](docs/connector-types.md) | Values for `--data-connector-type` and their portal names |
 | [CLI shape design](docs/shape-design.md) | Why the command surface is flat top-level nouns instead of everything nested under `agent`, and why each runbook-extension type gets its own noun instead of one generic `extension --type` |
 | [Operations](docs/operations.md) | Agent lifecycle, RBAC, connectors, and confirmed/unconfirmed runbook extension payload shapes |
