@@ -2,8 +2,8 @@
 
 A release is a lightweight Git tag named `v<major>.<minor>.<patch>b<n>` (for example
 `v1.0.0b2`) on the current tip of `master`. Pushing the tag runs
-`.github/workflows/release.yml`. The flow mirrors the AI Gateway extension so the CLI can
-move to the ADC repository later without changing how it is released.
+`.github/workflows/release.yml`. The flow follows the ADC Azure CLI extension release
+pattern so the CLI can move to the ADC repository later without changing how it is released.
 
 ## Release contract
 
@@ -79,5 +79,5 @@ pre-release or delete the release entry, then publish a fixed version with a new
 ## Moving to ADC
 
 The CLI is planned to move to the ADC repository once it is stable. The layout of
-`scripts/` and the release workflow deliberately matches AI Gateway's so the move is a
-copy, not a redesign.
+`scripts/` and the release workflow deliberately matches other ADC Azure CLI extensions so
+the move is a copy, not a redesign.

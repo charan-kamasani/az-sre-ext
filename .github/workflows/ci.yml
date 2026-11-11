@@ -67,7 +67,7 @@ jobs:
           retention-days: 7
 
   azdev-lint:
-    # Same checks as the AI Gateway OneBranch pipeline (coreai/adc
+    # Same checks as the ADC OneBranch Python pipeline (coreai/adc
     # .pipelines/templates/jobs/devx-python.yml): command-loader, azdev style,
     # azdev linter. Lint config is vendored in .github/lint-config.
     runs-on: ubuntu-latest

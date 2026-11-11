@@ -5,7 +5,7 @@
 - **build-and-test** (Windows/macOS/Linux): unit tests; on Linux also the
   CLI reference check and the wheel build/upload.
 - **azdev-lint**: `check_command_loader.py`, `azdev style sre` and
-  `azdev linter` at medium severity, using the AI Gateway lint config
+  `azdev linter` at medium severity, using the ADC Python lint config
   vendored in `.github/lint-config/`. Fails if the linter cannot load the
   extension (which would otherwise "pass" with zero commands checked).
 - **wheel-smoke** (Linux on Azure CLI 2.75.0 minimum and 2.81.0 pinned;
