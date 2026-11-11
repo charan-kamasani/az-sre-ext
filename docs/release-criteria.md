@@ -153,6 +153,26 @@ production-tenant accounts.
 | Security E2E | | | | | | | | |
 | Feature-specific E2E | | | | | | | | |
 
+### Pre-release testing done so far
+
+Testing done before the release candidate, from a development wheel or from
+source. It does not replace the gates above, which must be re-run on the exact
+release wheel.
+
+| Test | Windows | Linux | macOS | Account / tenant | Installed from | Result |
+|---|---|---|---|---|---|---|
+| azdev style + azdev linter | ✅ | ✅ (CI) | — | n/a | Source | Pass |
+| Live, most commands | ✅ | ✅ | ✅ | Corp | Wheel | Pass |
+| Live, most commands | ✅ | ✅ | Not tested | BAMI | To confirm with Patrick (BAMI) | Pass |
+| All 9 public SRE Agent labs (including Zava AKS/Postgres) | ✅ | Not tested | ✅ | Corp | Wheel | Pass |
+| Quickstart run cold | ✅ | — | ✅ | Corp | Wheel | Pass |
+| Copilot runs scenarios using only `--help` | ✅ | — | — | Corp | Wheel | Pass |
+| Full end-to-end script (84 commands) | — | — | ✅ | Corp | Wheel | 2 bugs found, tracked separately |
+| Real IcM incident → response plan → agent investigates | ✅ | — | ✅ | Corp (SRE e2e agent, IcM team 142788) | Wheel | Pass |
+| Proxima checks run locally (CodeQL, component governance, pytest, DeepReview) | ✅ | — | — | n/a | Source | Pass |
+
+Gaps to close: labs on Linux, BAMI on macOS, AME, PME, and the identities below.
+
 Security E2E must also cover these identities, recording the result for each:
 
 | Identity | Expected result |
