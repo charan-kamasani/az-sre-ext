@@ -44,7 +44,13 @@ work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 export AZURE_CONFIG_DIR="${work_dir}/azure"
 export AZURE_EXTENSION_DIR="${work_dir}/extensions"
-mkdir -p "$AZURE_CONFIG_DIR" "$AZURE_EXTENSION_DIR"
+export AZURE_EXTENSION_SYS_DIR="${work_dir}/system-extensions"
+export AZURE_EXTENSION_DEV_SOURCES=""
+export AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no
+# Telemetry uploads in a background process that can still be writing to the
+# config dir when the cleanup trap runs.
+export AZURE_CORE_COLLECT_TELEMETRY=no
+mkdir -p "$AZURE_CONFIG_DIR" "$AZURE_EXTENSION_DIR" "$AZURE_EXTENSION_SYS_DIR"
 
 az extension add --source "$wheel" --yes >/dev/null
 
