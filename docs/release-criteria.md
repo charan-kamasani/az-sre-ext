@@ -20,9 +20,8 @@ Nothing outside the team is stopping us. Every gate runs against the exact wheel
 released, so the gates start once that wheel is built. Next steps:
 
 1. Merge the CI hardening PR (#78), then the install and release scripts PR (#35).
-2. Fix #54 (LICENSE file and package metadata), because it changes the wheel.
-3. Tag the release commit and build the release wheel (gate 1).
-4. Run gates 2 to 6 on that wheel.
+2. Tag the release commit and build the release wheel (gate 1).
+3. Run gates 2 to 6 on that wheel.
 
 AME and PME testing is optional until the sign-off owners decide it is required
 (see [Decisions needed](#decisions-needed)). If they require it, it needs a SAW.
@@ -31,13 +30,13 @@ Every gate below is required to ship.
 
 | # | Gate | Status | Starts after |
 |---|---|---|---|
-| 1 | [Candidate artifact](#gate-1-candidate-artifact) | ⚪ Not started | #78 and #35 merged, #54 fixed, release tagged |
+| 1 | [Candidate artifact](#gate-1-candidate-artifact) | ⚪ Not started | #78 and #35 merged, release tagged |
 | 2 | [Automated validation](#gate-2-automated-validation) | ⚪ Not started | Gate 1 |
 | 3 | [Package smoke](#gate-3-package-smoke) | ⚪ Not started | Gate 1 |
 | 4 | [Core E2E](#gate-4-core-e2e) | ⚪ Not started | Gate 1 |
 | 5 | [Security E2E](#gate-5-security-e2e) | ⚪ Not started | Gate 1 |
 | 6 | [Feature-specific E2E](#gate-6-feature-specific-e2e) | ⚪ Not started | Gate 1 |
-| 7 | [Defect bar](#gate-7-defect-bar) | 🟡 Open: #54 | #54 fixed |
+| 7 | [Defect bar](#gate-7-defect-bar) | ⚪ Not started | Gates 1 to 6 |
 | 8 | [Release owner sign-off](#gate-8-release-owner-sign-off) | ⚪ Not started | Gates 1 to 7 |
 
 Key: ✅ passed, 🟡 in progress or open, ⚪ not started, ❌ failed.
@@ -59,7 +58,7 @@ complete.
 | 4 | Core E2E | The agent lifecycle works against the live service, and failures are safe | Commands, exit codes, resource IDs, before and after state, cleanup |
 | 5 | Security E2E | Identity, RBAC, connectors and secrets behave safely | Principal, role and scope; unauthorized results; output scan; cleanup |
 | 6 | Feature-specific E2E | Network configuration works | Before and after state, invalid-input error |
-| 7 | Defect bar | No ship-blocking bugs remain | Known issues table with owners and decisions |
+| 7 | Defect bar | No ship-blocking bugs remain | Every open bug has an owner and a decision |
 | 8 | Release owner sign-off | Owners reviewed the results for the exact candidate | Completed sign-off table |
 
 ## Gate details
@@ -160,8 +159,7 @@ agent.
       destructive-operation P1 defects.
 - [ ] Zero unresolved release-packaging or licensing P1 defects (for example, a missing
       LICENSE file).
-- [ ] Every other known issue has an owner and a documented decision in
-      [Known issues](#known-issues).
+- [ ] Every other open bug has an owner and a documented decision.
 
 ### Gate 8: Release owner sign-off
 
@@ -277,12 +275,3 @@ release wheel.
 
 **Gaps still to close:** labs on Linux, BAMI on macOS, AME, PME, and the Reader-only,
 guest and service principal identities.
-
-## Known issues
-
-| Issue | Severity | Blocks GO? | Owner | Decision |
-|---|---|---|---|---|
-| [#54](https://github.com/charan-kamasani/az-sre-ext/issues/54) Add a LICENSE file and restore package metadata | P1 (release packaging) | Yes | Charan Kamasani | |
-| [#32](https://github.com/charan-kamasani/az-sre-ext/issues/32) Align ARM api-versions (generated 2026-01-01 vs hand-written 2026-11-01-preview) | P2 | No | Charan Kamasani | |
-| [#21](https://github.com/charan-kamasani/az-sre-ext/issues/21) Code Access: web-login (OAuth) flow gaps for ADO/GitHub and GitLab egress allowlist | P2 | No | Charan Kamasani | |
-| [#53](https://github.com/charan-kamasani/az-sre-ext/issues/53) Accessibility review of device flow, help and errors | P2 | No | Charan Kamasani | |
