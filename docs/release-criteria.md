@@ -16,7 +16,7 @@ The E2E gates run against live Azure.
 | Package smoke | Documented CLI surface loads from packaged artifact | ✅ | [Gate 1](#1-release-artifact-smoke) | |
 | Core E2E | Agent create → show/update → delete against service | ✅ | [Gate 2](#2-core-agent-lifecycle), [Gate 6](#6-destructive-operations-and-failure-behavior) | |
 | Security E2E | Identity/RBAC + auth/secret-sensitive path validated | ✅ | [Gate 3](#3-identity-and-rbac), [Gate 4](#4-connector-authentication-and-secret-safety) | |
-| Feature-specific E2E | Network/connector/etc. validated if shipping | ✅ | [Gate 4](#4-connector-authentication-and-secret-safety), [Gate 5](#5-network-configuration-blocking-only-if-network-commands-ship) | |
+| Feature-specific E2E | Network/connector/etc. validated if shipping | ✅ (network part only if network commands ship) | [Gate 4](#4-connector-authentication-and-secret-safety), [Gate 5](#5-network-configuration-blocking-only-if-network-commands-ship) | |
 | Defect bar | No known ship-blocking P0/P1 defects | ✅ | [GO / NO-GO](#go--no-go), [Known issues](#known-issues-and-decisions) | |
 | Release owner sign-off | Results reviewed against exact candidate | ✅ | [Sign-off](#sign-off) | |
 
@@ -27,8 +27,8 @@ The sections below describe how each gate is checked and what evidence to attach
 | Role | Name | Decision | Date |
 |---|---|---|---|
 | CLI owner | Charan Kamasani | | |
-| SRE Agent engineering | Dalibor | | |
-| SRE Agent PM | Deepthi | | |
+| SRE Agent engineering | Dalibor (full name to confirm) | | |
+| SRE Agent PM | Deepthi (full name to confirm) | | |
 | Developer tools | Paul Yuknewicz | | |
 
 Signing off means you agree these criteria are sufficient for this release.
@@ -138,20 +138,29 @@ after, cleanup result.
 | Tenants | Corp, BAMI (non-Microsoft); AME and PME per the table below |
 | Agent channels | Stable; Preview where the command supports it |
 | Identities | Administrator on the test agent; no role on the test agent; Reader-only; guest (B2B) user; service principal or managed identity (non-interactive) |
-| Azure CLI | Minimum supported version and latest |
+| Azure CLI | Minimum supported version (`azext.minCliCoreVersion` in `src/sre/azext_sre/azext_metadata.json`, currently 2.75.0) and latest |
 
 ### Test matrix
 
-Run the E2E gates from the exact release wheel and record the result in each cell
-(✅ pass, ❌ fail with issue link, — not applicable). AME and PME need a SAW and
-production-tenant accounts.
+Run the gates from the exact release wheel and record the result in each cell
+(✅ pass, ❌ fail with issue link, — not applicable). Each row is one OS and
+tenant pair, so every result says where it ran. AME and PME need a SAW and
+production-tenant accounts; skip those rows if the sign-off owners decide they
+are not required (see the tenant table below).
 
-| Gate | Windows | Linux | macOS | Corp | BAMI | AME | PME | Non-interactive (SP/MI) |
-|---|---|---|---|---|---|---|---|---|
-| Package smoke | | | | n/a | n/a | n/a | n/a | n/a |
-| Core E2E | | | | | | | | |
-| Security E2E | | | | | | | | |
-| Feature-specific E2E | | | | | | | | |
+| OS | Tenant | Signed in as | Package smoke | Core E2E | Security E2E | Feature-specific E2E |
+|---|---|---|---|---|---|---|
+| Windows | Corp | User | | | | |
+| Linux | Corp | User | | | | |
+| macOS | Corp | User | | | | |
+| Windows | BAMI | User | — | | | |
+| Linux | BAMI | User | — | | | |
+| macOS | BAMI | User | — | | | |
+| Windows (SAW) | AME | User | — | | | |
+| Windows (SAW) | PME | User | — | | | |
+| Linux | Corp | Service principal or managed identity | — | | | |
+
+Package smoke depends only on the OS, so it is recorded once per OS.
 
 ### Pre-release testing done so far
 
@@ -161,15 +170,15 @@ release wheel.
 
 | Test | Windows | Linux | macOS | Account / tenant | Installed from | Result |
 |---|---|---|---|---|---|---|
-| azdev style + azdev linter | ✅ | ✅ (CI) | — | n/a | Source | Pass |
+| azdev style + azdev linter | ✅ | ✅ (CI) | — | — | Source | Pass |
 | Live, most commands | ✅ | ✅ | ✅ | Corp | Wheel | Pass |
-| Live, most commands | ✅ | ✅ | Not tested | BAMI | To confirm with Patrick (BAMI) | Pass |
+| Live, most commands | ✅ | ✅ | Not tested | BAMI | Wheel (to confirm with Patrick) | Pending confirmation |
 | All 9 public SRE Agent labs (including Zava AKS/Postgres) | ✅ | Not tested | ✅ | Corp | Wheel | Pass |
 | Quickstart run cold | ✅ | — | ✅ | Corp | Wheel | Pass |
 | Copilot runs scenarios using only `--help` | ✅ | — | — | Corp | Wheel | Pass |
 | Full end-to-end script (84 commands) | — | — | ✅ | Corp | Wheel | 2 bugs found, tracked separately |
 | Real IcM incident → response plan → agent investigates | ✅ | — | ✅ | Corp (SRE e2e agent, IcM team 142788) | Wheel | Pass |
-| Proxima checks run locally (CodeQL, component governance, pytest, DeepReview) | ✅ | — | — | n/a | Source | Pass |
+| Proxima checks run locally (CodeQL, component governance, pytest, DeepReview) | ✅ | — | — | — | Source | Pass |
 
 Gaps to close: labs on Linux, BAMI on macOS, AME, PME, and the identities below.
 
@@ -205,6 +214,8 @@ Security E2E must also cover these identities, recording the result for each:
 - [ ] Zero P0 defects.
 - [ ] Zero unresolved security, authorization, credential-exposure or
       destructive-operation P1 defects.
+- [ ] Zero unresolved release-packaging or licensing P1 defects (for example, a
+      missing LICENSE file).
 - [ ] Every other accepted issue has an owner and a documented decision.
 
 **Automatic NO-GO** if any of these happens:
@@ -223,7 +234,7 @@ Security E2E must also cover these identities, recording the result for each:
 
 | Issue | Severity | Owner | Decision |
 |---|---|---|---|
-| [#54](https://github.com/charan-kamasani/az-sre-ext/issues/54) Add a LICENSE file and restore package metadata | P1 (release packaging) | Charan Kamasani | |
+| [#54](https://github.com/charan-kamasani/az-sre-ext/issues/54) Add a LICENSE file and restore package metadata | P1 (release packaging; blocks GO) | Charan Kamasani | |
 | [#32](https://github.com/charan-kamasani/az-sre-ext/issues/32) Align ARM api-versions (generated 2026-01-01 vs hand-written 2026-11-01-preview) | P2 | Charan Kamasani | |
 | [#21](https://github.com/charan-kamasani/az-sre-ext/issues/21) Code Access: web-login (OAuth) flow gaps for ADO/GitHub and GitLab egress allowlist | P2 | Charan Kamasani | |
 | [#53](https://github.com/charan-kamasani/az-sre-ext/issues/53) Accessibility review of device flow, help and errors | P2 | Charan Kamasani | |
