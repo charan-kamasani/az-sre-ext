@@ -11,12 +11,12 @@ The E2E gates run against live Azure.
 
 | Gate | Minimum evidence | Required | Detailed checks | Status |
 |---|---|---|---|---|
-| Candidate artifact | Exact release wheel builds and installs | ✅ | [Gate 1](#1-release-artifact-smoke) | |
+| Candidate artifact | Exact release wheel builds and installs | ✅ | [Artifact smoke](#1-release-artifact-smoke) | |
 | Automated validation | Existing unit/regression suite passes | ✅ | CI on the release commit | |
-| Package smoke | Documented CLI surface loads from packaged artifact | ✅ | [Gate 1](#1-release-artifact-smoke) | |
-| Core E2E | Agent create → show/update → delete against service | ✅ | [Gate 2](#2-core-agent-lifecycle), [Gate 6](#6-destructive-operations-and-failure-behavior) | |
-| Security E2E | Identity/RBAC + auth/secret-sensitive path validated | ✅ | [Gate 3](#3-identity-and-rbac), [Gate 4](#4-connector-authentication-and-secret-safety) | |
-| Feature-specific E2E | Network/connector/etc. validated if shipping | ✅ (network part only if network commands ship) | [Gate 4](#4-connector-authentication-and-secret-safety), [Gate 5](#5-network-configuration-blocking-only-if-network-commands-ship) | |
+| Package smoke | Documented CLI surface loads from packaged artifact | ✅ | [Artifact smoke](#1-release-artifact-smoke) | |
+| Core E2E | Agent create → show/update → delete against service | ✅ | [Agent lifecycle](#2-core-agent-lifecycle), [Destructive ops & failures](#6-destructive-operations-and-failure-behavior) | |
+| Security E2E | Identity/RBAC + auth/secret-sensitive path validated | ✅ | [Identity & RBAC](#3-identity-and-rbac), [Connectors & secrets](#4-connector-authentication-and-secret-safety) | |
+| Feature-specific E2E | Network/connector/etc. validated if shipping | ✅ (network part only if network commands ship) | [Connectors & secrets](#4-connector-authentication-and-secret-safety), [Network config](#5-network-configuration-blocking-only-if-network-commands-ship) | |
 | Defect bar | No known ship-blocking P0/P1 defects | ✅ | [GO / NO-GO](#go--no-go), [Known issues](#known-issues-and-decisions) | |
 | Release owner sign-off | Results reviewed against exact candidate | ✅ | [Sign-off](#sign-off) | |
 
