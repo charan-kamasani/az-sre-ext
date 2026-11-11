@@ -162,6 +162,18 @@ class ManagedResourceIdentityCliTests(unittest.TestCase):
         self.assertEqual(output.strip(), "")
         self.assertEqual(self.assignments, [])
 
+    def test_roles_override_the_default_pair(self):
+        self._add_assignment(self.SYSTEM_PRINCIPAL, "Monitoring Contributor", self.SCOPE)
+        preserved = copy.deepcopy(self.assignments)
+        roles = ["Reader", "Monitoring Reader", "Contributor"]
+        output, _ = self._invoke("grant", "--scope", self.SCOPE, "--roles", *roles)
+        self.assertEqual(
+            {(item["principalId"], item["roleDefinitionName"], item["scope"]) for item in json.loads(output)},
+            {(self.SYSTEM_PRINCIPAL, role, self.SCOPE) for role in roles},
+        )
+        self._invoke("revoke", "--scope", self.SCOPE, "--roles", *roles)
+        self.assertEqual(self.assignments, preserved)
+
     def test_uami_grant_list_revoke_preserves_unrelated_assignments(self):
         for principal, role, scope in (
             (self.SYSTEM_PRINCIPAL, "Reader", self.SCOPE),

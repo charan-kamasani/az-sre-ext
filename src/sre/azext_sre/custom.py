@@ -58,6 +58,7 @@ from azure.cli.core.aaz import (
     AAZBoolArg,
     AAZCommand,
     AAZCommandGroup,
+    AAZFreeFormDictArg,
     AAZIntArg,
     AAZListArg,
     AAZObjectArg,
@@ -788,15 +789,65 @@ class _IcmIncidentPlatformGateMixin:
         super().pre_operations()
 
 
+def _add_experimental_settings_arg(schema):
+    schema.experimental_settings = AAZFreeFormDictArg(
+        options=["--experimental-settings"],
+        arg_group="Properties",
+        help="Preview feature flags as JSON or @file, e.g. '{\"EnableWorkspaceTools\": true}'. "
+        "Merged into the agent's existing flags.",
+    )
+
+
+def _experimental_settings(args):
+    settings = _arg_value(getattr(args, "experimental_settings", None))
+    if settings is not None and not isinstance(settings, dict):
+        raise CLIError("--experimental-settings must be a JSON object.")
+    return settings or None
+
+
+class _ExperimentalSettingsOnCreateMixin:
+    """Applies --experimental-settings with a PATCH once the agent exists.
+
+    The generated create can't carry the property, and a PUT that does carry
+    it replaces the service's own flags instead of adding to them.
+    """
+
+    def pre_operations(self):
+        if _experimental_settings(self.ctx.args) and _arg_value(getattr(self.ctx.args, "no_wait", None)):
+            raise CLIError(
+                "--experimental-settings cannot be combined with --no-wait: the settings are "
+                "applied after the agent finishes provisioning. Run 'az sre agent update "
+                "--experimental-settings' afterward instead."
+            )
+        super().pre_operations()
+
+    def post_operations(self):
+        super().post_operations()
+        settings = _experimental_settings(self.ctx.args)
+        if not settings:
+            return
+        resource_id = (
+            f"/subscriptions/{self.ctx.subscription_id}/resourceGroups/{_arg_value(self.ctx.args.resource_group)}"
+            f"/providers/Microsoft.App/agents/{_arg_value(self.ctx.args.agent_name)}"
+        )
+        _arm_request(self.cli_ctx, "PATCH", resource_id, API_VERSION,
+                     body={"properties": {"experimentalSettings": settings}})
+
+
 @register_command("sre agent create")
 class Create(  # pylint: disable=too-many-ancestors
         _IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GrantAccessToMeMixin,
-        _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
+        _ExperimentalSettingsOnCreateMixin, _DefaultSystemIdentityMixin,
+        _LogConfigurationWarningMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
     :example: Create an agent with an Anthropic default model
         az sre agent create --name myagent --resource-group myrg \\
             --location eastus2 --default-model "{provider:anthropic,name:automatic}"
+
+    :example: Create an agent with preview feature flags turned on
+        az sre agent create --name myagent --resource-group myrg --location eastus2 \\
+            --experimental-settings "{\\"EnableWorkspaceTools\\": true}"
     """
 
     _args_schema = None
@@ -827,6 +878,7 @@ class Create(  # pylint: disable=too-many-ancestors
         schema.log_configuration._help["short-summary"] = (
             "Application Insights link for traces. Without it, a warning is shown and trace view is unavailable."
         )
+        _add_experimental_settings_arg(schema)
         cls._args_schema = schema
         return cls._args_schema
 
@@ -858,9 +910,55 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _GeneratedUp
     :example: Connect ServiceNow as the incident platform with Basic Auth
         az sre agent update --name myagent --resource-group myrg \\
             --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:https://contoso.service-now.com,connection-key:<credentials>}"
+
+    :example: Turn on preview feature flags from a file
+        az sre agent update --name myagent --resource-group myrg \\
+            --experimental-settings @experimental.json
     """
 
     _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        _add_experimental_settings_arg(schema)
+        cls._args_schema = schema
+        return cls._args_schema
+
+    def post_instance_update(self, instance):
+        super().post_instance_update(instance)
+        # The service never returns the App Insights connection string, so
+        # writing the agent back as-is sends an appId without it and the PUT
+        # is rejected. Leaving logConfiguration out of a PUT clears it, so
+        # drop it and PATCH instead, which keeps the existing link.
+        data = instance.to_serialized_data() or {}
+        log = (data.get("properties") or {}).get("logConfiguration") or {}
+        app_insights = log.get("applicationInsightsConfiguration") or {}
+        if app_insights and not app_insights.get("connectionString"):
+            if len(log) > 1:
+                del instance.properties.log_configuration.application_insights_configuration
+            else:
+                del instance.properties.log_configuration
+            self.ctx.sre_use_patch = True
+        # A PUT replaces the whole experimentalSettings map; PATCH merges it.
+        if _experimental_settings(self.ctx.args):
+            self.ctx.sre_use_patch = True
+
+    class AgentsCreateOrUpdate(_GeneratedUpdate.AgentsCreateOrUpdate):
+
+        @property
+        def method(self):
+            return "PATCH" if getattr(self.ctx, "sre_use_patch", False) else "PUT"
+
+        @property
+        def content(self):
+            body = super().content
+            settings = _experimental_settings(self.ctx.args)
+            if settings:
+                body.setdefault("properties", {})["experimentalSettings"] = settings
+            return body
 
 
 # Real wire values confirmed via the control-plane source
@@ -971,15 +1069,18 @@ DATA_CONNECTOR_TYPE_ALIASES = {
     "microsoft dgrep": "Dgrep",
 }
 
-# Connector types the portal's connector picker offers, in help-list order.
-# Other accepted values (Kusto, Documentation, MonitorClient, Knowledge*, ...)
-# still work but are not advertised.
+# Connector types the portal's connector picker offers, in help-list order,
+# plus MonitorClient. Other accepted values (Kusto, Documentation,
+# Knowledge*, ...) still work but are not advertised.
 PORTAL_CONNECTOR_NAMES = {
     "KustoClient": "Azure Data Explorer",
     "KustoUser": "Database query connector (user)",
     "KustoDataIndexer": "Database indexing connector",
     "LogAnalytics": "Log Analytics Workspace",
     "AppInsights": "Application Insights",
+    # No portal card; the portal adds it alongside the Log Analytics and App
+    # Insights connectors, and labs create it directly.
+    "MonitorClient": "MonitorClient",
     "Mcp": "MCP server",
     "Outlook": "Office 365 Outlook",
     "Teams": "Microsoft Teams",
@@ -1072,7 +1173,8 @@ def _connector_access_reminder(connector):
 # ConnectorGateway, AzureMonitor, MonitorClient. These accept creation via
 # the CLI/API (the backend's V1 allowlist), but have no portal entry point
 # today, so they're intentionally left out of this map and fall back to
-# showing the wire value as-is.
+# showing the wire value as-is. MonitorClient is the exception: it is
+# listed under its wire value because labs and templates create it directly.
 #
 # High-confidence but NOT create-and-inspect-confirmed correlations (strong
 # naming match between the wire value and a catalog card's Title/
@@ -1194,7 +1296,8 @@ class _DataConnectorTypeArgMixin:
             )
         for _name, _text in (
             ("endpoint", "Endpoint URL, used by endpoint-based connector types such as Mcp."),
-            ("identity", "Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity."),
+            ("identity", "'system' for the agent's system-assigned identity, or a user-assigned identity "
+             "resource ID. If omitted, no identity is set."),
             ("extended_properties", "Type-specific settings as JSON or shorthand."),
         ):
             _arg = getattr(schema, _name, None)
@@ -2064,10 +2167,10 @@ class AgentSettingsUpdate(AAZCommand):
 # _RoleAssignmentScopeCommand above, just with assignee and scope reversed.
 #
 # The two built-in roles are NOT user-selectable in the portal -- the
-# dialog always grants both together, so grant/revoke always operate on
-# both roles as a pair rather than exposing a --role flag (confirmed
-# "Reader and ... Monitoring Contributor roles" wording, plural, no choice
-# shown anywhere in the 3 tabs' dialogs). The portal's friendly label
+# dialog always grants both together, so that pair is the default here.
+# --roles overrides it for setups that want a different set (the
+# zava-aks-postgres lab, for example, also grants Contributor and uses
+# Monitoring Reader). The portal's friendly label
 # "Azure Monitor Monitoring Contributor" is NOT the real role name -- the
 # actual built-in RBAC role is just "Monitoring Contributor", confirmed
 # live via 'az role definition list'.
@@ -2259,8 +2362,18 @@ class _ManagedResourceScopeCommand(_ManagedResourceIdentityMixin, AAZCommand):
             options=["--management-group"],
             help="Target management group name/ID.",
         )
+        schema.roles = AAZListArg(
+            options=["--roles"],
+            help=f"Roles to {cls._VERB} instead of the default Reader and Monitoring Contributor, "
+            "e.g. --roles Reader \"Monitoring Reader\" Contributor. Names or role definition IDs.",
+        )
+        schema.roles.Element = AAZStrArg()
         cls._args_schema = schema
         return schema
+
+    def _roles(self):
+        roles = [r for r in (_arg_value(getattr(self.ctx.args, "roles", None)) or []) if r and r.strip()]
+        return roles or list(MANAGED_RESOURCE_ROLES)
 
     def _resolve(self):
         principal_id = self._resolve_principal_id()
@@ -2279,7 +2392,8 @@ class _ManagedResourceGroup(AAZCommandGroup):
     """Let the agent monitor resources outside its resource group.
 
     Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles
-    together on a subscription, resource group, or management group.
+    together on a subscription, resource group, or management group. Use
+    --roles to pick different roles, e.g. Contributor or Monitoring Reader.
     Defaults to the system-assigned identity. Use --identity with an
     assigned user-assigned identity's ARM resource ID to target it instead.
     """
@@ -2291,10 +2405,16 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
 
     Targets the system-assigned identity by default. Use --identity to
     select an assigned user-assigned identity without changing runtime settings.
+    Use --roles to grant a different set of roles.
 
     :example: Grant on a subscription
         az sre managed-resource grant --agent-name myagent --resource-group myrg \\
             --target-subscription my-sub
+
+    :example: Grant Reader, Monitoring Reader and Contributor on a resource group
+        az sre managed-resource grant --agent-name myagent --resource-group myrg \\
+            --target-subscription my-sub --target-rg monitored-rg \\
+            --roles Reader "Monitoring Reader" Contributor
 
     :example: Grant on a resource group
         az sre managed-resource grant --agent-name myagent --resource-group myrg \\
@@ -2318,7 +2438,7 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
         principal_id, scope = self._resolve()
         invoke = partial(_cli_invoke, self.cli_ctx)
         results = []
-        for role in MANAGED_RESOURCE_ROLES:
+        for role in self._roles():
             results.append(invoke(
                 "role", "assignment", "create",
                 "--role", role, "--assignee", principal_id, "--scope", scope,
@@ -2330,9 +2450,9 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
 class ManagedResourceRevoke(_ManagedResourceScopeCommand):
     """Remove the agent's Reader and Monitoring Contributor on a scope.
 
-    Only removes these two roles for the selected identity on the exact
-    requested scope. Other identities, roles, and scopes are unaffected.
-    Defaults to the system-assigned identity.
+    Only removes these two roles (or the ones given with --roles) for the
+    selected identity on the exact requested scope. Other identities, roles,
+    and scopes are unaffected. Defaults to the system-assigned identity.
 
     :example: Revoke access to a resource group
         az sre managed-resource revoke --agent-name myagent --resource-group myrg \\
@@ -2351,7 +2471,7 @@ class ManagedResourceRevoke(_ManagedResourceScopeCommand):
         super()._handler(command_args)
         principal_id, scope = self._resolve()
         invoke = partial(_cli_invoke, self.cli_ctx)
-        for role in MANAGED_RESOURCE_ROLES:
+        for role in self._roles():
             invoke(
                 "role", "assignment", "delete",
                 "--role", role, "--assignee", principal_id, "--scope", scope,
@@ -3211,39 +3331,27 @@ class UpdateNetwork(AAZCommand):
                 "Specify at least one of --vnet-configuration or --sandbox-configuration."
             )
 
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        agent = invoke(
-            "sre", "agent", "show", "--name", name, "--resource-group", resource_group,
-        )
-        if not isinstance(agent, dict):
-            raise ResourceNotFoundError(
-                f"Could not resolve SRE Agent '{name}' in resource group '{resource_group}'."
-            )
-        resource_id = agent.get("id")
-        if not resource_id:
-            raise CLIError(f"Could not resolve the resource ID of agent '{name}'.")
+        resource_id = _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
 
-        # Re-GET at the networking-capable api-version rather than reusing
-        # the 2026-01-01 'show' response above, since that response won't
-        # contain (and would silently drop on PUT) any networking fields
-        # already set on the resource by another caller.
-        current = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION)
-        if not isinstance(current, dict):
-            raise ResourceNotFoundError(
-                f"Could not re-resolve SRE Agent '{name}' at api-version {NETWORK_API_VERSION}."
-            )
-        properties = current.setdefault("properties", {})
+        # PATCH only the networking properties. A GET-then-PUT of the whole
+        # agent fails on agents with App Insights logging, because the GET
+        # hides the connection string and the PUT then sends an appId alone.
         # `network show` prints unset fields as null; drop them so its output
         # can be passed back here unchanged.
+        properties = {}
         if vnet_configuration is not None:
             properties["vnetConfiguration"] = _drop_nulls(_camelize_keys(vnet_configuration))
         if sandbox_configuration is not None:
             properties["sandboxConfiguration"] = _drop_nulls(_camelize_keys(sandbox_configuration))
 
-        updated = _arm_request(self.cli_ctx, "PUT", resource_id, NETWORK_API_VERSION, body=current)
+        updated = _arm_request(
+            self.cli_ctx, "PATCH", resource_id, NETWORK_API_VERSION, body={"properties": properties},
+        )
+        if not (isinstance(updated, dict) and updated.get("properties")):
+            updated = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION)
 
-        # The PUT targets the agent resource itself, so trim the response to the
-        # networking fields like the other extension commands do.
+        # The PATCH targets the agent resource itself, so trim the response to
+        # the networking fields like the other extension commands do.
         return _network_view(updated)
 
 
@@ -3542,6 +3650,10 @@ def _validate_incident_filters_shape(parsed):
     if "mergeWindowHours" in parsed and (
             isinstance(parsed["mergeWindowHours"], bool) or not isinstance(parsed["mergeWindowHours"], int)):
         raise CLIError("--value.mergeWindowHours must be an integer.")
+    if "maxAutomatedInvestigationAttempts" in parsed and (
+            isinstance(parsed["maxAutomatedInvestigationAttempts"], bool)
+            or not isinstance(parsed["maxAutomatedInvestigationAttempts"], int)):
+        raise CLIError("--value.maxAutomatedInvestigationAttempts must be an integer.")
     for list_field in ("owningTeamIds", "handlingAgents"):
         if list_field in parsed:
             value = parsed[list_field]
@@ -4568,9 +4680,14 @@ class _PinnedExtensionList(AAZCommand):
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
 
-        return _extension_resource_list(
+        result = _extension_resource_list(
             self.cli_ctx, agent_name, resource_group, self._EXTENSION_TYPE,
         )
+        # Return a bare array like the other list commands, so
+        # --query "[].name" works.
+        if isinstance(result, dict) and isinstance(result.get("value"), list):
+            return result["value"]
+        return result
 
 
 class _PinnedExtensionDelete(AAZCommand):
@@ -4603,8 +4720,9 @@ class _PinnedExtensionDelete(AAZCommand):
         extension_name = _arg_value(self.ctx.args.extension_name)
 
         # The user already confirmed via this command's own confirmation
-        # prompt (see its @register_command(confirmation=...)).
-        return _extension_resource_delete(
+        # prompt (see its @register_command(confirmation=...)). Like other
+        # deletes, print nothing.
+        _extension_resource_delete(
             self.cli_ctx, agent_name, resource_group, self._EXTENSION_TYPE, extension_name,
         )
 
@@ -5060,6 +5178,10 @@ def _add_response_plan_criteria_args(schema):
         options=["--merge-window-hours"],
         help="Hours within which related incidents are merged. Service default: 3.",
     )
+    schema.max_investigation_attempts = AAZIntArg(
+        options=["--max-investigation-attempts", "--max-attempts"],
+        help="How many times the agent automatically investigates a matched incident. Service default: 3.",
+    )
     schema.instructions = AAZStrArg(
         options=["--instructions"], help="Custom instructions the subagent follows for matched incidents.",
     )
@@ -5091,6 +5213,11 @@ def _response_plan_criteria(args):
         if window < 1:
             raise CLIError("--merge-window-hours must be at least 1.")
         flt["mergeWindowHours"] = window
+    attempts = _arg_value(getattr(args, "max_investigation_attempts", None))
+    if attempts is not None:
+        if attempts < 1:
+            raise CLIError("--max-investigation-attempts must be at least 1.")
+        flt["maxAutomatedInvestigationAttempts"] = attempts
     return flt
 
 
@@ -5145,7 +5272,7 @@ class ResponsePlanCreate(AAZCommand):
         )
         schema.subagent = AAZStrArg(
             options=["--subagent"], required=True,
-            help="Name of the existing subagent that handles matched incidents.",
+            help="Name of the existing subagent that handles matched incidents. Use meta_agent for the main agent.",
         )
         _add_response_plan_criteria_args(schema)
         schema.mode = AAZStrArg(
@@ -5260,7 +5387,8 @@ class ResponsePlanUpdate(AAZCommand):
             + ", ".join(p for p in RESPONSE_PLAN_PLATFORMS if p != "Icm" or _show_internal_features()) + ".",
         )
         schema.subagent = AAZStrArg(
-            options=["--subagent"], help="Name of the existing subagent that handles matched incidents.",
+            options=["--subagent"],
+            help="Name of the existing subagent that handles matched incidents. Use meta_agent for the main agent.",
         )
         schema.mode = AAZStrArg(
             options=["--mode"], help="Agent autonomy: autonomous or review.",

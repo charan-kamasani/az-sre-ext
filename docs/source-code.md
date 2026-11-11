@@ -109,7 +109,7 @@ Everything in `custom.py` falls into one of these categories:
   wrapper over `az role assignment create` that builds the agent's full
   resource-ID scope), `ManagedResourceGrant`/`Revoke`/`List` (the mirror
   image — grants the agent's own managed identity access to an external
-  scope instead), `NetworkUpdate` (GET-merge-PUT against a preview
+  scope instead), `NetworkUpdate` (a networking-only PATCH against a preview
   api-version with no public Swagger yet), and the entire `Extension*`
   family (runbook extension CRUD against the agent's data-plane proxy
   endpoints, including the base64/JSON
