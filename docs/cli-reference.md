@@ -510,7 +510,7 @@ Create an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type, by portal name (case-insensitive): Azure Data Explorer, Database query connector (user), Log Analytics Workspace, Application Insights, MonitorClient, MCP server, Office 365 Outlook, Microsoft Teams, EV2, Azure DevOps AI Search, IcM connector, DGrep, Geneva Metrics, S360 connector. For knowledge sources use 'az sre knowledge create'. |
+| `--data-connector-type` | String | No |  |  | Connector type, by portal name (case-insensitive): Azure Data Explorer, Database query connector (user), Log Analytics Workspace, Application Insights, MonitorClient, MCP server, EV2, Azure DevOps AI Search, IcM connector, DGrep, Geneva Metrics, S360 connector. For knowledge sources use 'az sre knowledge create'. Set up Outlook, Teams and other managed connectors in the portal. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: `https://cluster.kusto.windows.net/database`. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. |
@@ -689,7 +689,7 @@ Update an Agent Connector.
 | `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--data-connector-type` | String | No |  |  | Connector type, by portal name (case-insensitive): Azure Data Explorer, Database query connector (user), Log Analytics Workspace, Application Insights, MonitorClient, MCP server, Office 365 Outlook, Microsoft Teams, EV2, Azure DevOps AI Search, IcM connector, DGrep, Geneva Metrics, S360 connector. For knowledge sources use 'az sre knowledge create'. |
+| `--data-connector-type` | String | No |  |  | Connector type, by portal name (case-insensitive): Azure Data Explorer, Database query connector (user), Log Analytics Workspace, Application Insights, MonitorClient, MCP server, EV2, Azure DevOps AI Search, IcM connector, DGrep, Geneva Metrics, S360 connector. For knowledge sources use 'az sre knowledge create'. Set up Outlook, Teams and other managed connectors in the portal. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: `https://cluster.kusto.windows.net/database`. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. |

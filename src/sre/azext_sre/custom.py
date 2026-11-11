@@ -1127,7 +1127,8 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
 # --data-source endpoint, not a separate type value), "Mcp" covers generic
 # MCP-compatible connectors (PagerDuty/ServiceNow/Datadog/Splunk/S360/Ev2/
 # etc. -- these are *not* separate enum values, just Mcp connectors pointed
-# at different endpoints), "Outlook", "Teams", "Icm" (Incident Management --
+# at different endpoints), "Outlook" and "Teams" (rejected here, see
+# PORTAL_MANAGED_CONNECTORS below), "Icm" (Incident Management --
 # singleton per agent, e.g. "https://prod.microsofticm.com"), "KustoClient"
 # (Kusto via the @azure/mcp server -- no DataSource/ExtendedProperties
 # needed, the runtime hardcodes the mcp server command), "Dgrep"
@@ -1142,8 +1143,6 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
 DATA_CONNECTOR_TYPES = {
     "kusto": "Kusto",
     "mcp": "Mcp",
-    "outlook": "Outlook",
-    "teams": "Teams",
     "icm": "Icm",
     "kustoclient": "KustoClient",
     "dgrep": "Dgrep",
@@ -1187,8 +1186,7 @@ DATA_CONNECTOR_TYPES = {
 # invented: `Agent.Web/Client/src/src/Strings/SREAgentResources.ts` ->
 # azureDataExplorer/azureMcpKusto: "Azure Data Explorer",
 # userProvidedConnector: "User provided connector" (shown for the generic
-# "Mcp" type -- Paul's suggested "Custom MCP" label), office365Outlook:
-# "Office 365 Outlook", microsoftTeams: "Microsoft Teams", microsoftIcm:
+# "Mcp" type -- Paul's suggested "Custom MCP" label), microsoftIcm:
 # "Microsoft IcM", microsoftDGrep: "Microsoft DGrep".
 #
 # "Azure Data Explorer" maps to KustoClient, matching the portal exactly --
@@ -1219,9 +1217,6 @@ DATA_CONNECTOR_TYPE_ALIASES = {
     "custom mcp server": "Mcp",
     "mcp server": "Mcp",
     "user provided connector": "Mcp",
-    "office 365 outlook": "Outlook",
-    "microsoft outlook": "Outlook",
-    "microsoft teams": "Teams",
     "microsoft icm": "Icm",
     "icm connector": "Icm",
     "incident manager": "Icm",
@@ -1241,8 +1236,6 @@ PORTAL_CONNECTOR_NAMES = {
     # Insights connectors, and labs create it directly.
     "MonitorClient": "MonitorClient",
     "Mcp": "MCP server",
-    "Outlook": "Office 365 Outlook",
-    "Teams": "Microsoft Teams",
     "Ev2Mcp": "EV2",
     "TsgCrawler": "Documentation connector",
     "AzureDevOpsBuiltinMcp": "Azure DevOps AI Search",
@@ -1256,6 +1249,46 @@ PORTAL_CONNECTOR_TYPES = tuple(PORTAL_CONNECTOR_NAMES)
 UNADVERTISED_CONNECTOR_TYPES = ("KustoDataIndexer", "TsgCrawler")
 for _value, _portal_name in PORTAL_CONNECTOR_NAMES.items():
     DATA_CONNECTOR_TYPE_ALIASES.setdefault(_portal_name.lower(), _value)
+
+# Managed connectors from the portal's default picker (Connectors > Add
+# connector) as of 2026-11-10: each card's name first, then its product
+# and managed API names. The portal handles their sign-in, so
+# --data-connector-type points there instead. That includes the old
+# Outlook and Teams wire values, which the service now creates as managed
+# connectors: Outlook fails because no sign-in method is chosen, and Teams
+# comes up signed out with no tools. GitLab is left out because the portal
+# adds it under Code access.
+PORTAL_MANAGED_CONNECTORS = (
+    ("Office 365 Outlook", "Outlook", "Microsoft Outlook", "office365"),
+    ("Microsoft Teams", "Teams"),
+    ("Gmail", "Google Gmail"),
+    ("Yammer", "Microsoft Viva Engage", "Viva Engage"),
+    ("Microsoft Security Copilot", "securitycopilot"),
+    ("Notion", "notionip"),
+    ("OneDrive for Business", "onedriveforbusiness"),
+    ("SharePoint", "Microsoft SharePoint", "sharepointonline"),
+    ("Box",),
+    ("Office 365 Users", "office365users"),
+    ("Power BI", "Microsoft Power BI", "powerbi"),
+    ("Confluence", "Atlassian Confluence"),
+    ("Planner", "Microsoft Planner"),
+    ("OneNote (Business)", "Microsoft OneNote", "onenote"),
+    ("Microsoft Forms", "microsoftforms"),
+    ("Google Sheets", "googlesheet"),
+    ("Trello",),
+    ("RSS",),
+    ("Microsoft To-Do (Business)", "Microsoft To Do", "todo"),
+    ("Microsoft Bookings", "microsoftbookings"),
+    ("MS Graph Users and Groups", "Microsoft Graph", "msgraphgroupsanduser"),
+    ("Google Drive", "googledrive"),
+    ("Dropbox",),
+    ("FTP",),
+    ("Excel Online (Business)", "excelonlinebusiness"),
+    ("Word Online (Business)", "Microsoft Word", "wordonlinebusiness"),
+)
+MANAGED_CONNECTOR_CARDS = {
+    name.lower(): names[0] for names in PORTAL_MANAGED_CONNECTORS for name in names
+}
 
 # Connector types that do not require --data-source at all (the data-plane
 # validator exempts them -- see DataConnectorValidator.cs
@@ -1383,6 +1416,7 @@ CONNECTOR_TYPE_PORTAL_NAMES = {
     "KustoClient": "Azure Data Explorer",
     "Kusto": "Azure Data Explorer Cluster",
     "Mcp": "MCP server",
+    # Create no longer accepts these, but agents may already have them.
     "Outlook": "Office 365 Outlook",
     "Teams": "Microsoft Teams",
     "Icm": "IcM connector",
@@ -1411,6 +1445,9 @@ def _normalize_data_connector_type(value):
     key = str(value).strip().lower()
     normalized = DATA_CONNECTOR_TYPES.get(key) or DATA_CONNECTOR_TYPE_ALIASES.get(key)
     if normalized is None:
+        managed_card = MANAGED_CONNECTOR_CARDS.get(key)
+        if managed_card:
+            raise CLIError(f"Set up {managed_card} in the portal: Connectors > Add connector.")
         raise CLIError(
             "--data-connector-type must be one of: "
             + ", ".join(PORTAL_CONNECTOR_NAMES[t] for t in _listed_connector_types())
@@ -1446,6 +1483,7 @@ class _DataConnectorTypeArgMixin:
                 "Connector type, by portal name (case-insensitive): "
                 + ", ".join(PORTAL_CONNECTOR_NAMES[t] for t in _listed_connector_types()) + "."
                 + " For knowledge sources use 'az sre knowledge create'."
+                + " Set up Outlook, Teams and other managed connectors in the portal."
             )
         data_source = getattr(schema, "data_source", None)
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
@@ -1981,8 +2019,10 @@ def _annotate_connector_consent_status(connector):
     """Add a CLI-only consentStatus field to a connector response dict,
     computed from properties.extendedProperties.{authType,entraOAuth}.
     No-ops (leaves the dict unchanged) for connectors that are not
-    EntraOAuth-authenticated -- e.g. Kusto/Outlook/Teams connectors, or
-    Mcp connectors using a different auth type, have no consent step.
+    EntraOAuth-authenticated -- e.g. Kusto connectors, or Mcp connectors
+    using a different auth type. Outlook and Teams connectors do need a
+    sign-in, but its status is on their managed connection, not on the
+    ARM resource, so they get no consentStatus either.
 
     When the computed status is PendingConsent, also logs actionable
     guidance (see _connector_consent_guidance) since the CLI itself has no
