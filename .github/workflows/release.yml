@@ -1,0 +1,256 @@
+name: Publish preview release
+
+on:
+  push:
+    tags:
+      - "v*.*.*b*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install \
+            azure-cli==2.92.0 \
+            azure-cli-testsdk \
+            build==1.3.0 \
+            setuptools==79.0.1 \
+            wheel==0.47.0
+
+      - name: Validate tag and source version
+        run: |
+          if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" != "commit" ]; then
+            echo "Release tags must be lightweight tags." >&2
+            exit 1
+          fi
+          if [ "$GITHUB_SHA" != "$(git rev-parse refs/remotes/origin/master)" ]; then
+            echo "Release tags must target the exact current master commit." >&2
+            exit 1
+          fi
+          .venv/bin/python scripts/validate_release_metadata.py \
+            --tag "$GITHUB_REF_NAME"
+
+      - name: Run unit tests
+        working-directory: src/sre
+        run: ../../.venv/bin/python -m unittest discover -s azext_sre/tests -v
+
+      - name: Check the CLI reference is up to date
+        run: .venv/bin/python scripts/generate_cli_reference.py --check
+
+      - name: Build exactly one wheel
+        id: build
+        working-directory: src/sre
+        run: |
+          ../../.venv/bin/python -m build --wheel --no-isolation
+          set -- dist/*.whl
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+            echo "Expected exactly one wheel, found $#." >&2
+            exit 1
+          fi
+          version="$(
+            ../../.venv/bin/python ../../scripts/validate_release_metadata.py \
+              --tag "$GITHUB_REF_NAME" \
+              --wheel "$1"
+          )"
+          release_dir="$RUNNER_TEMP/release"
+          mkdir -p "$release_dir"
+          cp "$1" "$release_dir/"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "wheel=$release_dir/${1##*/}" >>"$GITHUB_OUTPUT"
+          echo "release-dir=$release_dir" >>"$GITHUB_OUTPUT"
+
+      - name: Verify the wheel in a clean Azure CLI
+        run: |
+          PATH="$PWD/.venv/bin:$PATH" \
+            .venv/bin/python scripts/verify_installed_wheel.py \
+              "${{ steps.build.outputs.wheel }}" \
+              --expected-version "${{ steps.build.outputs.version }}"
+
+      - name: Verify the install script against the built wheel
+        run: |
+          release_dir="${{ steps.build.outputs.release-dir }}"
+          (cd "$release_dir" && sha256sum *.whl >SHA256SUMS)
+          python3 -m http.server 8000 --directory "$release_dir" &
+          server=$!
+          sleep 2
+          AZURE_CONFIG_DIR="$RUNNER_TEMP/azure-install" \
+          AZURE_EXTENSION_DIR="$RUNNER_TEMP/extensions-install" \
+          PATH="$PWD/.venv/bin:$PATH" \
+            sh scripts/install.sh \
+              --release-tag "$GITHUB_REF_NAME" \
+              --base-url "http://localhost:8000"
+          kill "$server"
+          rm "$release_dir/SHA256SUMS"
+
+      - name: Generate pinned SPDX SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          file: ${{ steps.build.outputs.wheel }}
+          format: spdx-json
+          output-file: ${{ steps.build.outputs.release-dir }}/sre-${{ steps.build.outputs.version }}.spdx.json
+          syft-version: v1.51.1
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Create and verify SHA-256 manifest
+        run: |
+          cd "${{ steps.build.outputs.release-dir }}"
+          sha256sum \
+            "sre-${{ steps.build.outputs.version }}-py3-none-any.whl" \
+            "sre-${{ steps.build.outputs.version }}.spdx.json" \
+            >SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Ensure repository tree is clean
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --short >&2
+            exit 1
+          fi
+
+      - name: Upload validated release payload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ github.sha }}
+          path: ${{ steps.build.outputs.release-dir }}/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Download validated release payload
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
+        with:
+          name: release-${{ github.sha }}
+          path: release
+
+      - name: Validate release payload
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          expected="
+          sre-${version}-py3-none-any.whl
+          sre-${version}.spdx.json
+          SHA256SUMS"
+          actual="$(
+            find release -maxdepth 1 -type f -exec basename {} \; |
+              sort |
+              sed '/^$/d'
+          )"
+          expected="$(printf '%s\n' "$expected" | sed '/^$/d' | sort)"
+          if [ "$actual" != "$expected" ]; then
+            printf 'Unexpected release payload:\n%s\n' "$actual" >&2
+            exit 1
+          fi
+          (cd release && sha256sum --check SHA256SUMS)
+
+      - name: Attest release assets with GitHub OIDC
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/*
+          show-summary: true
+
+      - name: Verify attestations before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for asset in release/*; do
+            gh attestation verify "$asset" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "$GITHUB_REF" \
+              --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
+          done
+
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists." >&2
+            exit 1
+          fi
+          notes="$RUNNER_TEMP/release-notes.md"
+          cat >"$notes" <<EOF
+          Preview release built from \`$GITHUB_SHA\`.
+
+          Install with the script in the README. To verify by hand, check the
+          wheel against \`SHA256SUMS\` and run
+          \`gh attestation verify <wheel> --repo $GITHUB_REPOSITORY\`.
+          EOF
+          created=false
+          published=false
+          cleanup() {
+            if [ "$created" = true ] && [ "$published" = false ]; then
+              remote_draft="$(
+                gh release view "$GITHUB_REF_NAME" \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --json isDraft --jq .isDraft 2>/dev/null || true
+              )"
+              if [ "$remote_draft" = true ]; then
+                gh release delete "$GITHUB_REF_NAME" \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --yes
+              fi
+            fi
+          }
+          trap cleanup EXIT
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --target "$GITHUB_SHA" \
+            --draft \
+            --prerelease \
+            --title "az sre $GITHUB_REF_NAME" \
+            --notes-file "$notes"
+          created=true
+          gh release upload "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY"
+          release_json="$(
+            gh release view "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json targetCommitish,assets
+          )"
+          if [ "$(jq -r .targetCommitish <<<"$release_json")" != "$GITHUB_SHA" ] ||
+            [ "$(jq -r '.assets | length' <<<"$release_json")" -ne 3 ]; then
+            echo "Draft release metadata or asset count is invalid." >&2
+            exit 1
+          fi
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false
+          published=true
+          gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json tagName,targetCommitish,assets \
+            --jq '{tagName, targetCommitish, assets: [.assets[].name]}'

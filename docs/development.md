@@ -94,8 +94,11 @@ for the full list of what's already hand-maintained and why).
 
 ## Artifact and release policy
 
-- CI (`.github/workflows/ci.yml`) builds a wheel on every push/PR and
-  uploads it as a build artifact — this is a development convenience, not
+- CI (`.github/workflows/ci.yml`) runs the unit tests on Python 3.13
+  with a pinned Azure CLI, checks the CLI reference, builds a wheel, installs
+  it into a clean pinned Azure CLI and into the minimum supported Azure CLI
+  (`azext.minCliCoreVersion`) and loads every documented command, then uploads
+  the wheel as a build artifact — this is a development convenience, not
   a release.
 - A full production-grade release pipeline (swagger-drift
   validation, codegen-drift check, SBOM, signed releases) is parked at

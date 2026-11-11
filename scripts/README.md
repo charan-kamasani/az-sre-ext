@@ -1,9 +1,22 @@
 # CI/CD scaffolding status
 
-`.github/workflows/ci.yml` runs a minimal build/test pipeline on every push/PR:
-checkout → install deps → run the full unit test suite
-(`azext_sre/azext_sre/tests/`) → build a wheel → upload it as an artifact.
-Confirmed green on `charan-kamasani/az-sre-ext`.
+`.github/workflows/ci.yml` runs on every push/PR:
+
+- **build-and-test** (Windows/macOS/Linux): unit tests; on Linux also the
+  CLI reference check and the wheel build/upload.
+- **azdev-lint**: `check_command_loader.py`, `azdev style sre` and
+  `azdev linter` at medium severity, using the ADC Python lint config
+  vendored in `.github/lint-config/`. Fails if the linter cannot load the
+  extension (which would otherwise "pass" with zero commands checked).
+- **wheel-smoke** (Linux on Azure CLI 2.75.0 minimum and 2.81.0 pinned;
+  Windows and macOS on 2.81.0): `verify_installed_wheel.py` installs the
+  exact built wheel into a
+  clean CLI and checks versions, `--help` for every documented command, that
+  the installed inventory matches `docs/cli-reference.md`, and that unknown
+  arguments are rejected. Run it locally with
+  `python scripts/verify_installed_wheel.py src/sre/dist/sre-<version>-py3-none-any.whl`.
+- **regeneration-drift**: regenerates the aaz code from pinned Azure/aaz
+  models and rejects any diff.
 
 `.github/workflows-future/release.yml` holds a full production-grade
 release pipeline (swagger validation, `aaz-dev` codegen-drift check, SBOM,

@@ -35,7 +35,7 @@ scripts/
   generate_cli_reference.py  # regenerates docs/cli-reference.md
 specification/         # pinned SRE Agent Swagger (generator input)
 .github/workflows/
-  ci.yml               # unit tests -> cli-reference drift check -> wheel build
+  ci.yml               # unit tests (Python 3.13) -> reference drift check -> wheel build + clean-CLI verify
 .github/workflows-future/
   release.yml          # parked full release pipeline, not yet wired up
 .githooks/
