@@ -23,7 +23,7 @@ The E2E gates run against live Azure.
 | 3 | [Package smoke](#gate-3-package-smoke) | Yes | Not started |
 | 4 | [Core E2E](#gate-4-core-e2e) | Yes | Not started |
 | 5 | [Security E2E](#gate-5-security-e2e) | Yes | Not started |
-| 6 | [Feature-specific E2E](#gate-6-feature-specific-e2e) | Only if network commands ship | Not started |
+| 6 | [Feature-specific E2E](#gate-6-feature-specific-e2e) | Yes | Not started |
 | 7 | [Defect bar](#gate-7-defect-bar) | Yes | Not met: #54 is open |
 | 8 | [Release owner sign-off](#gate-8-release-owner-sign-off) | Yes | Not started |
 
@@ -46,7 +46,7 @@ complete.
 | 3 | Package smoke | Every documented command loads from the wheel | Command smoke result |
 | 4 | Core E2E | The agent lifecycle works against the live service, and failures are safe | Commands, exit codes, resource IDs, before and after state, cleanup |
 | 5 | Security E2E | Identity, RBAC, connectors and secrets behave safely | Principal, role and scope; unauthorized results; output scan; cleanup |
-| 6 | Feature-specific E2E | Network configuration works, if it ships | Before and after state, invalid-input error |
+| 6 | Feature-specific E2E | Network configuration works | Before and after state, invalid-input error |
 | 7 | Defect bar | No ship-blocking bugs remain | Known issues table with owners and decisions |
 | 8 | Release owner sign-off | Owners reviewed the results for the exact candidate | Completed sign-off table |
 
@@ -130,7 +130,7 @@ no credential appears unexpectedly.
 
 ### Gate 6: Feature-specific E2E
 
-Blocking only if network commands ship in this release.
+Blocking, because `az sre network show` and `az sre network update` ship in this release.
 
 - [ ] Apply one valid network configuration to a test agent.
 - [ ] Retrieve it and verify the configuration persisted.
@@ -189,7 +189,7 @@ AME and PME testing needs a SAW and production-tenant accounts.
 - A credential is exposed.
 - A destructive command affects an unintended resource.
 - A failed operation leaves security-sensitive unintended state.
-- Network commands ship but gate 6 has not passed.
+- Gate 6 (network configuration) has not passed.
 - The tested artifact differs from the released artifact.
 
 ## Sign-off
@@ -216,7 +216,7 @@ them.
 | Commit SHA | |
 | Wheel file name | |
 | Wheel SHA-256 | |
-| Network commands ship in this release? | Yes / No |
+| Network commands ship in this release? | Yes (`az sre network show`, `az sre network update`) |
 | Evidence folder | |
 
 ## Decisions needed
@@ -226,7 +226,6 @@ them.
 | Is AME testing required for this release? | Yes / No | |
 | Is PME testing required for this release? | Yes / No | |
 | Is an internal customer testing period required (named users and a feedback channel, see #27)? | Yes / No | |
-| Do network commands ship in this release? | Yes / No | |
 
 ## Test results
 
