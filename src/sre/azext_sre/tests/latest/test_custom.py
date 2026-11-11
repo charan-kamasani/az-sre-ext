@@ -4283,8 +4283,8 @@ class CommandRegistrationTests(unittest.TestCase):
         """Manager feedback explicitly called these out as confusing
         duplicates of the real top-level nouns ('sre connector', the new
         'sre identity', and the new 'sre connector list-secret') -- they
-        must stay gone, not silently reappear if commands.py's generated-
-        recipe auto-discovery is ever refactored. 'sre extension ...' was
+        must stay gone, not silently reappear if the generator config in
+        scripts/generate_sre_extension.py is ever changed. 'sre extension ...' was
         removed outright in a later round (manager feedback: confusing
         generic ARM-proxy surface with no portal equivalent) -- its
         internal logic now lives in plain _extension_resource_*() helper
@@ -4302,6 +4302,72 @@ class CommandRegistrationTests(unittest.TestCase):
         ]
         still_present = [name for name in retired if name in self.command_table]
         self.assertEqual(still_present, [], f"Retired duplicate commands still registered: {still_present}")
+
+
+class GeneratedCommandNamingTests(unittest.TestCase):
+    """The generated aaz package is produced directly with the final 'sre'
+    names (scripts/generate_sre_extension.py); nothing is renamed at load
+    time, so no 'app ...' command, group or help entry may exist."""
+
+    @classmethod
+    def setUpClass(cls):
+        from knack.help_files import helps
+
+        cls.loader = SreCommandsLoader(cli_ctx=DummyCli())
+        cls.command_table = cls.loader.load_command_table(None)
+        cls.helps = dict(helps)
+
+    def test_no_app_commands_groups_or_help_entries(self):
+        def is_app(name):
+            return name == "app" or name.startswith("app ")
+
+        self.assertEqual([n for n in self.command_table if is_app(n)], [])
+        self.assertEqual([n for n in self.loader.command_group_table if is_app(n)], [])
+        self.assertEqual([n for n in self.helps if is_app(n)], [])
+
+    def test_generated_package_is_aaz_latest_sre(self):
+        from azext_sre import aaz
+        from azext_sre.aaz.latest import sre as generated_sre
+
+        self.assertEqual(generated_sre.__name__, "azext_sre.aaz.latest.sre")
+        latest_dir = os.path.dirname(aaz.latest.__file__)
+        packages = sorted(
+            name for name in os.listdir(latest_dir)
+            if os.path.isfile(os.path.join(latest_dir, name, "__init__.py"))
+        )
+        self.assertEqual(packages, ["sre"])
+        for base in (IdentityAssign, SupportedAgentModelList):
+            generated = base.__mro__[1]
+            self.assertTrue(generated.__module__.startswith("azext_sre.aaz.latest.sre."))
+            self.assertEqual(generated.AZ_NAME, base.AZ_NAME)
+
+    def test_custom_hooks_find_their_generated_arguments(self):
+        # custom.py reads these by name with getattr(..., None); a regeneration that renames
+        # one would otherwise silently disable the hook.
+        from azext_sre import custom
+
+        connector_args = ["data_connector_type", "data_source", "endpoint", "identity",
+                          "extended_properties", "connector_name"]
+        for command, paths in (
+            (custom.Create, ["incident_management_configuration.type", "knowledge_graph_configuration",
+                             "default_model.provider", "action_configuration.mode", "mi_system_assigned",
+                             "mi_user_assigned", "log_configuration"]),
+            (custom.Update, ["incident_management_configuration.type", "knowledge_graph_configuration",
+                             "default_model.provider", "action_configuration.mode"]),
+            (custom.ConnectorCreate, connector_args),
+            (custom.ConnectorUpdate, connector_args),
+        ):
+            schema = command._build_arguments_schema()
+            for path in paths:
+                with self.subTest(command=command.AZ_NAME, argument=path):
+                    node = schema
+                    for part in path.split("."):
+                        node = getattr(node, part)
+
+    def test_generated_only_commands_have_help(self):
+        for name, command in self.command_table.items():
+            if type(command).__module__.startswith("azext_sre.aaz."):
+                self.assertTrue(command.help and command.help.get("short-summary"), name)
 
 
 class ArgSchemaHelpRegressionTests(unittest.TestCase):
@@ -4933,10 +4999,8 @@ class ConnectorListSecretAliasTests(unittest.TestCase):
 
 
 class IdentityAndSupportedAgentModelRegistrationTests(unittest.TestCase):
-    """'sre identity'/'sre agent list-models' are thin re-registrations
-    of generated recipes (promoted out of the retired 'sre agent identity'
-    subgroup / 'sre supported-agent-model list' folded into 'sre agent') --
-    just confirms their schemas build without error under the new names."""
+    """'sre identity'/'sre agent list-models' are thin overrides of generated
+    recipes with the same names -- just confirms their schemas build."""
 
     def test_identity_assign_schema_builds(self):
         schema = IdentityAssign._build_arguments_schema()

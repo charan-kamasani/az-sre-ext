@@ -3,13 +3,13 @@
 # Licensed under the MIT License. See License.txt in the project root for license information.
 #
 # This is the sanctioned override layer, not regenerated. The generated AAZ
-# command recipes live under aaz/latest/... and are produced from the
-# Microsoft.App/agents (SRE Agent) ARM swagger using the public command name
-# "app agent *" (the swagger's RP folder is literally "app"). Every class
-# below is a thin subclass of a generated command that:
-#   1. renames the public surface from "app agent ..." to "sre agent ...",
-#      which is the only reason these recipes exist (there is no behavioral
-#      difference the generator could not already produce);
+# command recipes live under aaz/latest/sre/... and are produced from the
+# Microsoft.App/agents (SRE Agent) ARM swagger by
+# scripts/generate_sre_extension.py directly with their final "sre ..."
+# command names. Every class below is a thin subclass of a generated
+# command, registered under the same name, that:
+#   1. adds behavior the generator cannot produce (client-side validation,
+#      defaults, follow-up calls, output shaping);
 #   2. adds real-world-validated argument help/enums where the generated
 #      swagger left them as bare strings (e.g. --model-provider), grounded in
 #      the official SRE Agent docs and the merged stable/2026-07-01 TypeSpec
@@ -81,30 +81,30 @@ from azure.cli.core.util import send_raw_request
 from azure.mgmt.core.tools import parse_resource_id
 from knack.log import get_logger
 
-from .aaz.latest.app.agent import Create as _GeneratedCreate
-from .aaz.latest.app.agent import Delete as _GeneratedDelete
-from .aaz.latest.app.agent import List as _GeneratedList
-from .aaz.latest.app.agent import Show as _GeneratedShow
-from .aaz.latest.app.agent import Start as _GeneratedStart
-from .aaz.latest.app.agent import Stop as _GeneratedStop
-from .aaz.latest.app.agent import Update as _GeneratedUpdate
-from .aaz.latest.app.agent.connector import Create as _GeneratedConnectorCreate
-from .aaz.latest.app.agent.connector import Update as _GeneratedConnectorUpdate
-from .aaz.latest.app.agent.connector import Show as _GeneratedConnectorShow
-from .aaz.latest.app.agent.connector import List as _GeneratedConnectorList
-from .aaz.latest.app.agent.connector import Delete as _GeneratedConnectorDelete
-from .aaz.latest.app.agent.connector import Wait as _GeneratedConnectorWait
-from .aaz.latest.app.agent.connector import ListSecret as _GeneratedConnectorListSecret
-from .aaz.latest.app.agent.identity import Assign as _GeneratedIdentityAssign
-from .aaz.latest.app.agent.identity import Remove as _GeneratedIdentityRemove
-from .aaz.latest.app.agent.identity import Show as _GeneratedIdentityShow
-from .aaz.latest.app.agent.identity import Wait as _GeneratedIdentityWait
-from .aaz.latest.app.supported_agent_model import List as _GeneratedSupportedAgentModelList
+from .aaz.latest.sre.agent import Create as _GeneratedCreate
+from .aaz.latest.sre.agent import Delete as _GeneratedDelete
+from .aaz.latest.sre.agent import List as _GeneratedList
+from .aaz.latest.sre.agent import ListModels as _GeneratedListModels
+from .aaz.latest.sre.agent import Show as _GeneratedShow
+from .aaz.latest.sre.agent import Start as _GeneratedStart
+from .aaz.latest.sre.agent import Stop as _GeneratedStop
+from .aaz.latest.sre.agent import Update as _GeneratedUpdate
+from .aaz.latest.sre.connector import Create as _GeneratedConnectorCreate
+from .aaz.latest.sre.connector import Update as _GeneratedConnectorUpdate
+from .aaz.latest.sre.connector import Show as _GeneratedConnectorShow
+from .aaz.latest.sre.connector import List as _GeneratedConnectorList
+from .aaz.latest.sre.connector import Delete as _GeneratedConnectorDelete
+from .aaz.latest.sre.connector import Wait as _GeneratedConnectorWait
+from .aaz.latest.sre.connector import ListSecret as _GeneratedConnectorListSecret
+from .aaz.latest.sre.identity import Assign as _GeneratedIdentityAssign
+from .aaz.latest.sre.identity import Remove as _GeneratedIdentityRemove
+from .aaz.latest.sre.identity import Show as _GeneratedIdentityShow
+from .aaz.latest.sre.identity import Wait as _GeneratedIdentityWait
 
 logger = get_logger(__name__)
 
 # api-version pinned to match the already-generated aaz/latest recipes
-# (2026-01-01, see aaz/latest/app/agent/_show.py). Running notes section 1a
+# (2026-01-01, see aaz/latest/sre/agent/_show.py). Running notes section 1a
 # flags an unresolved discrepancy against the officially published docs
 # (2025-05-01-preview) -- reconcile before GA, but every command in this
 # extension must use the SAME version the generated code already uses or
@@ -2131,10 +2131,9 @@ class ConnectorListSecret(_ConnectorNameAliasMixin, _GeneratedConnectorListSecre
 # (the identity the agent's data plane runs as, used for its own Azure
 # RBAC-gated calls -- distinct from 'sre access', which controls who can
 # manage/use the agent, and from 'sre repo connect', which is about repo
-# auth). Promoted from the generated 'app agent identity' subgroup (now
-# removed from the raw agent surface in commands.py) to its own top-level
-# noun, since manager feedback was explicit that 'agent' should stay a
-# pure CRUD/lifecycle noun and not carry extra nested subgroups.
+# auth). Generated as the top-level 'sre identity' group rather than nested
+# under 'sre agent', since manager feedback was explicit that 'agent' should
+# stay a pure CRUD/lifecycle noun and not carry extra nested subgroups.
 # --------------------------------------------------------------------------------------------
 @register_command_group("sre identity")
 class _IdentityGroup(AAZCommandGroup):
@@ -2201,14 +2200,8 @@ class IdentityWait(_GeneratedIdentityWait):
 # 'list-models' per live naming feedback ("supported-agent-model" read as
 # too long/awkward, and the command is really just "what models can I use
 # when creating an agent" -- same pattern as 'az account list-locations').
-# Registered here (rather than left as the raw generated
-# 'app supported-agent-model' recipe) purely to fix a real, observed bug:
-# commands.py's blanket "app " -> "sre " rename only touches the command/
-# command-group tables, not knack's separate global help registry, so any
-# group/command that is renamed but never re-registered under its new
-# name via @register_command/@register_command_group ends up with a
-# blank, unhelpful '--help' (confirmed live: 'az sre supported-agent-model
-# -h' showed no description at all before this fix).
+# Overridden here because the generated schema does not match the real wire
+# field names (see _handler below).
 # --------------------------------------------------------------------------------------------
 def _version_info():
     """Installed extension version and the Azure API versions it calls."""
@@ -2251,7 +2244,7 @@ class Version(AAZCommand):
 
 
 @register_command("sre agent list-models")
-class SupportedAgentModelList(_GeneratedSupportedAgentModelList):
+class SupportedAgentModelList(_GeneratedListModels):
     """List the models supported for new agents in a region.
 
     Use this before 'sre agent create' to confirm --default-model is
@@ -2265,7 +2258,7 @@ class SupportedAgentModelList(_GeneratedSupportedAgentModelList):
 
     def _handler(self, command_args):
         # Deliberately calls the BASE AAZCommand._handler (argument parsing
-        # only), not _GeneratedSupportedAgentModelList._handler (which would
+        # only), not _GeneratedListModels._handler (which would
         # also execute the generated AAZ-schema-deserializing HTTP call) --
         # this command does its own raw ARM GET below instead, because the
         # generated schema's 'properties.provider'/'properties.model' fields
