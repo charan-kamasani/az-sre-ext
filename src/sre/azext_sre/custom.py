@@ -313,7 +313,7 @@ class DataPlaneRouteUnavailableError(CLIError):
     """The agent endpoint does not serve the requested API route."""
 
 
-# Nested commands that take --subscription. 'ad signed-in-user show' does not.
+# Nested commands that take --subscription. 'ad ...' commands do not.
 _SUBSCRIPTION_COMMAND_PREFIXES = (
     ("sre",),
     ("role", "assignment"),
@@ -606,28 +606,102 @@ def _show_internal_features():
     return _is_microsoft_first_party_tenant(tenant_id) or tenant_id.lower() in ICM_MANAGED_IDENTITY_TENANT_IDS
 
 
-def _resolve_signed_in_user_object_id(cli_ctx):
-    """Resolve the signed-in user's AAD object ID via 'az ad signed-in-user show'.
+_SIGNED_IN_PRINCIPAL_TYPES = {"user": "User", "serviceprincipal": "ServicePrincipal"}
 
-    Shared by --grant-access-to-me (agent create), --assignee-me (access grant
-    and access revoke) so "me" always means the same thing and is resolved the
-    same way in exactly one place.
+
+def _decode_jwt_claims(token):
+    """Read a JWT's payload claims without verifying its signature. Only
+    used on our own Azure Resource Manager token, so no trust decision rests
+    on it. Never includes the token in errors."""
+    parts = token.split(".") if isinstance(token, str) else []
+    if len(parts) != 3:
+        raise ValueError("not a JWT")
+    payload = parts[1]
+    payload += "=" * (-len(payload) % 4)
+    claims = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8"))
+    if not isinstance(claims, dict):
+        raise ValueError("JWT payload is not an object")
+    return claims
+
+
+def _resolve_signed_in_principal(cli_ctx):
+    """Return (object_id, principal_type) for the signed-in account without
+    Microsoft Graph.
+
+    The object ID is the `oid` claim of an Azure Resource Manager token, and
+    the principal type comes from 'az account show'. Both nested commands get
+    the caller's --subscription, so "me" is resolved in that subscription's
+    tenant. Shared by --grant-access-to-me (agent create) and --assignee-me
+    (access grant and access revoke).
     """
     invoke = partial(_cli_invoke, cli_ctx)
-    signed_in_user = invoke("ad", "signed-in-user", "show")
-    object_id = (signed_in_user or {}).get("id") if isinstance(signed_in_user, dict) else None
-    if not object_id:
-        raise CLIError("Could not resolve the signed-in user's object ID via 'az ad signed-in-user show'.")
-    return object_id
+    token_result = invoke("account", "get-access-token")
+    token = token_result.get("accessToken") if isinstance(token_result, dict) else None
+    try:
+        claims = _decode_jwt_claims(token)
+    except Exception:  # pylint: disable=broad-except
+        raise CLIError(  # pylint: disable=raise-missing-from
+            "Could not read your object ID: the Azure Resource Manager access token from "
+            "'az account get-access-token' could not be decoded.")
+    object_id = claims.get("oid")
+    if not isinstance(object_id, str) or not object_id.strip():
+        raise CLIError(
+            "Could not read your object ID: the Azure Resource Manager access token from "
+            "'az account get-access-token' has no 'oid' claim.")
+
+    account = invoke("account", "show")
+    account = account if isinstance(account, dict) else {}
+    tenant_id = account.get("tenantId")
+    token_tenant = claims.get("tid")
+    if tenant_id and token_tenant and str(tenant_id).lower() != str(token_tenant).lower():
+        raise CLIError(
+            f"Your access token is for tenant '{token_tenant}', but the subscription is in "
+            f"tenant '{tenant_id}'. Sign in to that tenant and retry, or use --assignee.")
+    user_type = ((account.get("user") or {}).get("type") or "")
+    principal_type = _SIGNED_IN_PRINCIPAL_TYPES.get(str(user_type).lower())
+    if not principal_type:
+        raise CLIError(
+            f"Unsupported signed-in account type '{user_type}' from 'az account show'. "
+            "Use --assignee instead.")
+    return object_id, principal_type
+
+
+def _find_role_assignment(cli_ctx, object_id, role, scope):
+    """Return an existing assignment of `role` to `object_id` at exactly
+    `scope`, or None. Azure CLI's own "already exists" handling in 'role
+    assignment create' looks up display names in Microsoft Graph, so check
+    first without names."""
+    existing = _cli_invoke(
+        cli_ctx, "role", "assignment", "list",
+        "--assignee-object-id", object_id, "--role", role, "--scope", scope,
+        "--fill-principal-name", "false",
+    )
+    for assignment in existing or []:
+        if (isinstance(assignment, dict)
+                and str(assignment.get("principalId", "")).lower() == object_id.lower()
+                and str(assignment.get("scope", "")).lower() == scope.lower()):
+            return assignment
+    return None
+
+
+def _create_role_assignment_for_object_id(cli_ctx, object_id, principal_type, role, scope):
+    """Create a role assignment for a known object ID without Microsoft Graph,
+    returning the existing one if it's already there."""
+    existing = _find_role_assignment(cli_ctx, object_id, role, scope)
+    if existing is not None:
+        return existing
+    return _cli_invoke(
+        cli_ctx, "role", "assignment", "create",
+        "--role", role, "--assignee-object-id", object_id,
+        "--assignee-principal-type", principal_type, "--scope", scope,
+    )
 
 
 class _GrantAccessToMeMixin:
     """Adds --grant-access-to-me to 'agent create', collapsing the
-    create -> `az ad signed-in-user show` -> access grant dance into one
-    flag. GrantAccess (defined further below in this module) already
-    builds the agent's resource-ID scope and issues 'role assignment
-    create' for you; this just auto-resolves "me" and calls it right
-    after the agent finishes provisioning.
+    create -> access grant --assignee-me steps into one flag. It runs
+    'sre access grant --assignee-me' right after the agent finishes
+    provisioning, so "me" is resolved the same Graph-free way.
     """
 
     @classmethod
@@ -669,12 +743,11 @@ class _GrantAccessToMeMixin:
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
         try:
-            object_id = _resolve_signed_in_user_object_id(self.cli_ctx)
-            invoke = partial(_cli_invoke, self.cli_ctx)
-            invoke(
+            assignment = _cli_invoke(
+                self.cli_ctx,
                 "sre", "access", "grant",
                 "--agent-name", agent_name, "--resource-group", resource_group,
-                "--role", role_key, "--assignee", object_id,
+                "--role", role_key, "--assignee-me",
             )
         except Exception as ex:
             raise CLIError(
@@ -682,9 +755,10 @@ class _GrantAccessToMeMixin:
                 f"Retry with: az sre access grant --agent-name {agent_name} "
                 f"--resource-group {resource_group} --role {role_key} --assignee-me"
             ) from ex
+        principal_id = assignment.get("principalId") if isinstance(assignment, dict) else None
         logger.warning(
-            "Granted '%s' role to signed-in user (%s) on agent '%s'.",
-            GrantAccess._ROLES[role_key], object_id, agent_name,
+            "Granted '%s' role to the signed-in account (%s) on agent '%s'.",
+            GrantAccess._ROLES[role_key], principal_id or "object ID unknown", agent_name,
         )
 
 
@@ -2764,14 +2838,11 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
     def _handler(self, command_args):
         super()._handler(command_args)
         principal_id, scope = self._resolve()
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        results = []
-        for role in self._roles():
-            results.append(invoke(
-                "role", "assignment", "create",
-                "--role", role, "--assignee", principal_id, "--scope", scope,
-            ))
-        return results
+        return [
+            _create_role_assignment_for_object_id(
+                self.cli_ctx, principal_id, "ServicePrincipal", role, scope)
+            for role in self._roles()
+        ]
 
 
 @register_command("sre managed-resource revoke")
@@ -2802,7 +2873,7 @@ class ManagedResourceRevoke(_ManagedResourceScopeCommand):
         for role in self._roles():
             invoke(
                 "role", "assignment", "delete",
-                "--role", role, "--assignee", principal_id, "--scope", scope,
+                "--role", role, "--assignee-object-id", principal_id, "--scope", scope,
             )
 
 
@@ -2844,7 +2915,10 @@ class ManagedResourceList(_ManagedResourceIdentityMixin, AAZCommand):
         principal_id = self._resolve_principal_id()
 
         invoke = partial(_cli_invoke, self.cli_ctx)
-        return invoke("role", "assignment", "list", "--assignee", principal_id, "--all")
+        return invoke(
+            "role", "assignment", "list", "--assignee-object-id", principal_id, "--all",
+            "--fill-principal-name", "false",
+        )
 
 
 # --------------------------------------------------------------------------------------------
@@ -3386,9 +3460,8 @@ class _RepoGroup(AAZCommandGroup):
 
 class _RoleAssignmentScopeCommand(AAZCommand):
     """Shared base for 'access grant'/'access revoke': builds the agent's
-    full resource-ID scope and resolves --assignee/--assignee-me to a single
-    object ID, so each subclass only has to call 'role assignment
-    create'/'delete' with (role_name, assignee, scope) already in hand.
+    full resource-ID scope and turns --assignee/--assignee-me into
+    'role assignment' arguments.
     """
 
     _args_schema = None
@@ -3432,22 +3505,30 @@ class _RoleAssignmentScopeCommand(AAZCommand):
         )
         schema.assignee_me = AAZBoolArg(
             options=["--assignee-me"],
-            help="Use the signed-in user as the assignee, resolved via "
-            "'az ad signed-in-user show'. Alternative to --assignee.",
+            help="Use the signed-in account as the assignee. Reads your object ID from "
+            "your Azure access token, without Microsoft Graph. Alternative to --assignee.",
         )
         cls._args_schema = schema
         return schema
 
-    def _resolve_assignee(self):
+    def _resolve_assignee(self, for_create):
+        """Return (role-assignment args, object_id). object_id is set only
+        for --assignee-me; --assignee is passed through unchanged (Azure CLI
+        resolves emails/UPNs with Microsoft Graph). 'role assignment delete'
+        has no --assignee-principal-type option."""
         assignee = _arg_value(getattr(self.ctx.args, "assignee", None))
         assignee_me = bool(_arg_value(getattr(self.ctx.args, "assignee_me", None)))
         if assignee and assignee_me:
             raise CLIError("Specify either --assignee or --assignee-me, not both.")
         if assignee_me:
-            return _resolve_signed_in_user_object_id(self.cli_ctx)
+            object_id, principal_type = _resolve_signed_in_principal(self.cli_ctx)
+            args = ("--assignee-object-id", object_id)
+            if for_create:
+                args += ("--assignee-principal-type", principal_type)
+            return args, object_id
         if not assignee:
             raise CLIError("Specify --assignee <object-id/UPN> or --assignee-me.")
-        return assignee
+        return ("--assignee", assignee), None
 
     def _resolve_resource_id(self, name, resource_group):
         return _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
@@ -3473,14 +3554,18 @@ class GrantAccess(_RoleAssignmentScopeCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         role_key = _arg_value(self.ctx.args.role)
         role_name = self._ROLES[role_key]
-        assignee = self._resolve_assignee()
+        assignee_args, object_id = self._resolve_assignee(for_create=True)
         resource_id = self._resolve_resource_id(name, resource_group)
 
+        if object_id:
+            existing = _find_role_assignment(self.cli_ctx, object_id, role_name, resource_id)
+            if existing is not None:
+                return existing
         invoke = partial(_cli_invoke, self.cli_ctx)
         return invoke(
             "role", "assignment", "create",
             "--role", role_name,
-            "--assignee", assignee,
+            *assignee_args,
             "--scope", resource_id,
         )
 
@@ -3502,14 +3587,14 @@ class RevokeAccess(_RoleAssignmentScopeCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         role_key = _arg_value(self.ctx.args.role)
         role_name = self._ROLES[role_key]
-        assignee = self._resolve_assignee()
+        assignee_args, _ = self._resolve_assignee(for_create=False)
         resource_id = self._resolve_resource_id(name, resource_group)
 
         invoke = partial(_cli_invoke, self.cli_ctx)
         return invoke(
             "role", "assignment", "delete",
             "--role", role_name,
-            "--assignee", assignee,
+            *assignee_args,
             "--scope", resource_id,
         )
 
@@ -3518,10 +3603,14 @@ class RevokeAccess(_RoleAssignmentScopeCommand):
 class AccessList(AAZCommand):
     """List who has access to an SRE Agent.
 
-    Shows every role assignment scoped to the agent itself.
+    Shows every role assignment scoped to the agent itself, by object ID.
+    Use --show-names to add display names from Microsoft Graph.
 
     :example: List everyone with access to an agent
         az sre access list --name myagent --resource-group myrg
+
+    :example: Include display names
+        az sre access list --name myagent --resource-group myrg --show-names
     """
 
     _args_schema = None
@@ -3537,6 +3626,12 @@ class AccessList(AAZCommand):
             required=True,
         )
         schema.resource_group = AAZResourceGroupNameArg(required=True)
+        schema.show_names = AAZBoolArg(
+            options=["--show-names"],
+            help="Add principal display names from Microsoft Graph. Some organizations' "
+            "policies block Graph for Azure CLI on macOS.",
+            default=False,
+        )
         cls._args_schema = schema
         return schema
 
@@ -3546,8 +3641,10 @@ class AccessList(AAZCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         resource_id = _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
 
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        return invoke("role", "assignment", "list", "--scope", resource_id)
+        args = ["role", "assignment", "list", "--scope", resource_id]
+        if not bool(_arg_value(getattr(self.ctx.args, "show_names", None))):
+            args += ["--fill-principal-name", "false"]
+        return _cli_invoke(self.cli_ctx, *args)
 
 
 @register_command("sre network update")

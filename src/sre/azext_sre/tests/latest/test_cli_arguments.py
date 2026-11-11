@@ -1,6 +1,8 @@
 """Offline argument-enforcement tests through the real Azure CLI parser."""
 
+import base64
 import io
+import json
 import logging
 import os
 import tempfile
@@ -58,8 +60,15 @@ class CliArgumentEnforcementTests(unittest.TestCase):
         self.nested_calls.append(args)
         if args[:3] == ("sre", "agent", "show"):
             return {"id": self.AGENT_ID}
-        if args[:3] == ("ad", "signed-in-user", "show"):
-            return {"id": self.SIGNED_IN_USER}
+        if args[0] == "ad":
+            raise AssertionError("CLI argument tests must not call Microsoft Graph.")
+        if args[:2] == ("account", "get-access-token"):
+            claims = base64.urlsafe_b64encode(json.dumps({"oid": self.SIGNED_IN_USER}).encode())
+            return {"accessToken": f"e30.{claims.decode().rstrip('=')}.sig"}
+        if args[:2] == ("account", "show"):
+            return {"user": {"type": "user"}}
+        if args[:3] == ("role", "assignment", "list"):
+            return []
         return {}
 
     def _run(self, arguments):
@@ -120,7 +129,8 @@ class CliArgumentEnforcementTests(unittest.TestCase):
         command, options = self._accepted_call(arguments + ["--assignee-me"])
         self.assertEqual(command, ("role", "assignment", "create"))
         self.assertEqual(options, {
-            "--role": "SRE Agent Author", "--assignee": self.SIGNED_IN_USER, "--scope": self.AGENT_ID,
+            "--assignee-object-id": self.SIGNED_IN_USER, "--assignee-principal-type": "User",
+            "--role": "SRE Agent Author", "--scope": self.AGENT_ID,
         })
         self._assert_rejected(arguments, "--assignee")
 

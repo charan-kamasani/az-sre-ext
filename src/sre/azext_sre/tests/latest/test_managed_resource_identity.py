@@ -70,6 +70,7 @@ class ManagedResourceIdentityCliTests(unittest.TestCase):
         }
         self.runtime_configuration = copy.deepcopy(self.agent["properties"])
         self.assignments = []
+        self.role_commands = []
         self.next_assignment_id = 0
 
     def tearDown(self):
@@ -90,6 +91,7 @@ class ManagedResourceIdentityCliTests(unittest.TestCase):
 
     def _nested_command(self, cli_ctx, *args, **kwargs):
         del cli_ctx, kwargs
+        self.assertNotEqual(args[:1], ("ad",), f"Microsoft Graph command: {args}")
         if args[:3] == ("sre", "identity", "show"):
             return copy.deepcopy(self.agent["identity"])
         if args[:2] == ("account", "show"):
@@ -97,19 +99,32 @@ class ManagedResourceIdentityCliTests(unittest.TestCase):
             self.assertIn(subscription, ("target-sub", self.SUBSCRIPTION))
             return {"id": self.SUBSCRIPTION}
         self.assertEqual(args[:2], ("role", "assignment"), f"Unexpected command: {args}")
-        options = dict(zip(args[3::2], args[4::2]))
-        principal = options["--assignee"]
+        self.assertNotIn("--assignee", args, f"--assignee resolves through Microsoft Graph: {args}")
+        self.role_commands.append(args)
+        flags = [arg for arg in args[3:] if arg == "--all"]
+        pairs = [arg for arg in args[3:] if arg != "--all"]
+        options = dict(zip(pairs[0::2], pairs[1::2]))
+        principal = options["--assignee-object-id"]
         action = args[2]
         if action == "list":
-            subscription_scope = f"/subscriptions/{self.SUBSCRIPTION}"
-            return copy.deepcopy([
-                assignment for assignment in self.assignments
-                if assignment["principalId"] == principal
-                and (assignment["scope"] == subscription_scope
-                     or "--all" in args and assignment["scope"].startswith(subscription_scope + "/"))
-            ])
+            self.assertEqual(options.get("--fill-principal-name"), "false", f"Graph names: {args}")
+            if "--all" in flags:
+                subscription_scope = f"/subscriptions/{self.SUBSCRIPTION}"
+                matches = [
+                    assignment for assignment in self.assignments
+                    if assignment["scope"] == subscription_scope
+                    or assignment["scope"].startswith(subscription_scope + "/")
+                ]
+            else:
+                matches = [
+                    assignment for assignment in self.assignments
+                    if assignment["scope"] == options["--scope"]
+                    and assignment["roleDefinitionName"] == options["--role"]
+                ]
+            return copy.deepcopy([a for a in matches if a["principalId"] == principal])
         role, scope = options["--role"], options["--scope"]
         if action == "create":
+            self.assertEqual(options.get("--assignee-principal-type"), "ServicePrincipal")
             return self._add_assignment(principal, role, scope)
         self.assertEqual(action, "delete")
         self.assignments[:] = [
@@ -161,6 +176,14 @@ class ManagedResourceIdentityCliTests(unittest.TestCase):
         output, _ = self._invoke("revoke", "--scope", self.SCOPE)
         self.assertEqual(output.strip(), "")
         self.assertEqual(self.assignments, [])
+
+    def test_granting_again_returns_existing_assignments_without_create(self):
+        first = json.loads(self._invoke("grant", "--scope", self.SCOPE)[0])
+        self.role_commands.clear()
+        second = json.loads(self._invoke("grant", "--scope", self.SCOPE)[0])
+        self.assertCountEqual(second, first)
+        self.assertEqual(len(self.assignments), 2)
+        self.assertEqual([command[2] for command in self.role_commands], ["list", "list"])
 
     def test_roles_override_the_default_pair(self):
         self._add_assignment(self.SYSTEM_PRINCIPAL, "Monitoring Contributor", self.SCOPE)

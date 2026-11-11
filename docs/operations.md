@@ -77,12 +77,37 @@ exact mapping, confirmed against real `az role definition list` output.
 Pass `--assignee-me` instead of `--assignee` to grant yourself access without
 looking up your own object ID first (also available as
 `az sre agent create --grant-access-to-me <role>` at agent-creation time).
+`--assignee-me` reads your object ID (`oid`) from an Azure Resource Manager
+access token and your principal type (`User` or `ServicePrincipal`) from
+`az account show`, both for the command's `--subscription`, so it picks the
+right tenant when your login spans several. It then calls
+`az role assignment create --assignee-object-id ... --assignee-principal-type ...`
+after checking with `az role assignment list --fill-principal-name false`
+whether the assignment already exists (Azure CLI's own "already exists"
+handling looks up names in Microsoft Graph).
 Use `az sre access list -g myrg --agent-name myagent` to see every current
 role assignment on the agent (added after a help-only live walkthrough found
 no documented way to verify a grant afterward — a thin wrapper over
-`az role assignment list --scope <agent-id>`). `-o table` shows a curated
-`Principal`/`Type`/`Role`/`GrantedOn` view (not every raw field) — see the
+`az role assignment list --scope <agent-id> --fill-principal-name false`).
+It shows object IDs by default; add `--show-names` to fill in display names
+from Microsoft Graph. `-o table` shows a curated
+`Principal`/`Type`/`Role`/`GrantedOn` view (not every raw field), with the
+object ID in `Principal` when there's no name — see the
 same note under `sre managed-resource list` below for why.
+
+Only two paths need Microsoft Graph: `access grant/revoke --assignee <email,
+UPN or ID>` (Azure CLI resolves the value through Graph) and
+`access list --show-names`. Everything else, including `--assignee-me`,
+`--grant-access-to-me` and `managed-resource grant/revoke/list`, uses only
+Azure Resource Manager. **macOS note:** Conditional Access token protection
+in some organizations (for example Microsoft's) rejects Microsoft Graph
+tokens from Azure CLI on macOS (`AADSTS530084`), because Azure CLI doesn't
+use the sign-in broker there by default (`core.enable_broker_on_mac` is
+false). Azure CLI then falls back to an interactive browser sign-in, which
+can wait indefinitely in a non-interactive shell. On such machines, use
+`--assignee-me` and skip `--show-names`; to grant someone else, call
+`az role assignment create --assignee-object-id <id> --assignee-principal-type <type> --scope <agent id>`
+directly.
 
 **`--grant-access-to-me` cannot be combined with `--no-wait`** on
 `agent create`: the grant runs in the AAZ command's `post_operations()` hook,

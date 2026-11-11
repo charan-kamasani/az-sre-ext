@@ -38,11 +38,12 @@ def _short_timestamp(value):
 def access_list_table_format(result):
     """Curated columns for 'sre access list': who has access to the agent
     itself, and what role -- the scope is always the agent, so it's omitted
-    as redundant.
+    as redundant. Shows the object ID when there's no display name (names
+    are only filled in with --show-names).
     """
     return [
         OrderedDict([
-            ("Principal", item.get("principalName")),
+            ("Principal", item.get("principalName") or item.get("principalId")),
             ("Type", item.get("principalType")),
             ("Role", item.get("roleDefinitionName")),
             ("GrantedOn", _short_timestamp(item.get("createdOn"))),
