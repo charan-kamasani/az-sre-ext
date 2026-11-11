@@ -2,10 +2,19 @@ name: Live canary
 
 # Runs the built wheel against real Azure: agent lifecycle, content round trip,
 # RBAC grant/revoke, negative cases and a credential-leak scan. Weekly and on
-# demand only, never on pull requests. Needs the `live-canary` environment with
-# AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID variables for an
-# OIDC (federated) identity holding Contributor and User Access Administrator
-# on the subscription. AZURE_LOCATION is optional (default eastus2).
+# demand only, never on pull requests.
+#
+# Setup (see scripts/README.md):
+# - A `live-canary` environment whose deployment branches are limited to
+#   `master` (the OIDC subject below doesn't include the branch, so without
+#   this any pushed branch could dispatch a modified workflow and get the token).
+# - Variables AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID on that
+#   environment (AZURE_LOCATION optional, default eastus2).
+# - A federated credential on the identity with subject
+#   repo:charan-kamasani/az-sre-ext:environment:live-canary
+# - Preferably a dedicated subscription, with Contributor plus Role Based Access
+#   Control Administrator conditioned to the four SRE Agent roles (not User
+#   Access Administrator). No Microsoft Graph permission is needed.
 
 on:
   schedule:
@@ -76,7 +85,18 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
+      # The GitHub ID token azure/login uses as the client assertion expires
+      # after about 5 minutes, so a token for a new audience can't be requested
+      # later in the run (AADSTS700024). Acquire every audience the canary needs
+      # now; the cached access tokens last about an hour.
+      - name: Pre-acquire access tokens
+        run: |
+          az account get-access-token -o none
+          az account get-access-token --resource https://azuresre.dev -o none
+
       - name: Run live canary
+        # Leaves budget in the 60-minute job for cleanup and the sweep.
+        timeout-minutes: 45
         env:
           SKIP_RBAC: ${{ inputs.skip-rbac && '--skip-rbac' || '' }}
         run: |
@@ -86,10 +106,51 @@ jobs:
             --results-dir "$RUNNER_TEMP/live-canary-results" \
             $SKIP_RBAC
 
+      - name: Sign in to Azure again for cleanup
+        if: always() && env.AZURE_CLIENT_ID != ''
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
       - name: Delete canary resource group
-        if: always()
+        if: always() && env.AZURE_CLIENT_ID != ''
         run: |
-          az group delete --name "rg-sre-canary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --yes --no-wait 2>/dev/null || true
+          rg="rg-sre-canary-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if ! exists=$(az group exists --name "$rg"); then
+            echo "::warning::Could not check whether $rg still exists; delete it manually if it does."
+          elif [ "$exists" = "true" ]; then
+            az group delete --name "$rg" --yes --no-wait \
+              || echo "::warning::Could not delete $rg; delete it manually."
+          fi
+
+      # Deletes canary groups left behind by earlier runs whose cleanup failed.
+      - name: Sweep stale canary resource groups
+        if: always() && env.AZURE_CLIENT_ID != ''
+        run: |
+          cutoff=$(date -u -d '6 hours ago' +%s)
+          if ! groups=$(az group list --tag purpose=sre-live-canary \
+              --query "[].[name, tags.\"sre-canary-created\"]" -o tsv); then
+            echo "::warning::Could not list canary resource groups to sweep."
+            exit 0
+          fi
+          while IFS=$'\t' read -r name created; do
+            [ -n "$name" ] || continue
+            if [ -z "$created" ] || [ "$created" = "None" ]; then
+              echo "::warning::$name has no sre-canary-created tag; not sweeping it."
+              continue
+            fi
+            if ! created_s=$(date -u -d "$created" +%s 2>/dev/null); then
+              echo "::warning::$name has an unreadable sre-canary-created tag '$created'; not sweeping it."
+              continue
+            fi
+            if [ "$created_s" -lt "$cutoff" ]; then
+              echo "Deleting stale canary resource group $name (created $created)"
+              az group delete --name "$name" --yes --no-wait \
+                || echo "::warning::Could not delete stale canary resource group $name."
+            fi
+          done <<< "$groups"
 
       - name: Upload evidence
         if: always()
