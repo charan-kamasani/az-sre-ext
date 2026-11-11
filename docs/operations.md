@@ -1063,10 +1063,13 @@ type-name-to-C#-model table in `AAPT-SREAgent-ControlPlane`.
 
 Noun-specific commands include:
 
-- `az sre automation scheduled-task create/show/list/delete` -- run the
-  agent on a cron schedule against a prompt.
-- `az sre automation http-trigger create/show/list/delete` -- run the
-  agent from an inbound webhook call.
+- `az sre automation scheduled-task create/show/list/delete/pause/resume` -- run the
+  agent on a cron schedule against a prompt. `isEnabled: false` in `--value`
+  (or `pause`) sets the task's `status` to `Paused`; the service has no
+  `isEnabled` field on scheduled tasks.
+- `az sre automation http-trigger create/show/list/delete/invoke` -- run the
+  agent from an inbound webhook call. `invoke` POSTs to the trigger's
+  `triggerUrl` with your Azure CLI token, which is handy for testing.
 - `az sre response-plan create/show/list/delete/enable/disable` -- match
   incoming incidents (by platform/title/team/etc.) and route matches to
   a handling agent (portal: Incidents > "Triggers & response plans", a

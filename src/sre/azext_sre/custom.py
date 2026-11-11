@@ -212,6 +212,25 @@ def _resolve_agent_endpoint(cli_ctx, agent_name, resource_group):
     return endpoint
 
 
+def _is_azuresre_https_url(url):
+    """True only for a plain https URL whose host is under .azuresre.ai.
+
+    urlparse and requests/urllib3 disagree on backslashes and userinfo, so
+    'https://evil\\@x.azuresre.ai' passes a urlparse host check but is sent
+    to 'evil'. Reject anything either parser could read differently.
+    """
+    if not isinstance(url, str) or "\\" in url or any(ord(c) < 33 for c in url):
+        return False
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    return (
+        parsed.scheme == "https"
+        and "@" not in parsed.netloc
+        and parsed.netloc.lower().split(":")[0] == hostname
+        and hostname.endswith(".azuresre.ai")
+    )
+
+
 def _validate_agent_url(agent_url):
     """Accept only https agent endpoints, since a data-plane token is sent to it."""
     parsed = urlparse(agent_url or "")
@@ -837,6 +856,31 @@ def _add_experimental_settings_arg(schema):
         help="Preview feature flags as JSON or @file, e.g. '{\"EnableWorkspaceTools\": true}'. "
         "Merged into the agent's existing flags.",
     )
+    schema.monthly_unit_limit = AAZIntArg(
+        options=["--monthly-unit-limit"],
+        arg_group="Properties",
+        help="Monthly agent unit (AAU) cap for this agent. 0 restores the service default. "
+        "The service enforces a minimum (currently 500).",
+    )
+
+
+def _monthly_unit_limit(args):
+    limit = _arg_value(getattr(args, "monthly_unit_limit", None))
+    if limit is not None and limit < 0:
+        raise CLIError("--monthly-unit-limit cannot be negative.")
+    return limit
+
+
+def _extra_agent_properties(args):
+    """Agent properties the generated create can't carry, applied with a PATCH afterward."""
+    properties = {}
+    settings = _experimental_settings(args)
+    if settings:
+        properties["experimentalSettings"] = settings
+    limit = _monthly_unit_limit(args)
+    if limit is not None:
+        properties["monthlyAgentUnitLimit"] = limit
+    return properties
 
 
 def _experimental_settings(args):
@@ -847,32 +891,31 @@ def _experimental_settings(args):
 
 
 class _ExperimentalSettingsOnCreateMixin:
-    """Applies --experimental-settings with a PATCH once the agent exists.
+    """Applies --experimental-settings and --monthly-unit-limit with a PATCH once the agent exists.
 
-    The generated create can't carry the property, and a PUT that does carry
-    it replaces the service's own flags instead of adding to them.
+    The generated create can't carry these properties, and a PUT that does carry
+    experimentalSettings replaces the service's own flags instead of adding to them.
     """
 
     def pre_operations(self):
-        if _experimental_settings(self.ctx.args) and _arg_value(getattr(self.ctx.args, "no_wait", None)):
+        if _extra_agent_properties(self.ctx.args) and _arg_value(getattr(self.ctx.args, "no_wait", None)):
             raise CLIError(
-                "--experimental-settings cannot be combined with --no-wait: the settings are "
-                "applied after the agent finishes provisioning. Run 'az sre agent update "
-                "--experimental-settings' afterward instead."
+                "--experimental-settings and --monthly-unit-limit cannot be combined with --no-wait: "
+                "they are applied after the agent finishes provisioning. Run 'az sre agent update' "
+                "with them afterward instead."
             )
         super().pre_operations()
 
     def post_operations(self):
         super().post_operations()
-        settings = _experimental_settings(self.ctx.args)
-        if not settings:
+        properties = _extra_agent_properties(self.ctx.args)
+        if not properties:
             return
         resource_id = (
             f"/subscriptions/{self.ctx.subscription_id}/resourceGroups/{_arg_value(self.ctx.args.resource_group)}"
             f"/providers/Microsoft.App/agents/{_arg_value(self.ctx.args.agent_name)}"
         )
-        _arm_request(self.cli_ctx, "PATCH", resource_id, API_VERSION,
-                     body={"properties": {"experimentalSettings": settings}})
+        _arm_request(self.cli_ctx, "PATCH", resource_id, API_VERSION, body={"properties": properties})
 
 
 class _ActionModeEnum(AAZArgEnum):
@@ -1019,8 +1062,19 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
                 del instance.properties.log_configuration
             self.ctx.sre_use_patch = True
         # A PUT replaces the whole experimentalSettings map; PATCH merges it.
-        if _experimental_settings(self.ctx.args):
+        if _extra_agent_properties(self.ctx.args):
             self.ctx.sre_use_patch = True
+
+    class AgentsGet(_GeneratedUpdate.AgentsGet):
+
+        def on_200(self, session):
+            # The generated model has no monthlyAgentUnitLimit, and a PUT that
+            # leaves it out resets the agent to the default limit.
+            data = self.deserialize_http_content(session)
+            properties = data.get("properties") if isinstance(data, dict) else None
+            if isinstance(properties, dict):
+                self.ctx.sre_monthly_unit_limit = properties.get("monthlyAgentUnitLimit")
+            super().on_200(session)
 
     class AgentsCreateOrUpdate(_GeneratedUpdate.AgentsCreateOrUpdate):
 
@@ -1031,9 +1085,12 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
         @property
         def content(self):
             body = super().content
-            settings = _experimental_settings(self.ctx.args)
-            if settings:
-                body.setdefault("properties", {})["experimentalSettings"] = settings
+            extra = _extra_agent_properties(self.ctx.args)
+            current_limit = getattr(self.ctx, "sre_monthly_unit_limit", None)
+            if current_limit is not None and self.method == "PUT":
+                extra.setdefault("monthlyAgentUnitLimit", current_limit)
+            if extra:
+                body.setdefault("properties", {}).update(extra)
             return body
 
 
@@ -1701,6 +1758,55 @@ class _ConnectorExistenceGuardMixin:
         super().pre_operations()
 
 
+class _ConnectorPartnerTypeMixin:
+    """Adds --partner-type, stored as extendedProperties.partnerType on Mcp connectors."""
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        if not hasattr(schema, "partner_type"):
+            schema.partner_type = AAZStrArg(
+                options=["--partner-type"],
+                arg_group="MCP",
+                help="For Mcp: the partner integration this server belongs to, for example DynatraceMcp. "
+                     "On update, also pass --data-source and --extended-properties, since the service "
+                     "doesn't return the endpoint or credentials.",
+            )
+        return schema
+
+    def pre_operations(self):
+        args = self.ctx.args
+        partner_type = _arg_value(getattr(args, "partner_type", None))
+        connector_type = _arg_value(getattr(args, "data_connector_type", None))
+        if partner_type and connector_type is not None and connector_type != "Mcp":
+            raise CLIError("--partner-type requires --data-connector-type Mcp.")
+        if partner_type and isinstance(self, _GeneratedConnectorUpdate) and (
+                _arg_value(getattr(args, "data_source", None)) is None
+                or _arg_value(getattr(args, "extended_properties", None)) is None):
+            # GET never returns the endpoint or bearer token, so a PUT built
+            # from it alone would wipe them from the connector.
+            raise CLIError(
+                "--partner-type on update also needs --data-source and --extended-properties "
+                "(including the endpoint and credentials), because the service doesn't return "
+                "them and they would otherwise be cleared."
+            )
+        if partner_type and not isinstance(self, _GeneratedConnectorUpdate):
+            existing = _arg_value(getattr(args, "extended_properties", None)) or {}
+            if not isinstance(existing, dict):
+                existing = {}
+            args.extended_properties = {**existing, "partnerType": partner_type}
+        super().pre_operations()
+
+    def post_instance_update(self, instance):
+        super().post_instance_update(instance)
+        partner_type = _arg_value(getattr(self.ctx.args, "partner_type", None))
+        if not partner_type:
+            return
+        if instance.properties.data_connector_type.to_serialized_data() != "Mcp":
+            raise CLIError("--partner-type only applies to Mcp connectors.")
+        instance.properties.extended_properties["partnerType"] = partner_type
+
+
 class _SecretHttpOperationMixin:
     def __call__(self, *args, **kwargs):
         kwargs["logging_enable"] = False
@@ -1711,6 +1817,7 @@ class _SecretHttpOperationMixin:
 @register_command("sre connector create")
 class ConnectorCreate(
     _DataConnectorTypeArgMixin,
+    _ConnectorPartnerTypeMixin,
     _ConnectorConvenienceArgsMixin,
     _ConnectorExistenceGuardMixin,
     _GeneratedConnectorCreate,
@@ -1730,6 +1837,12 @@ class ConnectorCreate(
             --name mcp --data-connector-type Mcp \\
             --mcp-endpoint "https://myserver.contoso.com/mcp" \\
             --bearer-token @token.txt
+
+    :example: Connect a Dynatrace MCP server
+        az sre connector create --agent-name myagent --resource-group myrg \\
+            --name dynatrace --data-connector-type Mcp \\
+            --mcp-endpoint "https://myenv.apps.dynatrace.com/platform-reserved/mcp-gateway/v0.1/servers/dynatrace-mcp/mcp" \\
+            --bearer-token "$DT_TOKEN" --partner-type DynatraceMcp
 
     :example: Connect a custom MCP server with the agent's managed identity
         az sre connector create --agent-name myagent --resource-group myrg \\
@@ -1758,12 +1871,16 @@ class ConnectorCreate(
 
 
 @register_command("sre connector update")
-class ConnectorUpdate(_DataConnectorTypeArgMixin, _GeneratedConnectorUpdate):
+class ConnectorUpdate(_DataConnectorTypeArgMixin, _ConnectorPartnerTypeMixin, _GeneratedConnectorUpdate):
     """Update an Agent Connector.
 
     :example: Point a Kusto connector at a different database
         az sre connector update -g myrg --agent-name myagent -n conn-kusto \\
             --data-connector-type "Azure Data Explorer" \\
+
+    :example: Mark an MCP connector as a Dynatrace integration. The service doesn't return the endpoint or token, so pass them again.
+        az sre connector update -g myrg --agent-name myagent -n dynatrace --partner-type DynatraceMcp \\
+            --data-source "$DT_MCP_URL" --extended-properties @dynatrace-mcp.json
     """
 
     _args_schema = None
@@ -3739,6 +3856,13 @@ def _validate_incident_filters_shape(parsed):
             value = parsed[list_field]
             if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
                 raise CLIError(f"--value.{list_field} must be a JSON array of strings.")
+    _require_str(parsed, "alertId", "--value")
+    if "azMonitorFilterSettings" in parsed:
+        settings = parsed["azMonitorFilterSettings"]
+        if not isinstance(settings, dict):
+            raise CLIError("--value.azMonitorFilterSettings must be a JSON object.")
+        for key in ("targetResourceType", "targetResource"):
+            _require_str(settings, key, "--value.azMonitorFilterSettings")
 
 
 def _validate_incident_handlers_shape(parsed):
@@ -4007,6 +4131,25 @@ def _validate_scheduled_tasks_shape(parsed):
             raise CLIError(f"--value.{date_field} must be an ISO-8601 date-time string.")
     if "maxExecutions" in parsed and not isinstance(parsed["maxExecutions"], (int, float)):
         raise CLIError("--value.maxExecutions must be a number.")
+    _require_bool(parsed, "isEnabled", "--value")
+    if "status" in parsed and parsed["status"] not in SCHEDULED_TASK_STATUSES:
+        raise CLIError(
+            "--value.status must be one of: " + ", ".join(f'"{s}"' for s in SCHEDULED_TASK_STATUSES) + ".")
+    if "isEnabled" in parsed and "status" in parsed and parsed["status"] != (
+            "Active" if parsed["isEnabled"] else "Paused"):
+        raise CLIError("--value.isEnabled and --value.status disagree; set only one of them.")
+
+
+SCHEDULED_TASK_STATUSES = ("Active", "Paused", "Completed", "Failed", "Expired")
+
+
+def _scheduled_task_enabled_to_status(parsed):
+    """The service has no isEnabled field on scheduled tasks; it pauses them through status."""
+    if isinstance(parsed, dict) and "isEnabled" in parsed:
+        enabled = parsed.pop("isEnabled")
+        parsed.setdefault("status", "Active" if enabled else "Paused")
+        return True
+    return False
 
 
 # repositories: confirmed via sreagent-runtime
@@ -4111,7 +4254,7 @@ def _validate_http_triggers_shape(parsed):
     for str_field in ("name", "description", "agentPrompt", "agent", "modelTier", "threadId"):
         _require_str(parsed, str_field, "--value")
     if "agentMode" in parsed:
-        if not isinstance(parsed["agentMode"], str) or parsed["agentMode"] not in (
+        if not isinstance(parsed["agentMode"], str) or parsed["agentMode"].lower() not in (
             "readonly", "review", "autonomous",
         ):
             raise CLIError("--value.agentMode must be \"readonly\", \"review\", or \"autonomous\".")
@@ -4155,9 +4298,16 @@ def _normalize_extension_value(raw_value, extension_type=None):
     if extension_type == "tools" and isinstance(parsed, dict) and parsed.get("type") == "PythonTool":
         parsed["type"] = "PythonFunctionTool"
         raw_value = json.dumps(parsed)
+    # The service matches agent modes case-insensitively and stores them lowercase.
+    if (extension_type in ("httpTriggers", "scheduledTasks") and isinstance(parsed, dict)
+            and isinstance(parsed.get("agentMode"), str) and parsed["agentMode"] != parsed["agentMode"].lower()):
+        parsed["agentMode"] = parsed["agentMode"].lower()
+        raw_value = json.dumps(parsed)
     validator = EXTENSION_VALUE_VALIDATORS.get(extension_type)
     if validator is not None:
         validator(parsed)
+    if extension_type == "scheduledTasks" and _scheduled_task_enabled_to_status(parsed):
+        raw_value = json.dumps(parsed)
     return raw_value
 
 
@@ -4386,6 +4536,18 @@ def _direct_extension_delete(cli_ctx, agent_name, resource_group, extension_type
     return _direct_extension_request(cli_ctx, agent_name, resource_group, "DELETE", path, missing_ok=True)
 
 
+def _is_safe_extension_name(name):
+    return (isinstance(name, str) and name not in (".", "..")
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) is not None)
+
+
+def _arm_extension_resource_id(agent_resource_id, extension_type, extension_name):
+    """Quote the name so '/' or '..' can't retarget the request to another resource."""
+    if not extension_name or extension_name in (".", ".."):
+        raise CLIError(f"'{extension_name}' isn't a valid extension name.")
+    return f"{agent_resource_id}/{extension_type}/{quote(extension_name, safe='')}"
+
+
 def _arm_extension_create(
     cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False
 ):
@@ -4393,7 +4555,7 @@ def _arm_extension_create(
     specific 'create'/'update' facade (tool/skill/hook/instructions/
     automation/plugin/repo connect/agent settings)."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
-    resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    resource_id = _arm_extension_resource_id(agent_resource_id, extension_type, extension_name)
     existing = None
     if not overwrite:
         existing = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
@@ -4424,7 +4586,7 @@ def _arm_extension_show(cli_ctx, agent_name, resource_group, extension_type, ext
     """Show an agent extension resource. Shared by every noun-specific
     'show' facade."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
-    resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    resource_id = _arm_extension_resource_id(agent_resource_id, extension_type, extension_name)
     result = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
     if result is None:
         raise ResourceNotFoundError(
@@ -4441,21 +4603,20 @@ def _arm_extension_list(cli_ctx, agent_name, resource_group, extension_type):
     result = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION)
     if isinstance(result, dict) and isinstance(result.get("value"), list):
         result["value"] = [_decode_extension_envelope(item) for item in result["value"]]
-        if not result["value"]:
-            create_noun = EXTENSION_TYPE_CREATE_NOUN.get(extension_type)
-            hint = f" Add one with '{create_noun}'." if create_noun else ""
-            logger.warning(
-                "No '%s' extensions found on agent '%s'.%s",
-                extension_type, agent_name, hint,
-            )
     return result
+
+
+def _warn_no_extensions(extension_type, agent_name):
+    create_noun = EXTENSION_TYPE_CREATE_NOUN.get(extension_type)
+    hint = f" Add one with '{create_noun}'." if create_noun else ""
+    logger.warning("No '%s' extensions found on agent '%s'.%s", extension_type, agent_name, hint)
 
 
 def _arm_extension_delete(cli_ctx, agent_name, resource_group, extension_type, extension_name):
     """Delete an agent extension resource. Shared by every noun-specific
     'delete' facade."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
-    resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    resource_id = _arm_extension_resource_id(agent_resource_id, extension_type, extension_name)
     return _extension_arm_request(cli_ctx, extension_type, "DELETE", resource_id, EXTENSION_API_VERSION, missing_ok=True)
 
 
@@ -4748,6 +4909,8 @@ class _PinnedExtensionList(AAZCommand):
         # Return a bare array like the other list commands, so
         # --query "[].name" works.
         if isinstance(result, dict) and isinstance(result.get("value"), list):
+            if not result["value"]:
+                _warn_no_extensions(self._EXTENSION_TYPE, agent_name)
             return result["value"]
         return result
 
@@ -4790,23 +4953,28 @@ class _PinnedExtensionDelete(AAZCommand):
 
 
 def _parse_skill_md(file_path):
-    """Parse a SKILL.md-style file into (description, skill_content).
+    """Parse a SKILL.md-style file into (description, skill_content)."""
+    frontmatter, content = _read_skill_md(file_path)
+    return frontmatter.get("description"), content
+
+
+def _read_skill_md(file_path):
+    """Parse a SKILL.md-style file into (frontmatter, skill_content).
 
     Matches the portal's "Skill builder" > "Create skill" dialog's own file
     template: an optional '---'-delimited YAML frontmatter block containing
     'name:'/'description:' lines, followed by the skill's markdown
-    instructions body. Only 'description:' is extracted from the
-    frontmatter (the service's skills wire shape has no 'name' field --
-    the skill's name is the extension-name, confirmed via
-    _validate_skills_shape above); the body becomes 'skillContent' verbatim.
-    A plain file with no frontmatter is treated as the body only.
+    instructions body. The service's skill shape has no 'name' field; a
+    skill's name is the resource name, so the frontmatter 'name:' can only
+    stand in for --name. The body becomes 'skillContent' verbatim. A plain
+    file with no frontmatter is treated as the body only.
     """
     if not os.path.isfile(file_path):
         raise CLIError(f"--file-path '{file_path}' does not exist.")
     with open(file_path, "r", encoding="utf-8-sig") as handle:
         text = handle.read()
 
-    description = None
+    frontmatter = {}
     content = text
     lines = text.splitlines()
     if lines and lines[0].strip() == "---":
@@ -4820,10 +4988,12 @@ def _parse_skill_md(file_path):
                 if ":" not in line:
                     continue
                 key, _, value = line.partition(":")
-                if key.strip().lower() == "description" and value.strip():
-                    description = value.strip()
+                key = key.strip().lower()
+                value = value.strip().strip("'\"")
+                if key in ("name", "description") and value:
+                    frontmatter[key] = value
             content = "\n".join(lines[end_idx + 1:]).strip("\n")
-    return description, content
+    return frontmatter, content
 
 
 # ---- sre tool (portal: Extensions > Tools > Custom tools) ----
@@ -4927,7 +5097,8 @@ class AutomationScheduledTaskCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "scheduledTasks"
     _args_schema = None
     _VALUE_HELP = (
-        "Task configuration as JSON. Fields: cronExpression, agentPrompt, description, agent, threadId, startTime, endTime, maxExecutions."
+        "Task configuration as JSON. Fields: cronExpression, agentPrompt, description, agent, threadId, startTime, endTime, maxExecutions, "
+        "agentMode (readonly, review or autonomous), and isEnabled or status (Active or Paused)."
     )
 
 
@@ -4952,6 +5123,48 @@ class AutomationScheduledTaskList(_PinnedExtensionList):
     """
 
     _EXTENSION_TYPE = "scheduledTasks"
+    _args_schema = None
+
+
+class _ScheduledTaskSetStatus(_PinnedExtensionShow):
+    _EXTENSION_TYPE = "scheduledTasks"
+    _STATUS = None
+
+    def _handler(self, command_args):
+        current = super()._handler(command_args)
+        properties = current.get("properties") if isinstance(current, dict) else None
+        value = properties.get("value") if isinstance(properties, dict) else None
+        if not isinstance(value, dict):
+            raise CLIError("Could not read the scheduled task's current configuration.")
+        value = {k: v for k, v in value.items() if v is not None}
+        value["status"] = self._STATUS
+        return _extension_resource_create(
+            self.cli_ctx, _arg_value(self.ctx.args.agent_name), _arg_value(self.ctx.args.resource_group),
+            self._EXTENSION_TYPE, _arg_value(self.ctx.args.extension_name), json.dumps(value), overwrite=True,
+        )
+
+
+@register_command("sre automation scheduled-task pause")
+class AutomationScheduledTaskPause(_ScheduledTaskSetStatus):
+    """Pause a scheduled task so it stops running until resumed.
+
+    :example: Pause a scheduled task
+        az sre automation scheduled-task pause -g myrg --agent-name myagent --name daily-digest
+    """
+
+    _STATUS = "Paused"
+    _args_schema = None
+
+
+@register_command("sre automation scheduled-task resume")
+class AutomationScheduledTaskResume(_ScheduledTaskSetStatus):
+    """Resume a paused scheduled task.
+
+    :example: Resume a paused scheduled task
+        az sre automation scheduled-task resume -g myrg --agent-name myagent --name daily-digest
+    """
+
+    _STATUS = "Active"
     _args_schema = None
 
 
@@ -4991,7 +5204,8 @@ class AutomationHttpTriggerCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "httpTriggers"
     _args_schema = None
     _VALUE_HELP = (
-        "Trigger configuration as JSON. Fields: agentPrompt, description, agent, threadId."
+        "Trigger configuration as JSON. Fields: agentPrompt, description, agent, threadId, "
+        "agentMode (readonly, review or autonomous)."
     )
 
 
@@ -5005,6 +5219,61 @@ class AutomationHttpTriggerShow(_PinnedExtensionShow):
 
     _EXTENSION_TYPE = "httpTriggers"
     _args_schema = None
+
+
+@register_command("sre automation http-trigger invoke")
+class AutomationHttpTriggerInvoke(_PinnedExtensionShow):
+    """Call an HTTP trigger now, the same way an external webhook would.
+
+    Uses your Azure CLI sign-in for the call, so you need data-plane access to the agent.
+
+    :example: Fire a trigger with no payload
+        az sre automation http-trigger invoke -g myrg --agent-name myagent --name alert-webhook
+
+    :example: Fire a trigger with a JSON payload from a file
+        az sre automation http-trigger invoke -g myrg --agent-name myagent --name alert-webhook \\
+            --payload @alert.json
+    """
+
+    _EXTENSION_TYPE = "httpTriggers"
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.payload = AAZStrArg(
+            options=["--payload"],
+            help="JSON body to send with the call. The agent sees it alongside the trigger's prompt.",
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        trigger = super()._handler(command_args)
+        properties = trigger.get("properties") if isinstance(trigger, dict) else None
+        value = properties.get("value") if isinstance(properties, dict) else None
+        trigger_url = value.get("triggerUrl") if isinstance(value, dict) else None
+        if not trigger_url:
+            raise CLIError("This HTTP trigger has no triggerUrl yet, so it can't be called.")
+        if not _is_azuresre_https_url(trigger_url):
+            raise CLIError(f"Refusing to send a token to unexpected trigger URL '{trigger_url}'.")
+        if value.get("triggerEnabled") is False:
+            raise CLIError("This HTTP trigger is disabled.")
+        payload = _arg_value(getattr(self.ctx.args, "payload", None))
+        if payload:
+            try:
+                json.loads(payload)
+            except ValueError as ex:
+                raise CLIError(f"--payload must be a JSON document: {ex}") from ex
+        response = send_raw_request(
+            self.cli_ctx, "POST", trigger_url,
+            headers=["Content-Type=application/json"],
+            body=payload or None,
+            resource=DATA_PLANE_AUDIENCE,
+        )
+        return response.json() if response.content else {}
 
 
 @register_command("sre automation http-trigger list")
@@ -5244,6 +5513,18 @@ def _add_response_plan_criteria_args(schema):
         options=["--max-investigation-attempts", "--max-attempts"],
         help="How many times the agent automatically investigates a matched incident. Service default: 3.",
     )
+    schema.alert_id = AAZStrArg(
+        options=["--alert-id"], arg_group="Azure Monitor",
+        help="Only match incidents raised by this alert rule (its resource ID).",
+    )
+    schema.target_resource_type = AAZStrArg(
+        options=["--target-resource-type"], arg_group="Azure Monitor",
+        help="Only match alerts on this resource type, for example Microsoft.App/containerApps.",
+    )
+    schema.target_resource = AAZStrArg(
+        options=["--target-resource"], arg_group="Azure Monitor",
+        help="Only match alerts on this resource.",
+    )
     schema.instructions = AAZStrArg(
         options=["--instructions"], help="Custom instructions the subagent follows for matched incidents.",
     )
@@ -5263,10 +5544,19 @@ def _response_plan_criteria(args):
         values = _arg_value(arg)
         if values:
             flt[key] = list(values)
-    for key, arg in (("titleContains", args.title_contains), ("impactedService", args.impacted_service)):
+    for key, arg in (("titleContains", args.title_contains), ("impactedService", args.impacted_service),
+                     ("alertId", getattr(args, "alert_id", None))):
         value = _arg_value(arg)
         if value:
             flt[key] = value
+    az_monitor = {}
+    for key, arg in (("targetResourceType", getattr(args, "target_resource_type", None)),
+                     ("targetResource", getattr(args, "target_resource", None))):
+        value = _arg_value(arg)
+        if value:
+            az_monitor[key] = value
+    if az_monitor:
+        flt["azMonitorFilterSettings"] = az_monitor
     merge_enabled = _arg_value(args.merge_enabled)
     if merge_enabled is not None:
         flt["mergeEnabled"] = bool(merge_enabled)
@@ -5375,9 +5665,13 @@ class ResponsePlanCreate(AAZCommand):
         flt.update(_response_plan_criteria(args))
         _validate_incident_filters_shape(flt)
         filter_body = {"name": name, "type": "IncidentFilter", "properties": flt}
-        result = {"filter": _incident_resource_create(
-            self.cli_ctx, agent_name, resource_group, "incidentFilters", name,
-            flt, _incident_filter_path(name), filter_body, overwrite)}
+        try:
+            result = {"filter": _incident_resource_create(
+                self.cli_ctx, agent_name, resource_group, "incidentFilters", name,
+                flt, _incident_filter_path(name), filter_body, overwrite)}
+        except Exception as ex:  # pylint: disable=broad-except
+            _raise_if_platform_not_connected(self.cli_ctx, agent_name, resource_group, platform, ex)
+            raise
         handler_fields = _response_plan_handler_fields(args)
         if handler_fields:
             handler = {"id": name, "incidentFilterId": name, **handler_fields}
@@ -5400,6 +5694,29 @@ class ResponsePlanCreate(AAZCommand):
         return result
 
 
+def _raise_if_platform_not_connected(cli_ctx, agent_name, resource_group, platform, error):
+    """The service rejects a plan for an unconnected platform with a generic error; explain it."""
+    try:
+        agent = _cli_invoke(cli_ctx, "sre", "agent", "show", "--name", agent_name,
+                            "--resource-group", resource_group)
+        config = ((agent or {}).get("properties") or {}).get("incidentManagementConfiguration") or {}
+    except Exception:  # pylint: disable=broad-except
+        return
+    connected = config.get("type")
+    if connected and str(connected).lower() == platform.lower():
+        return
+    status = f"is connected to '{connected}'" if connected else "has no incident platform connected"
+    if platform == "AzMonitor":
+        hint = (f"  az sre agent update -g {resource_group} -n {agent_name} "
+                "--incident-management-configuration '{type:AzMonitor,connection-name:azmonitor}'")
+    else:
+        hint = "  See 'az sre agent update -h' for --incident-management-configuration examples."
+    raise CLIError(
+        f"Agent '{agent_name}' {status}, so it can't route {platform} incidents. "
+        f"Connect {platform} first:\n{hint}"
+    ) from error
+
+
 def _response_plan_read_filter(cli_ctx, agent_name, resource_group, name):
     return _incident_unwrap("filter", _extension_resource_show(
         cli_ctx, agent_name, resource_group, "incidentFilters", name))
@@ -5411,6 +5728,11 @@ def _response_plan_apply_filter_changes(cli_ctx, agent_name, resource_group, nam
         existing = _response_plan_read_filter(cli_ctx, agent_name, resource_group, name)
     # ARM echoes unset fields as null, which the service rejects on write.
     properties = {k: v for k, v in (existing.get("properties") or {}).items() if v is not None}
+    if isinstance(changes.get("azMonitorFilterSettings"), dict):
+        current = properties.get("azMonitorFilterSettings")
+        merged = {k: v for k, v in current.items() if v is not None} if isinstance(current, dict) else {}
+        merged.update(changes["azMonitorFilterSettings"])
+        changes = {**changes, "azMonitorFilterSettings": merged}
     properties.update(changes)
     _validate_incident_filters_shape(properties)
     return _incident_resource_create(
@@ -5695,6 +6017,9 @@ class SkillCreate(_PinnedExtensionCreate):
         az sre skill create --agent-name myagent --resource-group myrg --name my-skill \\
             --file-path SKILL.md --tools kusto-query log-search
 
+    :example: Name the skill from the SKILL.md frontmatter 'name:' line
+        az sre skill create --agent-name myagent --resource-group myrg --file-path SKILL.md
+
     :example: Create a skill from a raw JSON value
         az sre skill create --agent-name myagent --resource-group myrg --name my-skill \\
             --value '{"description": "...", "tools": [], "skillContent": "# My skill\\n..."}'
@@ -5716,12 +6041,15 @@ class SkillCreate(_PinnedExtensionCreate):
         # since --file-path is the other, mutually-exclusive way to supply
         # it (enforced in _prepare_value below).
         schema.value._required = False
+        # --name can come from the SKILL.md frontmatter instead.
+        schema.extension_name._required = False
         schema.file_path = AAZStrArg(
             options=["--file-path"],
             arg_group="Skill builder",
             help="Path to a SKILL.md-style file: an optional frontmatter "
-            "block between '---' lines with a 'description:' line, followed "
-            "by the skill's Markdown instructions. Alternative to --value.",
+            "block between '---' lines with 'name:' and 'description:' lines, followed "
+            "by the skill's Markdown instructions. The frontmatter name is used when "
+            "--name is omitted. Alternative to --value.",
         )
         schema.tools = AAZListArg(
             options=["--tools"],
@@ -5747,11 +6075,28 @@ class SkillCreate(_PinnedExtensionCreate):
             raise CLIError("Specify either --file-path or --value, not both.")
         if not file_path and not explicit_value:
             raise CLIError("Specify either --file-path or --value.")
+        name = _arg_value(getattr(args, "extension_name", None))
         if not file_path:
+            if not name:
+                raise CLIError("--name is required with --value.")
             return
 
-        description, content = _parse_skill_md(file_path)
-        description = _arg_value(getattr(args, "description", None)) or description
+        frontmatter, content = _read_skill_md(file_path)
+        md_name = frontmatter.get("name")
+        if md_name is not None and not _is_safe_extension_name(md_name):
+            raise CLIError(
+                f"SKILL.md frontmatter name '{md_name}' isn't a valid skill name. Use letters, "
+                "digits, '.', '_' or '-', or pass --name."
+            )
+        if not name:
+            if not md_name:
+                raise CLIError("Pass --name, or add a 'name:' line to the SKILL.md frontmatter.")
+            args.extension_name = md_name
+        elif md_name and md_name != name:
+            logger.warning(
+                "Creating skill '%s'; the SKILL.md frontmatter name '%s' is ignored because --name was given.",
+                name, md_name)
+        description = _arg_value(getattr(args, "description", None)) or frontmatter.get("description")
         if not description:
             raise CLIError(
                 "No description found. Add a 'description:' line to the "
@@ -5828,8 +6173,8 @@ class SubagentCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "subagents"
     _args_schema = None
     _VALUE_HELP = (
-        "Sub-agent configuration as JSON. Nonblank instructions must be at least "
-        "50 characters. Fields: instructions, handoffDescription, "
+        "Sub-agent configuration as JSON. instructions (at least 50 characters) and "
+        "handoffDescription are required. Other fields: "
         "tools, mcpTools, commonTools, allowedSkills, allowParallelToolCalls."
     )
 
@@ -5877,6 +6222,23 @@ class SubagentCreate(_PinnedExtensionCreate):
             }
         ]
         args.value = json.dumps(parsed)
+
+    def _handler(self, command_args):
+        try:
+            return super()._handler(command_args)
+        except Exception as ex:  # pylint: disable=broad-except
+            if "configuration is invalid" not in str(ex):
+                raise
+            try:
+                parsed = json.loads(_arg_value(self.ctx.args.value))
+            except (TypeError, ValueError):
+                raise ex from None
+            if isinstance(parsed, dict) and not str(parsed.get("handoffDescription") or "").strip():
+                raise CLIError(
+                    f"{ex}\nThe service needs --value.handoffDescription: one sentence telling the "
+                    "main agent when to hand work to this sub-agent."
+                ) from ex
+            raise
 
 
 @register_command("sre subagent show")
