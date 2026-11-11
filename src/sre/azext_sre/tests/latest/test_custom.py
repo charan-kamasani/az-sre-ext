@@ -36,6 +36,7 @@ from azure.core.exceptions import ResourceExistsError
 from azext_sre import SreCommandsLoader
 from azext_sre.custom import (
     EXTENSION_TYPES,
+    EXTENSION_VALUE_VALIDATORS,
     GITHUB_COPILOT_MCP_ENDPOINT,
     KNOWLEDGE_TYPES,
     MANAGED_RESOURCE_ROLES,
@@ -44,6 +45,7 @@ from azext_sre.custom import (
     AgentSettingsShow,
     AgentSettingsUpdate,
     ConnectorCreate,
+    ConnectorUpdate,
     ConnectorList,
     _ConnectorPartnerTypeMixin,
     GrantAccess,
@@ -372,6 +374,132 @@ class ConnectorConsentStatusTests(unittest.TestCase):
         message = _connector_consent_guidance(connector)
         self.assertIn("the connector's blade in the Azure portal", message)
         self.assertIn("conn-mcp", message)
+
+
+class HttpTraceSuppressionTests(unittest.TestCase):
+    def _logged_body(self, secret):
+        import logging
+        from azext_sre import custom
+        from azure.cli.core import util
+
+        request = SimpleNamespace(url="https://x", method="PUT", headers={}, body=secret)
+        logger = logging.getLogger("cli.azure.cli.core.util")
+        records = []
+        handler = logging.Handler()
+        handler.emit = records.append
+        logger.addHandler(handler)
+        previous = logger.level
+        logger.setLevel(logging.DEBUG)
+        try:
+            with custom._no_http_trace():
+                util._log_request(request)
+            inside = [r.getMessage() for r in records]
+            records.clear()
+            util._log_request(request)
+            after = [r.getMessage() for r in records]
+            return inside, after
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous)
+
+    def test_body_not_logged_inside_and_logged_after(self):
+        inside, after = self._logged_body("ghp_secret")
+        self.assertFalse(any("ghp_secret" in m for m in inside))
+        self.assertTrue(any("ghp_secret" in m for m in after))
+
+    def test_retried_request_body_not_logged(self):
+        import logging
+        from unittest.mock import MagicMock
+        from azext_sre import custom
+        from azure.cli.core.sdk.policies import SafeNetworkTraceLoggingPolicy
+        from azure.core.pipeline import Pipeline
+        from azure.core.pipeline.policies import RetryPolicy
+        from azure.core.pipeline.transport import HttpTransport
+        from azure.core.rest import HttpRequest
+
+        statuses = [503, 200]
+
+        class _Transport(HttpTransport):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def open(self):
+                pass
+
+            def close(self):
+                pass
+
+            def send(self, request, **kwargs):
+                response = MagicMock(status_code=statuses.pop(0), headers={"Retry-After": "0"},
+                                     request=request)
+                response.text.return_value = "body"
+                return response
+
+        logger = logging.getLogger("cli.azure.cli.core.sdk.policies")
+        records = []
+        handler = logging.Handler()
+        handler.emit = records.append
+        logger.addHandler(handler)
+        previous = logger.level
+        logger.setLevel(logging.DEBUG)
+        try:
+            pipeline = Pipeline(_Transport(), [RetryPolicy(retry_backoff_factor=0),
+                                               SafeNetworkTraceLoggingPolicy()])
+            request = HttpRequest("PUT", "https://x", content="ghp_secret")
+
+            class _Send:
+                def __call__(self, **kwargs):
+                    return pipeline.run(request, **kwargs)
+
+            class _SecretSend(custom._SecretHttpOperationMixin, _Send):
+                pass
+
+            _Send()(logging_enable=False)
+            self.assertTrue(any("ghp_secret" in r.getMessage() for r in records))
+            records.clear()
+            statuses[:] = [503, 200]
+            _SecretSend()()
+            self.assertEqual(logger.level, logging.DEBUG)
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous)
+        self.assertEqual(statuses, [])
+        self.assertFalse(any("ghp_secret" in r.getMessage() for r in records))
+
+    def test_levels_restored_when_the_call_raises(self):
+        import logging
+        from azext_sre import custom
+
+        http_loggers = [logging.getLogger(name) for name in (
+            "cli.azure.cli.core.util", "cli.azure.cli.core.sdk.policies")]
+        for http_logger in http_loggers:
+            self.addCleanup(http_logger.setLevel, http_logger.level)
+            http_logger.setLevel(logging.INFO)
+        with self.assertRaises(RuntimeError):
+            with custom._no_http_trace():
+                raise RuntimeError("request failed")
+        self.assertEqual([http_logger.level for http_logger in http_loggers], [logging.INFO] * 2)
+
+    def test_warns_only_when_secret_is_typed(self):
+        from azext_sre import custom
+
+        cases = [
+            (["az", "--github-token", "ghp_x"], True),
+            (["az", "--github-token=ghp_x"], True),
+            (["az", "--github-token", "@token.txt"], False),
+            (["az", "--github-token=@token.txt"], False),
+            (["az", "--other", "x"], False),
+        ]
+        for argv, should_warn in cases:
+            with self.subTest(argv=argv), patch.object(custom.sys, "argv", argv), \
+                    patch.object(custom.logger, "warning") as warning:
+                custom._warn_if_secret_typed("--github-token", "use GITHUB_TOKEN")
+            self.assertEqual(warning.called, should_warn)
+            if should_warn:
+                self.assertNotIn("ghp_x", str(warning.call_args))
 
 
 class ArgValueTests(unittest.TestCase):
@@ -2723,6 +2851,19 @@ class HttpTriggerInvokeTests(unittest.TestCase):
             self._invoke({"triggerUrl": "https://a.azuresre.ai/hook"}, payload="not json")
 
 
+class ValueNotAnObjectTests(unittest.TestCase):
+    """Azure CLI's error line doesn't name the command, so each kind of
+    --value needs its own message to be told apart in a script's log."""
+
+    def test_each_kind_of_value_has_its_own_message(self):
+        messages = {}
+        for extension_type in EXTENSION_VALUE_VALIDATORS:
+            with self.assertRaises(CLIError) as raised:
+                _encode_extension_value("[]", extension_type)
+            messages[extension_type] = str(raised.exception)
+        self.assertEqual(len(set(messages.values())), len(messages), messages)
+
+
 class ExtensionTypeEnumTests(unittest.TestCase):
     """Mirrors AgentExtensionsApiService.GetExtensionTypes() exactly (the
     canonical ApiType/ExtensionType pairs) -- a drift here means the CLI's
@@ -4568,6 +4709,31 @@ class ConnectorListSecretAliasTests(unittest.TestCase):
         ):
             self.assertEqual(operation(logging_enable=True), "ok")
         self.assertIs(seen["logging_enable"], False)
+
+    def test_connector_create_and_update_writes_disable_tracing(self):
+        for command in (ConnectorCreate, ConnectorUpdate):
+            operation_class = command.AgentsConnectorsCreateOrUpdate
+            operation = operation_class.__new__(operation_class)
+            seen = {}
+            parent = operation_class.__bases__[1]
+            with patch.object(
+                parent, "__call__", lambda self, *a, **kw: seen.update(kw) or "ok"
+            ):
+                operation(logging_enable=True)
+            self.assertIs(seen["logging_enable"], False, command.__name__)
+
+    def test_extension_create_silences_http_trace(self):
+        import logging
+
+        from azext_sre import custom
+
+        logger = logging.getLogger("cli.azure.cli.core.util")
+        levels = []
+        with patch.object(
+            custom, "_with_direct_fallback", lambda *a, **kw: levels.append(logger.level) or "ok"
+        ):
+            custom._extension_resource_create(None, "a", "rg", "pluginMarketplaces", "m", "{}")
+        self.assertEqual(levels, [logging.CRITICAL])
 
 
 class IdentityAndSupportedAgentModelRegistrationTests(unittest.TestCase):

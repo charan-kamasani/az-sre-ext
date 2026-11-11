@@ -20,6 +20,9 @@
    enforcement for `access grant`/`revoke` and `knowledge create`. Each
    rejected argument list has an accepted twin that reaches the command, so a
    retired or renamed command fails instead of passing as unrecognized.
+   `test_action_configuration_mode.py` uses the same offline harness to show
+   that `agent create`/`agent update` reject `--action-configuration` mode
+   `ReadOnly` while arguments are parsed, before a managed identity is created.
    The documented test dependencies include `msrest` and `azure-common`
    because Azure CLI's real error formatter imports them even for local
    argument-validation errors.

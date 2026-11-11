@@ -57,7 +57,7 @@ In PowerShell, pass JSON with --value @file.json instead of inline.
 | `plugin` | Manage community plugins that add skills, tools, and integrations. |
 | `repo` | Connect a code repository so the agent can read source during investigations. |
 | `response-plan` | Route incidents to a subagent (portal: Triggers & response plans). |
-| `skill` | Manage custom skills -- specialized capabilities the agent can use. |
+| `skill` | Manage custom skills, which are specialized capabilities the agent can use. |
 | `subagent` | Manage named sub-agents the meta-agent can hand off work to. |
 | `tool` | Manage custom tools the agent can call. |
 | `usage` | Read an SRE Agent's usage and billing stats. |
@@ -105,9 +105,9 @@ Grant an agent role to a user, group or principal.
 
 ### `az sre access list`
 
-List who currently has access to an SRE Agent -- every role
+List who has access to an SRE Agent.
 
-assignment scoped to the agent itself.
+Shows every role assignment scoped to the agent itself.
 
 **Syntax**
 
@@ -363,7 +363,7 @@ Stop a running SRE Agent.
 
 Update an SRE Agent.
 
-PagerDuty matches the portal's Incidents > Connect an incident platform > PagerDuty workflow. It uses an ARM PATCH on the agent resource, not the separate Connector Gateway used by Jira, Slack and SharePoint. --connection-key is the PagerDuty REST API access key; --obo-user is the identity the agent acts under when resolving or commenting on incidents. ServiceNow uses Basic Auth: set --connection-url to the instance URL and --connection-key to the credentials. Azure Monitor needs no configuration here -- it connects automatically when the agent is created, with AzMonitor as the enum's implicit default.
+PagerDuty matches the portal's Incidents > Connect an incident platform > PagerDuty workflow. It uses an ARM PATCH on the agent resource, not the separate Connector Gateway used by Jira, Slack and SharePoint. --connection-key is the PagerDuty REST API access key; --obo-user is the identity the agent acts under when resolving or commenting on incidents. ServiceNow uses Basic Auth: set --connection-url to the instance URL and --connection-key to the credentials. Azure Monitor needs no configuration here. It connects automatically when the agent is created, and AzMonitor is the enum's implicit default.
 
 **Syntax**
 
@@ -508,13 +508,13 @@ Create an Agent Connector.
   az sre connector create --agent-name myagent --resource-group myrg \
   --name github --data-connector-type Mcp --github true
   ```
-- Connect a custom MCP server with a bearer token
+- Connect a custom MCP server with a bearer token read from a file
 
   ```bash
   az sre connector create --agent-name myagent --resource-group myrg \
   --name mcp --data-connector-type Mcp \
   --mcp-endpoint "https://myserver.contoso.com/mcp" \
-  --bearer-token "$MY_SERVER_TOKEN"
+  --bearer-token @token.txt
   ```
 - Connect a Dynatrace MCP server
 
@@ -966,7 +966,7 @@ Wait for an agent's identity update to finish.
 
 Manage named, reusable prompt snippets ('commonPrompts').
 
-WARNING -- this is NOT the portal's single "Custom instructions" text box. That is a different field, 'customInstructions', on the agent's global settings object -- set it with 'az sre agent settings update'.
+Important: these snippets aren't the portal's "Custom instructions" text box. That box is the 'customInstructions' field in the agent's global settings. Set it with 'az sre agent settings update'.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -979,7 +979,7 @@ WARNING -- this is NOT the portal's single "Custom instructions" text box. That 
 
 Create or update a reusable prompt snippet.
 
-WARNING -- this does NOT set the portal's single "Custom instructions" text box. Use 'az sre agent settings update' for that instead. Use the same --name (e.g. "default") each time to update a given snippet in place, or pass --overwrite to replace an existing one.
+Important: this doesn't set the portal's "Custom instructions" text box. To set that, use 'az sre agent settings update'. Use the same --name (e.g. "default") each time to update a given snippet in place, or pass --overwrite to replace an existing one.
 
 **Syntax**
 
@@ -1007,13 +1007,13 @@ WARNING -- this does NOT set the portal's single "Custom instructions" text box.
   az sre instructions create -g myrg --agent-name myagent --name default \
   --value '{"prompt": "Always cite the runbook section you used."}'
   ```
-- Windows PowerShell -- pass a JSON file
+- In Windows PowerShell, pass a JSON file
 
   ```powershell
   '{"prompt": "Be concise."}' | Set-Content -Path "$env:TEMP\instructions.json"
   az sre instructions create -g myrg --agent-name myagent --name default --value "@$env:TEMP\instructions.json" --overwrite true
   ```
-- Windows PowerShell -- pass inline JSON through cmd /c
+- In Windows PowerShell, pass inline JSON through cmd /c
 
   ```powershell
   cmd /c 'az sre instructions create --agent-name myagent --resource-group myrg --name default --value "{\"prompt\": \"Be concise.\"}" --overwrite true'
@@ -1023,7 +1023,7 @@ WARNING -- this does NOT set the portal's single "Custom instructions" text box.
 
 Delete a named, reusable prompt snippet ('commonPrompts').
 
-WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions create -h'. To clear the real singleton instead, use 'az sre agent settings update --value \'{"customInstructions": ""}\''.
+Important: this doesn't clear the portal's "Custom instructions" box (see 'az sre instructions create -h'). To clear that box, run 'az sre agent settings update --value \'{"customInstructions": ""}\''.
 
 **Syntax**
 
@@ -1048,7 +1048,7 @@ WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions cre
 
 List an agent's reusable prompt snippets.
 
-WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions create -h'.
+Important: these aren't the portal's "Custom instructions" box (see 'az sre instructions create -h').
 
 **Syntax**
 
@@ -1071,7 +1071,7 @@ WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions cre
 
 Show a named, reusable prompt snippet ('commonPrompts').
 
-WARNING -- NOT the portal's "Custom instructions" box; see 'sre instructions create -h'. For the real singleton, use 'az sre agent settings show' and read its 'customInstructions' field.
+Important: this isn't the portal's "Custom instructions" box (see 'az sre instructions create -h'). To see that box's text, run 'az sre agent settings show' and read its 'customInstructions' field.
 
 **Syntax**
 
@@ -1343,7 +1343,7 @@ Only removes these two roles (or the ones given with --roles) for the selected i
 
 Control an SRE Agent's sandbox networking (preview).
 
-Configures VNet injection and outbound egress for the agent's own sandboxed tool/code execution -- not the agent resource's inbound access.
+Configures VNet injection and outbound egress for the agent's own sandboxed tool and code execution. It doesn't control inbound access to the agent resource.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -1422,6 +1422,8 @@ Supports GitHub and Azure DevOps. GitLab isn't exposed by this CLI yet.
 
 Connect a GitHub or Azure DevOps repo to an agent.
 
+For GitHub, the command uses --github-token, or the GITHUB_TOKEN or GH_TOKEN environment variable. If none is set, it shows a one-time code and opens GitHub's sign-in page in your browser. Enter the code there before it expires (15 minutes).
+
 **Syntax**
 
 `az sre repo connect --agent-name <value> --resource-group <value> --repo-url <value> [--provider {GitHub,AzureDevOps}] [--display-name <value>] [--branch <value>] [--github-token <value>] [--devops-organization <value>] [--devops-auth-type {pat,managed-identity}] [--devops-identity <value>] [--devops-federated-client-id <value>] [--devops-federated-tenant-id <value>]`
@@ -1434,7 +1436,7 @@ Connect a GitHub or Azure DevOps repo to an agent.
 | `--provider` | String | No |  | `GitHub`, `AzureDevOps` | Repo provider. Auto-detected from --repo-url's host when omitted. |
 | `--display-name`, `--name`, `-n` | String | No |  |  | Display name for the repo. Defaults to the repo name from --repo-url (without .git). |
 | `--branch` | String | No |  |  | Branch to check out. Defaults to the repo's default branch. |
-| `--github-token` | String | No |  |  | GitHub token. Default: GITHUB_TOKEN/GH_TOKEN, else browser sign-in. A fine-grained, repo-scoped token is recommended; it is stored on the agent. |
+| `--github-token` | String | No |  |  | GitHub token. Defaults to GITHUB_TOKEN or GH_TOKEN, then to browser sign-in with a one-time code. A fine-grained, repo-scoped token is recommended; it is stored on the agent. |
 | `--devops-organization` | String | No |  |  | Azure DevOps organization. Default: taken from --repo-url. |
 | `--devops-auth-type` | String | No | pat | `pat`, `managed-identity` | Azure DevOps auth method. Use managed-identity if your org blocks PAT creation. |
 | `--devops-identity` | String | No |  |  | Managed identity resource ID. Required with --devops-auth-type managed-identity. |
@@ -1449,12 +1451,11 @@ Connect a GitHub or Azure DevOps repo to an agent.
   az sre repo connect --agent-name myagent --resource-group myrg \
   --repo-url https://github.com/contoso/my-service
   ```
-- Connect a GitHub repo with a token
+- Connect a GitHub repo in CI, with the token in GITHUB_TOKEN
 
   ```bash
   az sre repo connect --agent-name myagent --resource-group myrg \
-  --repo-url https://github.com/contoso/my-service \
-  --github-token $env:GITHUB_TOKEN
+  --repo-url https://github.com/contoso/my-service
   ```
 - Connect an Azure DevOps repo
 
@@ -1706,7 +1707,7 @@ Passing a list flag (for example --priority) replaces that whole list. Use 'enab
 
 ## `az sre skill`
 
-Manage custom skills -- specialized capabilities the agent can use.
+Manage custom skills, which are specialized capabilities the agent can use.
 
 Built-in skills are toggled on/off separately, not created here; use 'sre skill create --file-path SKILL.md' to author a custom one, then 'sre skill list'/'sre skill show' to see it.
 
@@ -1732,7 +1733,7 @@ Create or update a custom skill.
 | `--name`, `-n`, `--extension-name` | String | No |  |  | Name of this instance. |
 | `--value` | String | No |  |  | Skill configuration as a JSON document. Alternative to --file-path (specify exactly one of the two). |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
-| `--file-path` | String | No |  |  | Path to a SKILL.md-style file -- an optional '---'-delimited frontmatter block with 'name:' and 'description:' lines, followed by the skill's markdown instructions body. The frontmatter name is used when --name is omitted. Alternative to --value. |
+| `--file-path` | String | No |  |  | Path to a SKILL.md-style file: an optional frontmatter block between '---' lines with 'name:' and 'description:' lines, followed by the skill's Markdown instructions. The frontmatter name is used when --name is omitted. Alternative to --value. |
 | `--tools` | List | No |  |  | Space-separated tool names this skill can use when active. Only used with --file-path; defaults to none. |
 | `--description` | String | No |  |  | Skill description. Only used with --file-path; overrides the SKILL.md frontmatter's 'description:' line if both are given. |
 
@@ -1826,7 +1827,7 @@ Show a custom skill.
 
 Manage named sub-agents the meta-agent can hand off work to.
 
-A sub-agent is a scoped specialist with its own instructions, tools, and skills -- the portal's Agent Canvas "Create subagent" dialog.
+A sub-agent is a scoped specialist with its own instructions, tools, and skills. In the portal, it's the Agent Canvas "Create subagent" dialog.
 
 | Verb | Exact syntax |
 | --- | --- |
@@ -1850,17 +1851,17 @@ Create or update a named sub-agent.
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
 | `--value` | String | Yes |  |  | Sub-agent configuration as JSON. instructions (at least 50 characters) and handoffDescription are required. Other fields: tools, mcpTools, commonTools, allowedSkills, allowParallelToolCalls. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
-| `--pre-tool-use-script-file`, `--pre-tool-use-script` | String | No |  |  | Path to a script file to run before every tool call this sub-agent makes (the portal's "Manage Hooks" > "Pre Tool Use" button inside the subagent dialog). Merged into --value.hooks.PreToolUse with matcher "(?s:.*)" (every tool), timeout 30s, failMode "block" -- pass --value.hooks directly instead for other matchers/timeouts. |
+| `--pre-tool-use-script-file`, `--pre-tool-use-script` | String | No |  |  | Path to a script file to run before every tool call this sub-agent makes, like the portal's Manage Hooks > Pre Tool Use button. It's added to --value.hooks.PreToolUse for all tools, with a 30-second timeout and failMode "block". For other matchers or timeouts, set --value.hooks instead. |
 
 **Examples**
 
-- Create a read-only evidence-gathering sub-agent (live-verified payload)
+- Create a read-only evidence-gathering sub-agent
 
   ```bash
   az sre subagent create --agent-name myagent --resource-group myrg --name app-investigator \
   --value '{"instructions": "You are the application evidence specialist. Read supplied reference files with ReadFile and return source-backed observations.", "handoffDescription": "Use for read-only application request/error/dependency evidence.", "tools": ["ReadFile"], "mcpTools": [], "commonTools": [], "allowedSkills": ["zava-application-evidence"], "allowParallelToolCalls": true}'
   ```
-- Same, plus a PreToolUse hook script read from a file (live-verified)
+- Create the same sub-agent with a PreToolUse hook script from a file
 
   ```bash
   az sre subagent create --agent-name myagent --resource-group myrg --name app-investigator \
@@ -2435,7 +2436,7 @@ Run 'sre plugin marketplace create' first if you haven't connected a marketplace
 
 Install a plugin from a connected marketplace.
 
-Unlike other extension types, 'marketplaceName'/'pluginName' alone are not enough -- supply the full 'source' block ({"type", "repo", "url"}) naming the plugin's exact path in the marketplace repo. This CLI writes the installation record directly and does not run the portal's install pipeline, so the result is missing 'importedSkills'/ 'sourceCommit'/a resolved 'mcpConnectorStatus' compared to a portal install.
+'marketplaceName' and 'pluginName' aren't enough on their own. Also supply the full 'source' block ({"type", "repo", "url"}) with the plugin's exact path in the marketplace repo. This command writes the installation record directly and doesn't run the portal's install pipeline, so unlike a portal install, the result has no 'importedSkills', no 'sourceCommit', and no resolved 'mcpConnectorStatus'.
 
 **Syntax**
 
