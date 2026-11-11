@@ -1028,8 +1028,10 @@ github-actions` already use -- `_github_token()` tries, in order:
    scheduled jobs, headless containers) -- device flow needs a human in a
    browser, so it can never substitute for this tier. A token picked up from
    the environment is stored on the agent, so the command warns and names the
-   variable it used; a fine-grained, repo-scoped token passed with
-   `--github-token` is the recommended option.
+   variable it used. The agent keeps one GitHub credential (`github_com`) for
+   all its GitHub repositories, so whichever token you use must be able to
+   read every one of them: a token scoped to a single repository breaks the
+   others.
 2. **Native GitHub OAuth Device Flow (RFC 8628)** fallback, implemented
    directly in Python with `requests` + Azure CLI's own
    `azure.cli.core.util.open_page_in_browser` -- no `gh` CLI, no client
@@ -1106,13 +1108,45 @@ Azure DevOps PAT path (`_devops_pat_token`) was already dependency-free
 `requests` is a hard transitive dependency of `azure-cli-core` itself, not
 something this extension adds.
 
-`repo connect` validates the repository name and payload before it writes
-any credentials, because the auth write replaces existing credentials for
-that host or org. If a later step fails, a freshly minted Azure DevOps PAT
-is revoked again, and a failed repository write after new credentials were
-saved is called out in a warning. For `*.visualstudio.com` URLs the Azure
-DevOps organization comes from the host name; the default repository name
-drops a trailing `.git`.
+`repo connect` checks everything it can before it fetches or writes a
+credential, because the auth write replaces the agent's credential for that
+host or organization:
+
+- `--repo-url` must be a plain `https://` clone URL on `github.com`,
+  `dev.azure.com` or `<organization>.visualstudio.com`, whether or not
+  `--provider` is given; `--provider` must match the host. URLs with a
+  backslash, spaces or control characters, or with a user name or token before
+  `@`, are rejected, so a credential is never minted for a lookalike host or
+  stored in the URL. The Azure DevOps portal's
+  `https://<organization>@dev.azure.com/...` clone URLs still work. Put a
+  GitHub token in `GITHUB_TOKEN` or `--github-token "@token.txt"`, not in the
+  URL.
+- If the agent already has a repository with the same display name that
+  points to a different URL, the command stops and names that URL. Pass
+  `--display-name` to add the new repository under another name, or
+  `--overwrite` to replace it. Running it again for the same URL, for example
+  to renew a token or change `--branch`, needs neither.
+- The agent keeps one GitHub credential for all its GitHub repositories and
+  one Azure DevOps credential per organization. When other repositories on the
+  agent share the credential being saved, a warning names them.
+- The Azure DevOps PAT it creates (scope `vso.code`, for that organization
+  only) expires after 30 days. The command prints the expiry date and returns
+  it as `patExpiresOn`. Run it again before then, or use
+  `--devops-auth-type managed-identity`, which doesn't expire. If Azure DevOps
+  refuses to create the PAT, the error gives its reason, for example
+  `patLifespanPolicyViolation` when the organization's policy caps PAT
+  lifetimes below 30 days.
+
+If a later step fails, or you press Ctrl+C while the PAT is being saved, a
+freshly minted Azure DevOps PAT is revoked again. A failed repository write
+after new credentials were saved is called out in a warning. The output masks
+secret fields (`pat`, `token`, `password`, `secret`, `key`) at any depth, and
+error messages have the token or PAT that was sent replaced with `******`, in
+case the service echoes them. A token typed into `--github-token` still shows
+up in shell history, `--debug` output and, when Azure CLI file logging is on,
+its log file; the command warns when that happens. For `*.visualstudio.com`
+URLs the Azure DevOps organization comes from the host name; the default
+repository name drops a trailing `.git`.
 
 ```bash
 # No token needed up front -- opens a browser-based device-flow prompt
@@ -1305,6 +1339,15 @@ az sre endpoint show -g myrg -n myagent
 az sre usage list -g myrg -n myagent
 az sre agent list-models -l eastus2
 ```
+
+`endpoint show` saves the endpoint to `~/.azure/sreAgentConnections.json` for
+data-plane tools, keyed `<subscription-id>/<resource-group>/<agent-name>`, so
+same-named agents in different subscriptions get separate entries. Entries
+that older versions saved as `<resource-group>/<agent-name>` are kept as they
+are. The new file replaces the old one in a single step, so a failed write
+leaves the previous file intact, and a file saved with a UTF-8 byte order mark
+is read normally. The file stays in `~/.azure` even when `AZURE_CONFIG_DIR`
+points somewhere else.
 
 `endpoint show` (renamed from `connection show`)/`access grant`/`access revoke`/
 `agent delete --no-wait` live-verification (all pass):

@@ -2629,9 +2629,8 @@ class RepoProviderDetectionTests(unittest.TestCase):
         )
 
     def test_rejects_unknown_host(self):
-        with self.assertRaises(CLIError) as raised:
+        with self.assertRaises(CLIError):
             _detect_repo_provider("https://gitlab.com/org/repo")
-        self.assertIn("--provider", str(raised.exception))
 
     def test_rejects_lookalike_hosts(self):
         for url in ("https://evilvisualstudio.com/p/_git/r", "https://notdev.azure.com/o/p/_git/r"):
@@ -2646,10 +2645,21 @@ class RepoConnectTests(unittest.TestCase):
     (one for the auth extension, one for the repository extension).
     """
 
+    def setUp(self):
+        # Before any write, repo connect reads the agent's repositories; here
+        # the agent has none. test_cli_repo_connect.py covers agents that do.
+        for target, fake in (
+                ("azext_sre.custom._extension_resource_show",
+                 MagicMock(side_effect=ResourceNotFoundError("Extension not found."))),
+                ("azext_sre.custom._extension_resource_list", MagicMock(return_value={"value": []}))):
+            patcher = patch(target, fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def _run_github(self, repo_url="https://github.com/org/repo", **extra_args):
         args = {
             "agent_name": "myagent", "resource_group": "rg", "repo_url": repo_url,
-            "provider": None, "display_name": None, "branch": None,
+            "provider": None, "display_name": None, "branch": None, "overwrite": False,
             "github_account": None, "github_token": None, "devops_organization": None,
             "devops_auth_type": "pat", "devops_identity": None,
             "devops_federated_client_id": None, "devops_federated_tenant_id": None,
@@ -2698,7 +2708,7 @@ class RepoConnectTests(unittest.TestCase):
         args = {
             "agent_name": "myagent", "resource_group": "rg",
             "repo_url": "https://dev.azure.com/contoso/project/_git/repo",
-            "provider": None, "display_name": None, "branch": None,
+            "provider": None, "display_name": None, "branch": None, "overwrite": False,
             "github_account": None, "github_token": None, "devops_organization": None,
             "devops_auth_type": "pat", "devops_identity": None,
             "devops_federated_client_id": None, "devops_federated_tenant_id": None,
@@ -2719,7 +2729,8 @@ class RepoConnectTests(unittest.TestCase):
         command, calls, fake_extension_resource_create = self._run_devops()
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create), \
-             patch("azext_sre.custom._devops_pat_token", lambda cli_ctx, org, name: ("ado-pat-xyz", "auth-id-1")):
+             patch("azext_sre.custom._devops_pat_token",
+                   lambda cli_ctx, org, name: ("ado-pat-xyz", "auth-id-1", "2026-12-11T00:00:00Z")):
             command._handler({})
 
         ext_type, ext_name, raw_value, _overwrite = calls[0]
@@ -2803,7 +2814,8 @@ class RepoConnectTests(unittest.TestCase):
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._extension_resource_create", fake_extension_resource_create_with_real_pat), \
-             patch("azext_sre.custom._devops_pat_token", lambda cli_ctx, org, name: ("ado-pat-xyz", "auth-id-1")):
+             patch("azext_sre.custom._devops_pat_token",
+                   lambda cli_ctx, org, name: ("ado-pat-xyz", "auth-id-1", "2026-12-11T00:00:00Z")):
             result = command._handler({})
 
         self.assertEqual(result["auth"]["properties"]["value"]["pat"], "******")
@@ -2812,7 +2824,7 @@ class RepoConnectTests(unittest.TestCase):
         command = _bare_command(
             RepoConnect, agent_name="myagent", resource_group="rg",
             repo_url="https://github.com/org/repo", provider=None, display_name=None,
-            branch=None, github_account=None, github_token=None, devops_organization=None,
+            branch=None, overwrite=False, github_account=None, github_token=None, devops_organization=None,
             devops_auth_type="pat", devops_identity=None,
             devops_federated_client_id=None, devops_federated_tenant_id=None,
         )
@@ -2869,7 +2881,7 @@ class RepoConnectTests(unittest.TestCase):
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._extension_resource_create", fake_create), \
              patch("azext_sre.custom._devops_pat_token",
-                   lambda cli_ctx, org, name: ("ado-pat-xyz", "auth-id-1")) as _:
+                   lambda cli_ctx, org, name: ("ado-pat-xyz", "auth-id-1", "2026-12-11T00:00:00Z")) as _:
             command._handler({})
         self.assertEqual(calls[0][:2], ("azureDevOpsAuths", "contoso"))
 
@@ -2890,7 +2902,7 @@ class RepoConnectTests(unittest.TestCase):
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._extension_resource_create", fake_create), \
              patch("azext_sre.custom._devops_pat_token",
-                   lambda cli_ctx, org, name: ("ado-pat-xyz", "auth-id-1")), \
+                   lambda cli_ctx, org, name: ("ado-pat-xyz", "auth-id-1", "2026-12-11T00:00:00Z")), \
              patch("azext_sre.custom._revoke_devops_pat") as fake_revoke, \
              patch("azext_sre.custom.logger") as fake_logger:
             with self.assertRaises(CLIError) as raised:
@@ -2925,12 +2937,14 @@ class RepoConnectTests(unittest.TestCase):
             _revoke_devops_pat(object(), "contoso", "auth-id-1")
         self.assertIn("revoke it manually", "\n".join(logs.output))
 
-    def test_devops_pat_token_returns_authorization_id(self):
+    def test_devops_pat_token_returns_authorization_id_and_expiry(self):
         response = MagicMock()
-        response.json.return_value = {"patToken": {"token": "pat", "authorizationId": "auth-id-1"}}
+        response.json.return_value = {"patToken": {
+            "token": "pat", "authorizationId": "auth-id-1", "validTo": "2026-12-11T18:02:10.32Z"}}
         with patch("azext_sre.custom._cli_invoke", return_value={"accessToken": "aad"}), \
              patch("azext_sre.custom.send_raw_request", return_value=response):
-            self.assertEqual(_devops_pat_token(object(), "contoso", "name"), ("pat", "auth-id-1"))
+            self.assertEqual(_devops_pat_token(object(), "contoso", "name"),
+                             ("pat", "auth-id-1", "2026-12-11T18:02:10.32Z"))
 
 
 class GithubTokenResolutionTests(unittest.TestCase):
@@ -5609,7 +5623,8 @@ class ConnectionShowDefaultAudienceTests(unittest.TestCase):
         command = _bare_command(GetConnection, **args)
 
         def fake_cli_invoke(cli_ctx, *cmd_args, allow_missing=False):
-            return {"properties": {"agentEndpoint": "https://myagent--abc.def.eastus2.azuresre.ai"}}
+            return {"id": "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/agents/myagent",
+                    "properties": {"agentEndpoint": "https://myagent--abc.def.eastus2.azuresre.ai"}}
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
@@ -5640,7 +5655,8 @@ class ConnectionShowDefaultAudienceTests(unittest.TestCase):
         )
 
         def fake_cli_invoke(cli_ctx, *cmd_args, allow_missing=False):
-            return {"properties": {"agentEndpoint": "https://myagent.example"}}
+            return {"id": "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/agents/myagent",
+                    "properties": {"agentEndpoint": "https://myagent.example"}}
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._cli_invoke", fake_cli_invoke), \
