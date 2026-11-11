@@ -154,7 +154,7 @@ Gates 4 to 6 cover the combinations below. Results are recorded in
 | Item | Required |
 |---|---|
 | Operating systems | Windows, Linux, macOS |
-| Tenants | Corp and BAMI (non-Microsoft). AME and PME: [decision needed](#decisions-needed). Sovereign clouds: no, unless SRE Agent is available there |
+| Tenants | Corp and BAMI (non-Microsoft). AME and PME: out of scope (see [Decisions](#decisions)). Sovereign clouds: no, unless SRE Agent is available there |
 | Signed-in identities | Administrator, no role, Reader-only, guest (B2B) user, service principal or managed identity |
 | Agent channels | Stable; Preview where the command supports it |
 | Azure CLI | Minimum supported version (`azext.minCliCoreVersion` in `src/sre/azext_sre/azext_metadata.json`, currently 2.75.0) and latest |
@@ -209,17 +209,19 @@ The final wheel is built by the release workflow from the `v1.0.0b1` tag. CI rep
 gates 1 to 3 on it automatically. If the CLI code changes after the preview build, the
 affected labs are re-run.
 
-## Decisions needed
+## Decisions
 
 | Question | Options | Decision |
 |---|---|---|
-| Is AME testing required for this release? | Yes / No | |
-| Is PME testing required for this release? | Yes / No | |
+| Is AME testing required for this release? | Yes / No | No. Out of scope |
+| Is PME testing required for this release? | Yes / No | No. Out of scope |
 | Is an internal customer testing period required (named users and a feedback channel, see #27)? | Yes / No | |
 
-AME and PME testing needs a SAW with the Azure CLI on it, and a test subscription in
-that tenant. The SAW we tried can't install the Azure CLI without Software Center
-approval, so these are the slowest options.
+AME and PME are out of scope for `az sre`. Changes in \*ME tenants must go through EV2
+or ApprovalService, and running the Azure CLI by hand counts as a manual touch, which
+isn't allowed there (confirmed by Hamid Henry Safi). `az sre` is for external
+customers and for 1P teams in Corp. 1P teams deploying to AME or PME should use EV2;
+`srectl extension generate-ev2` already generates the Bicep and ARM templates for that.
 
 ## Testing done
 
