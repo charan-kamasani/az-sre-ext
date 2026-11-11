@@ -25,22 +25,11 @@ class SreCommandsLoader(AzCommandsLoader):
             from . import aaz
         except ImportError:
             aaz = None
-        # The generated AAZ package tree lives under aaz/latest/app/... (the
-        # swagger's RP folder is "app", Microsoft.App) while the public
-        # command surface is "sre ...". load_aaz_command_table uses `args`
-        # only to decide which generated command files to import for this
-        # invocation (a performance optimization, not the registered name),
-        # so remapping a leading "sre" to "app" here lets it find/import the
-        # right generated module. commands.load_command_table then renames
-        # every resulting "app ..." table entry back to "sre ...".
-        aaz_args = args
-        if args[:1] == ["sre"]:
-            aaz_args = ["app", *args[1:]]
         if aaz:
             load_aaz_command_table(
                 loader=self,
                 aaz_pkg_name=aaz.__name__,
-                args=aaz_args
+                args=args
             )
         load_command_table(self, args)
 

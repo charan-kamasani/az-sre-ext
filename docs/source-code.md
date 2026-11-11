@@ -18,22 +18,22 @@ src/sre/
   azext_sre/
     __init__.py       # SreCommandsLoader: registers the generated AAZ
                        # package, then layers custom.py recipes on top
-    commands.py        # load_command_table: renames every generated
-                       # "app ..." entry to "sre ...", auto-discovers
-                       # every AAZCommand subclass in custom.py
-    _help.py           # generated, intentionally empty (knack `helps`
-                       # dict is unused here -- see docs/cli-reference.md)
+    commands.py        # load_command_table: auto-discovers every
+                       # AAZCommand subclass in custom.py
+    _help.py           # group examples applied after load (see comments)
     _params.py          # generated argument wiring
     custom.py           # ALL hand-written behavior -- the only file you
                        # should normally be editing
-    aaz/latest/app/agent/...  # generated recipes, DO NOT hand-edit
+    aaz/latest/sre/...  # generated recipes, DO NOT hand-edit
     tests/latest/
       test_sre.py       # generated scaffold test (left as-is)
       test_custom.py    # the real test suite -- every hand-written
                        # behavior in custom.py
   dist/                # built wheel artifacts (gitignored except CI)
 scripts/
+  generate_sre_extension.py  # regenerates azext_sre/aaz from specification/
   generate_cli_reference.py  # regenerates docs/cli-reference.md
+specification/         # pinned SRE Agent Swagger (generator input)
 .github/workflows/
   ci.yml               # unit tests -> cli-reference drift check -> wheel build
 .github/workflows-future/
@@ -44,33 +44,29 @@ docs/                  # this guide and its siblings
 PLAN.md                # architecture decisions, evidence, roadmap
 ```
 
-## Why the "app" → "sre" rename exists
+## Generated command names
 
-The SRE Agent Swagger's RP folder is literally `app`
-(`Microsoft.App/agents`), so every generated recipe under
-`aaz/latest/app/agent/...` is registered by `load_aaz_command_table` as
-`app agent ...`. The entire top-level group needs renaming (not just one
-leaf command) since the whole RP folder name differs from the CLI's public
-noun. `__init__.py` remaps a leading
-`"sre"` in the lazy-load args to `"app"` purely so `load_aaz_command_table`
-finds the right generated module to import; `commands.load_command_table`
-then renames every resulting `"app ..."` table/group key back to `"sre
-..."` before layering `custom.py`'s overrides on top (which always win,
-since they're registered last).
+The SRE Agent Swagger's RP folder is `app` (`Microsoft.App/agents`), so
+aaz-dev would name the generated commands `app agent ...` by default.
+`scripts/generate_sre_extension.py` shapes the aaz-dev workspace before code
+generation instead: it renames `app` to `sre`, moves the connector and
+identity subgroups to the top-level `sre connector`/`sre identity` nouns,
+renames `supported-agent-model list` to `sre agent list-models`, and leaves
+out the superseded `listConnectorsWithSecrets` action. The generated code
+under `aaz/latest/sre/...` therefore already carries the final public names,
+and nothing is renamed or removed when the extension loads.
 
 ## How a command flows
 
 1. `az sre connector create ...` is typed.
 2. The Azure CLI core calls `SreCommandsLoader.load_command_table(args)`.
-3. `__init__.py` remaps the leading `sre` to `app` for the *lazy-load args
-   only*, then calls `load_aaz_command_table`, which imports and registers
-   only the generated modules relevant to this path (e.g.
-   `aaz/latest/app/agent/connector/_create.py`).
-4. `commands.load_command_table` renames every `app ...` key just
-   registered back to `sre ...`, then scans `vars(custom)` for every
+3. `__init__.py` calls `load_aaz_command_table`, which imports and
+   registers only the generated modules relevant to this path (e.g.
+   `aaz/latest/sre/connector/_create.py`).
+4. `commands.load_command_table` scans `vars(custom)` for every
    `AAZCommand`/`AAZCommandGroup` subclass defined *in custom.py itself*
    (`value.__module__ == custom.__name__`) and registers each under its own
-   `AZ_NAME`, overwriting the generated entry if one exists.
+   `AZ_NAME`, overwriting the generated entry of the same name.
 5. For `connector create`, `custom.ConnectorCreate` (a thin subclass of the
    generated `_GeneratedConnectorCreate`) wins. It mixes in
    `_DataConnectorTypeArgMixin`, which merges real enum/help metadata into
@@ -86,11 +82,10 @@ since they're registered last).
 
 Everything in `custom.py` falls into one of these categories:
 
-- **Pure renaming wrappers** (`Create`, `Update`, `Show`, `List`, `Delete`,
-  `Start`, `Stop`, and the `Connector*` classes) — thin subclasses of
-  generated commands whose only job is to exist in `custom.py` so
-  `commands.py`'s auto-discovery picks them up under the `sre` name. They
-  add zero behavior beyond small, deliberate overlays like
+- **Thin overrides of generated commands** (`Create`, `Update`, `Show`, `List`, `Delete`,
+  `Start`, `Stop`, and the `Connector*`/`Identity*` classes) — subclasses
+  registered under the same `sre` name as the generated command they extend.
+  They add small, deliberate overlays like
   `_ModelProviderArgMixin`/`_DataConnectorTypeArgMixin`.
 - **Real-world-validated argument metadata** the generated Swagger left as
   bare, unhelpful strings — e.g. `--model-provider` and
@@ -109,7 +104,7 @@ Everything in `custom.py` falls into one of these categories:
   wrapper over `az role assignment create` that builds the agent's full
   resource-ID scope), `ManagedResourceGrant`/`Revoke`/`List` (the mirror
   image — grants the agent's own managed identity access to an external
-  scope instead), `NetworkUpdate` (GET-merge-PUT against a preview
+  scope instead), `NetworkUpdate` (a networking-only PATCH against a preview
   api-version with no public Swagger yet), and the entire `Extension*`
   family (runbook extension CRUD against the agent's data-plane proxy
   endpoints, including the base64/JSON
@@ -126,10 +121,11 @@ Everything in `custom.py` falls into one of these categories:
 
 ### Regenerated (do not hand-edit)
 
-Everything under `azext_sre/aaz/latest/app/agent/...` — agent, connector,
-and (if/when a public Swagger adds them) extension CRUD. Regenerate with
-`aaz-dev` against the pinned `API_VERSION` (`2026-01-01`) if the Swagger
-changes; see [development.md](development.md).
+Everything under `azext_sre/aaz/latest/sre/...` — agent, connector,
+identity and `agent list-models`. Regenerate with
+`scripts/generate_sre_extension.py` from the pinned Swagger under
+`specification/` (api-version `2026-01-01`); see
+[CONTRIBUTING.md](../CONTRIBUTING.md#regenerating-the-generated-code).
 
 ### Not regenerated (hand-maintained in `custom.py`)
 

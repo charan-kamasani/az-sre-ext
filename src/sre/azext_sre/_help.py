@@ -10,42 +10,18 @@
 
 from knack.help_files import helps  # pylint: disable=unused-import
 
-# Top-level overview for 'az sre -h'. There is no root AAZCommandGroup class
-# for "sre" in custom.py (it's the implicit root every noun below registers
-# under), so this is the one place that can carry an explicit summary -- and
-# nothing in custom.py ever overwrites this specific key, so a plain
-# module-level assignment is safe here (see GROUP_EXAMPLES below for why
-# every OTHER group needs a different mechanism).
+# Top-level overview for 'az sre -h'. The short-summary/long-summary come
+# from the generated root group (aaz/latest/sre/__cmd_group.py, configured in
+# scripts/generate_sre_extension.py): a one-line summary plus a single,
+# non-stale, universally-applicable fact (the Windows PowerShell inline-JSON
+# quoting gotcha affects every JSON-accepting argument across the whole
+# extension) that a brand-new user following only --help, with no docs,
+# would otherwise hit with zero guidance. Its examples live in
+# GROUP_EXAMPLES["sre"] below, for the same reason as every other group.
 #
-# One-line short-summary, matching the standard `az <ext> -h` shape used
-# across other Azure CLI extensions (a single-line 'Group' section plus the
-# native alphabetical "Subgroups:" list, always in sync since it's generated
-# from the registered command groups). An earlier version here added a
-# categorized long-summary grouping nouns into the portal's own Build + setup
-# categories, but that kept going stale as the noun set changed (e.g.
-# 'connector' briefly listed under the wrong category) -- removed in favor of
-# letting the native subgroup listing do that work instead. The long-summary
-# below is different: a single, non-stale, universally-applicable fact (the
-# Windows PowerShell inline-JSON quoting gotcha affects every JSON-accepting
-# argument across the whole extension) that a brand-new user following only
-# --help, with no docs, would otherwise hit with zero guidance (found via a
-# live help-only walkthrough of 'sre hook create').
-helps['sre'] = """
-type: group
-short-summary: Manage Azure SRE Agent resources.
-long-summary: |-
-  In PowerShell, pass JSON with --value @file.json instead of inline.
-examples:
-  - name: Create an agent with an Anthropic default model.
-    text: |-
-      az sre agent create --name myagent --resource-group myrg --location eastus2 \\
-          --default-model "{provider:anthropic,name:automatic}"
-  - name: Grant the agent's managed identity read/monitoring access to a resource group.
-    text: az sre managed-resource grant -g myrg --agent-name myagent --scope /subscriptions/<sub-id>/resourceGroups/prod-rg
-"""
-
-# Every noun group below ('sre access', 'sre agent', ...) is an AAZCommandGroup
-# subclass in custom.py, decorated with @register_command_group. That
+# Every group ('sre', 'sre access', 'sre agent', ...) is an AAZCommandGroup
+# subclass in custom.py or the generated aaz package, decorated with
+# @register_command_group. That
 # decorator (azure.cli.core.aaz._command.register_command_group) parses the
 # class docstring into short-summary/long-summary and does
 # `helps[name] = yaml.safe_dump(cls.AZ_HELP)` -- an unconditional dict
@@ -65,6 +41,14 @@ examples:
 # leaving that decorator's short-summary/long-summary (sourced from the
 # class docstring -- the single source of truth) untouched.
 GROUP_EXAMPLES = {
+    "sre": [
+        {"name": "Create an agent with an Anthropic default model.",
+         "text": ("az sre agent create --name myagent --resource-group myrg --location eastus2 \\\n"
+                  '    --default-model "{provider:anthropic,name:automatic}"')},
+        {"name": "Grant the agent's managed identity read/monitoring access to a resource group.",
+         "text": ("az sre managed-resource grant -g myrg --agent-name myagent "
+                  "--scope /subscriptions/<sub-id>/resourceGroups/prod-rg")},
+    ],
     "sre access": [
         {"name": 'Grant a user the "reader" role on an agent.',
          "text": "az sre access grant -g myrg --agent-name myagent --assignee <object-id-or-upn> --role reader"},
@@ -74,7 +58,7 @@ GROUP_EXAMPLES = {
     "sre agent": [
         {"name": "Create an agent with an Anthropic default model.",
          "text": ('az sre agent create --name myagent --resource-group myrg --location eastus2 '
-                   '--default-model "{provider:anthropic,name:automatic}"')},
+                  '--default-model "{provider:anthropic,name:automatic}"')},
         {"name": "Show one agent's details.",
          "text": "az sre agent show -g myrg -n myagent"},
         {"name": "List supported model providers/names in a region.",
@@ -142,10 +126,10 @@ GROUP_EXAMPLES = {
     "sre plugin": [
         {"name": "Connect a plugin marketplace, then install a plugin from it.",
          "text": ('az sre plugin marketplace create -g myrg --agent-name myagent -n contoso-plugins '
-                   '--value \'{"sourceType": "github", "sourceUrl": "https://github.com/contoso/sre-plugins"}\'\n'
-                   'az sre plugin install create -g myrg --agent-name myagent -n datadog --value '
-                   '\'{"marketplaceName": "contoso-plugins", "pluginName": "datadog", "source": '
-                   '{"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}\'')},
+                  '--value \'{"sourceType": "github", "sourceUrl": "https://github.com/contoso/sre-plugins"}\'\n'
+                  'az sre plugin install create -g myrg --agent-name myagent -n datadog --value '
+                  '\'{"marketplaceName": "contoso-plugins", "pluginName": "datadog", "source": '
+                  '{"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}\'')},
     ],
     "sre plugin marketplace": [
         {"name": "List an agent's connected plugin marketplaces.",
@@ -199,13 +183,13 @@ GROUP_EXAMPLES = {
          "text": "az sre automation http-trigger list -g myrg --agent-name myagent"},
     ],
     "sre response-plan": [
-        {"name": "Prerequisites: connect an incident platform, then create the subagent.",
+        {"name": "Connect an incident platform and subagent, then route Azure Monitor alerts "
+                 "mentioning 'disk space' to that subagent.",
          "text": "az sre agent update -g myrg -n myagent "
                  "--incident-management-configuration \"{type:AzMonitor}\"\n"
                  "az sre subagent create -g myrg --agent-name myagent "
-                 "-n incident-responder --value @subagent.json"},
-        {"name": "Route Azure Monitor alerts mentioning 'disk space' to a subagent.",
-         "text": "az sre response-plan create -g myrg --agent-name myagent "
+                 "-n incident-responder --value @subagent.json\n"
+                 "az sre response-plan create -g myrg --agent-name myagent "
                  "-n disk-space --platform AzMonitor --subagent incident-responder "
                  "--title-contains \"disk space\" --mode review "
                  "--instructions \"Gather disk-usage evidence.\""},
