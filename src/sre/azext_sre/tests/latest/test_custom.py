@@ -3329,18 +3329,20 @@ class ExtensionTenantGateTests(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(result))
 
     def test_triggers_plugins_and_settings_use_their_own_routes(self):
+        plugin = json.dumps({"marketplaceName": "m", "pluginName": "p",
+                             "source": {"type": "relative", "repo": "o/r", "url": "plugins/p"}})
         cases = (
-            ("httpTriggers", "/api/v2/extendedAgent/httpTriggers/t", "HttpTrigger"),
-            ("pluginMarketplaces", "/api/v2/extendedAgent/pluginMarketplaces/t", "Marketplace"),
-            ("pluginInstallations", "/api/v2/extendedAgent/pluginInstallations/t", "PluginInstallation"),
-            ("globalSettings", "/api/v2/extendedAgent/globalSettings/t", "GlobalSettings"),
+            ("httpTriggers", "/api/v2/extendedAgent/httpTriggers/t", "HttpTrigger", "{}"),
+            ("pluginMarketplaces", "/api/v2/extendedAgent/pluginMarketplaces/t", "Marketplace", "{}"),
+            ("pluginInstallations", "/api/v2/extendedAgent/pluginInstallations/t", "PluginInstallation", plugin),
+            ("globalSettings", "/api/v2/extendedAgent/globalSettings/t", "GlobalSettings", "{}"),
         )
-        for extension_type, path, envelope_type in cases:
+        for extension_type, path, envelope_type, value in cases:
             with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
                  patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
                  patch("azext_sre.custom._encode_extension_value"), \
                  patch("azext_sre.custom._data_plane_request", return_value={}) as dp:
-                _extension_resource_create(None, "myagent", "rg", extension_type, "t", "{}", overwrite=True)
+                _extension_resource_create(None, "myagent", "rg", extension_type, "t", value, overwrite=True)
             self.assertEqual(dp.call_args[0][3:5], ("PUT", path))
             self.assertEqual(dp.call_args.kwargs["body"]["type"], envelope_type)
 
@@ -5324,13 +5326,11 @@ class SkillCreateFilePathTests(unittest.TestCase):
             with self.assertRaisesRegex(CLIError, "valid skill name"):
                 command._prepare_value()
 
-    def test_arm_extension_paths_quote_the_name(self):
+    def test_arm_extension_paths_keep_special_characters_in_the_name(self):
         from azext_sre.custom import _arm_extension_resource_id
 
-        self.assertEqual(_arm_extension_resource_id("/agents/a", "skills", "../tools/victim"),
-                         "/agents/a/skills/..%2Ftools%2Fvictim")
-        with self.assertRaises(CLIError):
-            _arm_extension_resource_id("/agents/a", "skills", "..")
+        self.assertEqual(_arm_extension_resource_id("/agents/a", "skills", "a b?#"),
+                         "/agents/a/skills/a%20b%3F%23")
 
     def test_prepare_value_both_file_path_and_value_raises(self):
         path = self._write("---\ndescription: D\n---\nBody\n")

@@ -749,6 +749,21 @@ A universal constraint applies to every extension type: the decoded
 always rejected with `"request body contains an invalid or unrecognized
 property"`.
 
+Every extension name goes into the request URL, so the CLI refuses a name
+that is empty, only dots, or contains `/`, `\` or control characters before
+it sends anything. On the agent's own API an empty name or `.` would address
+the whole collection.
+
+### Credentials in tool and plugin values
+
+A plugin marketplace's `feedCredentials[].pat`, an HttpClientTool's auth
+headers (such as `Authorization` or an API key) and a plugin install's source
+credentials are secrets. `show`, `list` and `create` for `tool`,
+`plugin marketplace` and `plugin install` print them as `******` and keep the
+service's replies out of `--debug` and the Azure CLI log file. Don't paste
+that output back as `--value`: `create` refuses a value that still has
+`******` in a credential field, so the mask can't replace the real secret.
+
 ### Non-Microsoft tenants
 
 The service currently rejects agent extension calls through ARM from
@@ -1151,7 +1166,9 @@ Noun-specific commands include:
   `isEnabled` field on scheduled tasks.
 - `az sre automation http-trigger create/show/list/delete/invoke` -- run the
   agent from an inbound webhook call. `invoke` POSTs to the trigger's
-  `triggerUrl` with your Azure CLI token, which is handy for testing.
+  `triggerUrl` with your Azure CLI token, which is handy for testing. If the
+  trigger answers with something other than JSON, `invoke` prints the status
+  code and body instead of failing, because the trigger has already run.
 - `az sre response-plan create/show/list/delete/enable/disable` -- match
   incoming incidents (by platform/title/team/etc.) and route matches to
   a handling agent (portal: Incidents > "Triggers & response plans", a

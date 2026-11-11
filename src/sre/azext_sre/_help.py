@@ -97,9 +97,9 @@ GROUP_EXAMPLES = {
          "text": "az sre identity assign -g myrg --agent-name myagent --system-assigned"},
     ],
     "sre instructions": [
-        {"name": "Show an agent's current custom instructions.",
+        {"name": "Show a reusable prompt snippet.",
          "text": "az sre instructions show -g myrg --agent-name myagent --name default"},
-        {"name": "Set an agent's custom instructions.",
+        {"name": "Create a reusable prompt snippet.",
          "text": 'az sre instructions create -g myrg --agent-name myagent --name default --value '
                  '\'{"prompt": "Always cite the runbook section you used."}\''},
     ],
@@ -126,7 +126,7 @@ GROUP_EXAMPLES = {
     "sre plugin": [
         {"name": "Connect a plugin marketplace, then install a plugin from it.",
          "text": ('az sre plugin marketplace create -g myrg --agent-name myagent -n contoso-plugins '
-                  '--value \'{"sourceType": "github", "sourceUrl": "https://github.com/contoso/sre-plugins"}\'\n'
+                  '--value \'{"sourceType": "github", "sourceUrl": "contoso/sre-plugins"}\'\n'
                   'az sre plugin install create -g myrg --agent-name myagent -n datadog --value '
                   '\'{"marketplaceName": "contoso-plugins", "pluginName": "datadog", "source": '
                   '{"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}\'')},
@@ -136,7 +136,7 @@ GROUP_EXAMPLES = {
          "text": "az sre plugin marketplace list -g myrg --agent-name myagent"},
         {"name": "Connect a GitHub repo as a plugin marketplace.",
          "text": 'az sre plugin marketplace create -g myrg --agent-name myagent -n contoso-plugins --value '
-                 '\'{"sourceType": "github", "sourceUrl": "https://github.com/contoso/sre-plugins"}\''},
+                 '\'{"sourceType": "github", "sourceUrl": "contoso/sre-plugins"}\''},
     ],
     "sre plugin install": [
         {"name": "List an agent's installed plugins.",
@@ -169,16 +169,16 @@ GROUP_EXAMPLES = {
     "sre automation scheduled-task": [
         {"name": "Run the agent on a timer against a prompt.",
          "text": "az sre automation scheduled-task create -g myrg --agent-name myagent "
-                 "-n daily-digest --value \"{cronExpression:'0 9 * * 1-5',agentPrompt:"
-                 "'Summarize overnight alerts'}\""},
+                 "-n daily-digest --value '{\"cronExpression\": \"0 9 * * 1-5\", \"agentPrompt\": "
+                 "\"Summarize overnight alerts\"}'"},
         {"name": "List an agent's scheduled tasks.",
          "text": "az sre automation scheduled-task list -g myrg --agent-name myagent"},
     ],
     "sre automation http-trigger": [
         {"name": "Create a webhook that runs the agent against a prompt.",
          "text": "az sre automation http-trigger create -g myrg --agent-name myagent "
-                 "-n alert-webhook --value \"{agentPrompt:'Investigate the attached "
-                 "alert payload'}\""},
+                 "-n alert-webhook --value '{\"agentPrompt\": \"Investigate the attached "
+                 "alert payload\"}'"},
         {"name": "List an agent's HTTP triggers.",
          "text": "az sre automation http-trigger list -g myrg --agent-name myagent"},
     ],
