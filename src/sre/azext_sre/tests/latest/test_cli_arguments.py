@@ -134,6 +134,16 @@ class CliArgumentEnforcementTests(unittest.TestCase):
         self.assertEqual(options["--data-connector-type"], "KnowledgeWebPage")
         self._assert_rejected(arguments + ["--type", "bogus"], "--type", "bogus")
 
+    def test_connector_type_sends_managed_connectors_to_the_portal(self):
+        # Only the command handler produces this message, so it needs no accepted twin.
+        for verb in ("create", "update"):
+            with self.subTest(verb=verb):
+                self._assert_rejected(
+                    ["sre", "connector", verb, "--agent-name", "myagent", "--resource-group", "myrg",
+                     "--name", "outlook", "--data-connector-type", "Office 365 Outlook"],
+                    "Set up Office 365 Outlook in the portal: Connectors > Add connector.",
+                )
+
     def test_agent_url_token_only_goes_to_the_validated_host(self):
         sent = []
 

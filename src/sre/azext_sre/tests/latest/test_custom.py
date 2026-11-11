@@ -225,8 +225,6 @@ class DataConnectorTypeNormalizationTests(unittest.TestCase):
         self.assertEqual(_normalize_data_connector_type("KUSTO"), "Kusto")
         self.assertEqual(_normalize_data_connector_type("Mcp"), "Mcp")
         self.assertEqual(_normalize_data_connector_type("mcp"), "Mcp")
-        self.assertEqual(_normalize_data_connector_type("outlook"), "Outlook")
-        self.assertEqual(_normalize_data_connector_type("TEAMS"), "Teams")
 
     def test_accepts_newly_confirmed_values_case_insensitively(self):
         # Confirmed via KnownDataConnectorTypes.cs and DataConnectorValidator.cs
@@ -281,6 +279,20 @@ class DataConnectorTypeNormalizationTests(unittest.TestCase):
             "--data-connector-type must be one of", str(raised.exception)
         )
 
+    def test_managed_connectors_point_to_the_portal(self):
+        # The service now creates Outlook and Teams as managed connectors, like Gmail.
+        for value, card in (
+                ("outlook", "Office 365 Outlook"),
+                ("Office 365 Outlook", "Office 365 Outlook"),
+                ("TEAMS", "Microsoft Teams"),
+                ("Microsoft Teams", "Microsoft Teams"),
+                ("gmail", "Gmail"),
+                ("Viva Engage", "Yammer")):
+            with self.subTest(value=value):
+                with self.assertRaises(CLIError) as raised:
+                    _normalize_data_connector_type(value)
+                self.assertIn(f"Set up {card} in the portal", str(raised.exception))
+
     def test_accepts_friendly_product_names_case_insensitively(self):
         # Friendly names confirmed against sreagent-runtime's own portal
         # i18n strings (SREAgentResources.ts), not invented -- see
@@ -295,8 +307,6 @@ class DataConnectorTypeNormalizationTests(unittest.TestCase):
         self.assertEqual(_normalize_data_connector_type("Azure Data Explorer Cluster"), "Kusto")
         self.assertEqual(_normalize_data_connector_type("Custom MCP"), "Mcp")
         self.assertEqual(_normalize_data_connector_type("User Provided Connector"), "Mcp")
-        self.assertEqual(_normalize_data_connector_type("Office 365 Outlook"), "Outlook")
-        self.assertEqual(_normalize_data_connector_type("Microsoft Teams"), "Teams")
         self.assertEqual(_normalize_data_connector_type("Microsoft IcM"), "Icm")
         self.assertEqual(_normalize_data_connector_type("Microsoft DGrep"), "Dgrep")
         # Corrected Title-based names, added 2026-11-04 after the full
@@ -4523,7 +4533,7 @@ class InternalFeatureHelpVisibilityTests(unittest.TestCase):
         for hidden in ("Icm", "Dgrep", "GenevaMetrics", "S360"):
             self.assertNotIn(hidden, third_party)
             self.assertIn(hidden, internal)
-        for unlisted in ("Kusto", "Documentation", "KnowledgeText"):
+        for unlisted in ("Kusto", "Documentation", "KnowledgeText", "Outlook", "Teams"):
             self.assertNotIn(unlisted, internal)
         self.assertIn("MonitorClient", third_party)
         self.assertEqual(_normalize_data_connector_type(PORTAL_CONNECTOR_NAMES["MonitorClient"]), "MonitorClient")
