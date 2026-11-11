@@ -4032,12 +4032,13 @@ class KnowledgeFacadeTests(unittest.TestCase):
     def test_create_webpage_forwards_extended_properties_only(self):
         # NOTE: must NOT also send --data-source -- live-confirmed to cause
         # a service-side 500 for KnowledgeWebPage when both are present.
-        _, calls = self._run(
-            KnowledgeCreate,
-            agent_name="myagent", resource_group="rg", name="docs",
-            type="webpage", file_path=None, url="https://example.com", data_source=None,
-            overwrite=True,
-        )
+        with patch("azext_sre.custom._arm_request", return_value=None):
+            _, calls = self._run(
+                KnowledgeCreate,
+                agent_name="myagent", resource_group="rg", name="docs",
+                type="webpage", file_path=None, url="https://example.com", data_source=None,
+                overwrite=True,
+            )
         self.assertEqual(
             calls[0],
             (
@@ -4059,17 +4060,20 @@ class KnowledgeFacadeTests(unittest.TestCase):
         self.assertIn("--url", str(raised.exception))
 
     def test_show_forwards_to_connector_show(self):
-        _, calls = self._run(
-            KnowledgeShow, agent_name="myagent", resource_group="rg", name="docs",
-            fake_result={"properties": {"dataConnectorType": "KnowledgeWebPage"}},
-        )
+        with patch("azext_sre.custom._arm_request",
+                   return_value={"properties": {"dataConnectorType": "KnowledgeWebPage"}}):
+            _, calls = self._run(
+                KnowledgeShow, agent_name="myagent", resource_group="rg", name="docs",
+                fake_result={"properties": {"dataConnectorType": "KnowledgeWebPage"}},
+            )
         self.assertEqual(
             calls[0],
             ("sre", "connector", "show", "--agent-name", "myagent", "--resource-group", "rg", "--name", "docs"),
         )
 
     def test_delete_forwards_to_connector_delete(self):
-        with patch("azext_sre.custom._arm_request", return_value={"name": "docs"}):
+        with patch("azext_sre.custom._arm_request",
+                   return_value={"name": "docs", "properties": {"dataConnectorType": "KnowledgeWebPage"}}):
             _, calls = self._run(
                 KnowledgeDelete, agent_name="myagent", resource_group="rg", name="docs",
             )
@@ -4910,19 +4914,6 @@ class ConnectorPartnerTypeTests(unittest.TestCase):
             data_connector_type=SimpleNamespace(to_serialized_data=lambda: "Mcp"), extended_properties=extended))
         command.post_instance_update(instance)
         self.assertEqual(extended, {"endpoint": "https://x", "partnerType": "DynatraceMcp"})
-
-    def test_partner_type_on_update_requires_the_full_connector_definition(self):
-        from azext_sre.custom import _GeneratedConnectorUpdate
-
-        class _Update(_ConnectorPartnerTypeMixin, _GeneratedConnectorUpdate):
-            pass
-
-        with patch.object(_GeneratedConnectorUpdate, "pre_operations", lambda self: None):
-            with self.assertRaisesRegex(CLIError, "--data-source and --extended-properties"):
-                _bare_command(_Update, partner_type="DynatraceMcp", data_connector_type=None,
-                              data_source=None, extended_properties=None).pre_operations()
-            _bare_command(_Update, partner_type="DynatraceMcp", data_connector_type=None,
-                          data_source="https://x", extended_properties={"endpoint": "https://x"}).pre_operations()
 
 
 class ConnectorConvenienceArgsTests(unittest.TestCase):

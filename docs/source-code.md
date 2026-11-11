@@ -177,8 +177,10 @@ identity and `agent list-models`. Regenerate with
 ## Security boundaries
 
 - `connector list-secret` is the only command that can return connector
-  secret material. Every other connector command recursively redacts
-  secrets from output. `list-secret` turns off HTTP request/response
+  secret material. Every other connector command leaves secret fields out
+  of its output: reads don't return most of them, and Azure CLI hides
+  fields the API marks secret, such as `dataSource`. `list-secret` turns
+  that hiding off and turns off HTTP request/response
   tracing for its own call, so `--debug` does not write the secrets to
   logs. Store its output securely and never commit it.
 - The generated `--debug` flag still prints raw request/response bodies
