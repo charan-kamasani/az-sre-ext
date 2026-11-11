@@ -144,6 +144,14 @@ def verify_generation_inputs(python: Path, aaz_repo: Path) -> None:
         raise SystemExit(f"Azure/aaz checkout {aaz_repo} does not contain commit {AAZ_REPO_COMMIT}.")
 
 
+def remove_tree(path: Path) -> None:
+    """Delete path, including files past Windows' 260-character limit."""
+    target = str(Path(path).resolve())
+    if os.name == "nt" and not target.startswith("\\\\?\\"):
+        target = "\\\\?\\" + target
+    shutil.rmtree(target, ignore_errors=True)
+
+
 def sync_generated_tree(generated: Path, destination: Path) -> None:
     """Replace destination with generated, writing every file with LF endings."""
     if destination.exists():
@@ -175,14 +183,16 @@ def generate(aaz_dev: str, aaz_repo: Path, root: Path) -> None:
     verify_generation_inputs(python, aaz_repo)
     # Scratch space lives under the (gitignored) build/ directory of this repo.
     work_root = root / "build" / "aaz-generation"
-    if work_root.exists():
-        subprocess.run(["git", "-C", str(aaz_repo), "worktree", "prune"], check=False)
-        shutil.rmtree(work_root)
+    # Delete first, then prune, so a worktree left registered by an interrupted run is dropped.
+    remove_tree(work_root)
+    subprocess.run(["git", "-C", str(aaz_repo), "worktree", "prune"], check=False)
+    # Azure/aaz has paths longer than Windows' 260-character limit.
+    git_aaz = ["git", "-C", aaz_repo, "-c", "core.longpaths=true"]
     try:
         aaz_worktree = work_root / "aaz"
         cli_output = work_root / "cli"
         cli_output.mkdir(parents=True)
-        run(["git", "-C", aaz_repo, "worktree", "add", "--detach", "--quiet", aaz_worktree, AAZ_REPO_COMMIT])
+        run([*git_aaz, "worktree", "add", "--detach", "--quiet", aaz_worktree, AAZ_REPO_COMMIT])
         try:
             env = dict(os.environ, PYTHONHASHSEED="0", PYTHONUTF8="1")
             run(
@@ -201,13 +211,13 @@ def generate(aaz_dev: str, aaz_repo: Path, root: Path) -> None:
                 env=env,
             )
         finally:
-            run(["git", "-C", aaz_repo, "worktree", "remove", "--force", aaz_worktree])
+            run([*git_aaz, "worktree", "remove", "--force", aaz_worktree])
         sync_generated_tree(
             cli_output / "src" / EXTENSION_NAME / f"azext_{EXTENSION_NAME}" / "aaz",
             root / GENERATED_AAZ_PATH,
         )
     finally:
-        shutil.rmtree(work_root, ignore_errors=True)
+        remove_tree(work_root)
     regenerate_cli_reference(root)
 
 

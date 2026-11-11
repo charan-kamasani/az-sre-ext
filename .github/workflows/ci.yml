@@ -50,9 +50,37 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-# NOTE: This is a deliberately minimal placeholder CI for early-stage development
-# (unit tests + wheel build only). The full production pipeline -- swagger-drift
-# validation, codegen regeneration checks, SBOM generation, signed releases -- is
-# parked in .github/workflows-future/ until the command surface stabilizes and
-# the missing supporting scripts (validate_swagger.py, validate_release_metadata.py,
-# etc.) are actually built.
+  regeneration-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Check out pinned AAZ command models
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: Azure/aaz
+          ref: eea0104952d4d28e30c8df1679f7b02801e95046
+          path: .aaz
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5
+        with:
+          python-version: "3.11"
+
+      - name: Regenerate and reject source drift
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install aaz-dev==4.7.1 azure-cli-core==2.81.0
+          python scripts/generate_sre_extension.py --aaz-dev "$(command -v aaz-dev)" --aaz-repo .aaz
+          git add --intent-to-add src/sre/azext_sre/aaz
+          git diff --exit-code -- src/sre/azext_sre/aaz docs/cli-reference.md
+
+# NOTE: This CI runs unit tests, the CLI reference check, a wheel build and a
+# byte-for-byte regeneration check of the generated aaz code. Swagger-drift
+# validation, SBOM generation and signed releases are parked in
+# .github/workflows-future/ until the missing supporting scripts
+# (validate_swagger.py, validate_release_metadata.py, etc.) are actually built.

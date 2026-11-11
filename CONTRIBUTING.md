@@ -50,5 +50,7 @@ git diff --exit-code -- src/sre/azext_sre/aaz docs/cli-reference.md
 ```
 
 On Windows use `.venv\Scripts\python.exe` and `.venv\Scripts\aaz-dev.exe`.
-Regeneration is deterministic: on an unchanged checkout the last command
-reports no diff.
+Azure/aaz has paths longer than 260 characters; the script passes
+`-c core.longpaths=true` to its own git calls, so no git config change is
+needed. Regeneration is deterministic: on an unchanged checkout the last command
+reports no diff, and CI runs the same check on every pull request.

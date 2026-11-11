@@ -4156,13 +4156,36 @@ class GeneratedCommandNamingTests(unittest.TestCase):
         latest_dir = os.path.dirname(aaz.latest.__file__)
         packages = sorted(
             name for name in os.listdir(latest_dir)
-            if os.path.isdir(os.path.join(latest_dir, name)) and name != "__pycache__"
+            if os.path.isfile(os.path.join(latest_dir, name, "__init__.py"))
         )
         self.assertEqual(packages, ["sre"])
         for base in (IdentityAssign, SupportedAgentModelList):
             generated = base.__mro__[1]
             self.assertTrue(generated.__module__.startswith("azext_sre.aaz.latest.sre."))
             self.assertEqual(generated.AZ_NAME, base.AZ_NAME)
+
+    def test_custom_hooks_find_their_generated_arguments(self):
+        # custom.py reads these by name with getattr(..., None); a regeneration that renames
+        # one would otherwise silently disable the hook.
+        from azext_sre import custom
+
+        connector_args = ["data_connector_type", "data_source", "endpoint", "identity",
+                          "extended_properties", "connector_name"]
+        for command, paths in (
+            (custom.Create, ["incident_management_configuration.type", "knowledge_graph_configuration",
+                             "default_model.provider", "action_configuration.mode", "mi_system_assigned",
+                             "mi_user_assigned", "log_configuration"]),
+            (custom.Update, ["incident_management_configuration.type", "knowledge_graph_configuration",
+                             "default_model.provider", "action_configuration.mode"]),
+            (custom.ConnectorCreate, connector_args),
+            (custom.ConnectorUpdate, connector_args),
+        ):
+            schema = command._build_arguments_schema()
+            for path in paths:
+                with self.subTest(command=command.AZ_NAME, argument=path):
+                    node = schema
+                    for part in path.split("."):
+                        node = getattr(node, part)
 
     def test_generated_only_commands_have_help(self):
         for name, command in self.command_table.items():
