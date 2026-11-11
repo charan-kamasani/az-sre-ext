@@ -7,7 +7,7 @@
   (`azure-cli-core==2.92.0`, `build`, `setuptools`, `wheel`, ...) so an
   upstream release can't break CI unannounced; bump pins deliberately.
 - **azdev-lint**: `check_command_loader.py`, `azdev style sre` and
-  `azdev linter` at medium severity, using the AI Gateway lint config
+  `azdev linter` at medium severity, using the ADC Python lint config
   vendored in `.github/lint-config/`. `azdev`, `pylint`, `flake8` and the
   Azure CLI source (tag `azure-cli-2.92.0`) are pinned. Fails if the linter cannot load the
   extension (which would otherwise "pass" with zero commands checked).
