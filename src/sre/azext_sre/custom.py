@@ -7505,7 +7505,7 @@ class RepoConnect(AAZCommand):
         schema.repo_url = AAZStrArg(
             options=["--repo-url"],
             help="HTTPS clone URL of the repo, on github.com, dev.azure.com or "
-                 "<organization>.visualstudio.com. Don't put a user name or token in it.",
+                 "`<organization>.visualstudio.com`. Don't put a user name or token in it.",
             required=True,
         )
         schema.provider = AAZStrArg(

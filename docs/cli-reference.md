@@ -1472,7 +1472,7 @@ The agent keeps one credential for all its GitHub repositories, and one per Azur
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--repo-url` | String | Yes |  |  | HTTPS clone URL of the repo, on github.com, dev.azure.com or <organization>.visualstudio.com. Don't put a user name or token in it. |
+| `--repo-url` | String | Yes |  |  | HTTPS clone URL of the repo, on github.com, dev.azure.com or `<organization>.visualstudio.com`. Don't put a user name or token in it. |
 | `--provider` | String | No |  | `GitHub`, `AzureDevOps` | Repo provider. Detected from --repo-url's host; if given, it must match that host. |
 | `--display-name`, `--name`, `-n` | String | No |  |  | Display name for the repo, unique on the agent. Defaults to the repo name from --repo-url (without .git). |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Replace a repo with the same display name that points to a different URL. Without this flag, the command stops before saving anything. |
