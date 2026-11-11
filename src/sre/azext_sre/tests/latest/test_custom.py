@@ -1346,7 +1346,9 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
     def _arm_delete(self, cli_ctx, agent, group, extension_type, name):
         if extension_type != "incidentFilters":
             raise ResourceNotFoundError("The ARM handler proxy is unavailable.")
-        del self.filters[name]
+        # ARM answers {} whether or not the plan exists.
+        self.filters.pop(name, None)
+        return {}
 
     def _agent_request(self, cli_ctx, agent, group, method, path, body=None,
                        missing_ok=False, agent_url=None):
@@ -1477,9 +1479,20 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
         self.handlers["extra"] = {"id": "extra", "incidentFilterId": "plan"}
         unrelated = {"id": "other", "incidentFilterId": "other-plan", "customInstructions": "Keep"}
         self.handlers["other"] = unrelated
-        self._command(ResponsePlanDelete)
+        self.assertIsNone(self._command(ResponsePlanDelete))
         self.assertEqual(self.handlers, {"other": unrelated})
         self.assertNotIn("plan", self.filters)
+
+    def test_delete_of_a_missing_plan_is_not_found(self):
+        from azext_sre.custom import ResponsePlanDelete
+        with self.assertRaises(ResourceNotFoundError):
+            self._command(ResponsePlanDelete)
+
+    def test_delete_removes_instructions_whose_filter_is_already_gone(self):
+        from azext_sre.custom import ResponsePlanDelete
+        self.handlers["plan"] = {"id": "plan", "incidentFilterId": "plan", "customInstructions": "Check logs"}
+        self._command(ResponsePlanDelete)
+        self.assertEqual(self.handlers, {})
 
     def test_duplicate_handler_is_rejected_without_overwriting_its_instructions(self):
         from azext_sre.custom import _incident_handler_path, _incident_resource_create
@@ -3402,7 +3415,7 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
     """
 
     def _assert_forwards(self, command_cls, extension_type, expected_call,
-                          args_kwargs, fake_result=None, expected_result=None):
+                          args_kwargs, fake_result=None, expected_result=None, lookup=False):
         calls = {"create": [], "show": [], "list": [], "delete": []}
 
         def make_fake(name, *, needs_name=True):
@@ -3426,7 +3439,12 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
         self.assertEqual(actual[1], "rg")
         self.assertEqual(actual[2], extension_type)
         self.assertEqual(actual[3:], call_args)
-        self.assertEqual(sum(len(v) for v in calls.values()), 1)
+        lookups = 0
+        if lookup:
+            # Deletes look the item up first, with the same pinned type and name.
+            self.assertEqual(calls["show"], [("myagent", "rg", extension_type, call_args[0], {})])
+            lookups = 1
+        self.assertEqual(sum(len(v) for v in calls.values()), 1 + lookups)
         self.assertEqual(result, fake_result if expected_result is None else expected_result)
 
     def test_tool_create_pins_extension_type_tools(self):
@@ -3490,6 +3508,7 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
             SubagentDelete, "subagents",
             ("delete", ("app-investigator", {})),
             {"agent_name": "myagent", "resource_group": "rg", "extension_name": "app-investigator"},
+            lookup=True,
         )
 
     def test_hook_list_pins_extension_type_hooks(self):
@@ -3504,6 +3523,7 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
     def test_hook_delete_prints_nothing(self):
         command = _bare_command(HookDelete, agent_name="myagent", resource_group="rg", extension_name="h")
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+             patch("azext_sre.custom._extension_resource_show", return_value={"name": "h"}), \
              patch("azext_sre.custom._extension_resource_delete", return_value={}) as delete:
             self.assertIsNone(command._handler({}))
         delete.assert_called_once()
@@ -3513,6 +3533,7 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
             InstructionsDelete, "commonPrompts",
             ("delete", ("default", {})),
             {"agent_name": "myagent", "resource_group": "rg", "extension_name": "default"},
+            lookup=True,
         )
 
     def test_plugin_marketplace_create_pins_extension_type(self):
@@ -3533,6 +3554,95 @@ class PinnedExtensionFacadeTests(unittest.TestCase):
             {"agent_name": "myagent", "resource_group": "rg", "extension_name": "myplugin"},
             fake_result={"properties": {"value": {}}},
         )
+
+
+class EmptyListWarningTests(unittest.TestCase):
+    """A list command on an agent with nothing to list prints one warning,
+    whichever API answers. 'response-plan list' prints its own, so the shared
+    list helper must not add another."""
+
+    _AGENT = {"id": "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"}
+
+    def test_each_list_command_warns_once(self):
+        from azext_sre.custom import ResponsePlanList
+        for command_cls, extra_args in ((ResponsePlanList, {"agent_url": None}), (ToolList, {})):
+            for route in ("arm", "direct"):
+                with self.subTest(command=command_cls.__name__, route=route):
+                    command = _bare_command(command_cls, agent_name="myagent", resource_group="rg", **extra_args)
+                    with patch.dict(os.environ, {"AZSRE_EXTENSION_ROUTE": route}), \
+                         patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
+                         patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                         patch("azext_sre.custom._arm_request", return_value={"value": []}), \
+                         patch("azext_sre.custom._data_plane_request", return_value={"value": []}), \
+                         self.assertLogs("cli.azext_sre.custom", level="WARNING") as logs:
+                        command._handler(None)
+                    self.assertEqual(len(logs.output), 1, logs.output)
+
+
+class DeleteOfMissingItemTests(unittest.TestCase):
+    """Deleting something that doesn't exist fails with ResourceNotFoundError
+    (exit code 3) instead of reporting success, so each delete looks the item
+    up first."""
+
+    _AGENT_ID = "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/agents/myagent"
+
+    def setUp(self):
+        self.arm = {}
+        self.agent_api = {}
+        for replacement in (
+            patch.object(AAZCommand, "_handler", lambda command, command_args: None),
+            patch("azext_sre.custom._cli_invoke", return_value={"id": self._AGENT_ID}),
+            patch("azext_sre.custom._arm_request", side_effect=(
+                lambda cli_ctx, method, resource_id, api_version, body=None, missing_ok=False:
+                self._answer(self.arm, method, resource_id, missing_ok))),
+            patch("azext_sre.custom._data_plane_request", side_effect=(
+                lambda cli_ctx, agent, group, method, path, body=None, missing_ok=False, agent_url=None:
+                self._answer(self.agent_api, method, path, missing_ok))),
+        ):
+            replacement.start()
+            self.addCleanup(replacement.stop)
+
+    @staticmethod
+    def _answer(store, method, key, missing_ok):
+        if method == "DELETE":
+            store.pop(key, None)
+            return {}
+        if key in store:
+            return store[key]
+        if missing_ok:
+            return None
+        raise AssertionError(f"Unexpected {method} {key}")
+
+    def _command(self, command_cls, **args):
+        command = _bare_command(command_cls, agent_name="myagent", resource_group="rg", **args)
+        command.ctx.subscription_id = "sub"
+        command.callbacks = {}
+        return command
+
+    def test_extension_delete_on_either_route(self):
+        for route, store, key in (
+            ("arm", self.arm, f"{self._AGENT_ID}/tools/docs-link"),
+            ("direct", self.agent_api, "/api/v2/extendedAgent/tools/docs-link"),
+        ):
+            with self.subTest(route=route), patch.dict(os.environ, {"AZSRE_EXTENSION_ROUTE": route}):
+                with self.assertRaises(ResourceNotFoundError):
+                    self._command(ToolDelete, extension_name="docs-link")._handler(None)
+                store[key] = {"name": "docs-link", "properties": {}}
+                self.assertIsNone(self._command(ToolDelete, extension_name="docs-link")._handler(None))
+                self.assertNotIn(key, store)
+
+    def test_agent_and_connector_delete_look_the_resource_up_first(self):
+        from azext_sre.custom import ConnectorDelete, Delete as AgentDelete
+        for command_cls, args, resource_id in (
+            (AgentDelete, {}, self._AGENT_ID),
+            (ConnectorDelete, {"connector_name": "conn"}, f"{self._AGENT_ID}/connectors/conn"),
+        ):
+            with self.subTest(command=command_cls.__name__):
+                command = self._command(command_cls, **args)
+                with self.assertRaises(ResourceNotFoundError):
+                    command.pre_operations()
+                self.arm[resource_id] = {"id": resource_id}
+                command.pre_operations()
 
 
 class AgentSettingsTests(unittest.TestCase):
@@ -3613,6 +3723,7 @@ class KnowledgeFacadeTests(unittest.TestCase):
             return fake_result
 
         command = _bare_command(command_cls, **args_kwargs)
+        command.ctx.subscription_id = "sub"
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._cli_invoke", fake_cli_invoke):
             result = command._handler({})
@@ -3690,13 +3801,19 @@ class KnowledgeFacadeTests(unittest.TestCase):
         )
 
     def test_delete_forwards_to_connector_delete(self):
-        _, calls = self._run(
-            KnowledgeDelete, agent_name="myagent", resource_group="rg", name="docs",
-        )
+        with patch("azext_sre.custom._arm_request", return_value={"name": "docs"}):
+            _, calls = self._run(
+                KnowledgeDelete, agent_name="myagent", resource_group="rg", name="docs",
+            )
         self.assertEqual(
             calls[0],
             ("sre", "connector", "delete", "--agent-name", "myagent", "--resource-group", "rg", "--name", "docs", "--yes"),
         )
+
+    def test_delete_of_a_missing_knowledge_source_is_not_found(self):
+        with patch("azext_sre.custom._arm_request", return_value=None), \
+             self.assertRaises(ResourceNotFoundError):
+            self._run(KnowledgeDelete, agent_name="myagent", resource_group="rg", name="docs")
 
     def test_list_filters_to_knowledge_connector_types_only(self):
         result, calls = self._run(
