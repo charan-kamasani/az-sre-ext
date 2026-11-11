@@ -18,7 +18,7 @@ response plans under `az sre`.
 
 Create an agent, connect a repository and an Azure Data Explorer data source, then clean
 up. You need
-[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or later with
+[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.90.0 or later with
 the `sre` extension installed, and a subscription where you can create resources.
 
 Sign in, then set the subscription and a unique test context. The examples use bash; in

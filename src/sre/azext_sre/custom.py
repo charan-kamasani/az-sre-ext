@@ -208,16 +208,30 @@ def _resolve_agent_endpoint(cli_ctx, agent_name, resource_group):
 
 
 def _validate_agent_url(agent_url):
-    """Accept only https agent endpoints, since a data-plane token is sent to it."""
-    from urllib.parse import urlparse
+    """Return the https *.azuresre.ai origin of agent_url, since a data-plane token is sent to it.
 
-    parsed = urlparse(agent_url or "")
-    if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".azuresre.ai"):
-        raise CLIError(
-            "--agent-url must be an https agent endpoint on *.azuresre.ai, "
-            "for example https://<agent>.<hash>.eastus2.azuresre.ai"
-        )
-    return f"{parsed.scheme}://{parsed.netloc}"
+    The URL is checked after azure-cli's normalize_url, the same normalization
+    send_raw_request applies before sending, so the validated host is the host
+    that receives the token (e.g. a backslash ends the host, as in browsers).
+    """
+    from urllib.parse import urlparse
+    from azure.cli.core.util import normalize_url
+
+    error = CLIError(
+        "--agent-url must be an https agent endpoint on *.azuresre.ai, "
+        "for example https://<agent>.<hash>.eastus2.azuresre.ai"
+    )
+    try:
+        parsed = urlparse(normalize_url(agent_url or ""))
+        port = parsed.port
+    except ValueError:
+        raise error from None
+    host = parsed.hostname or ""
+    if parsed.scheme != "https" or not host.rstrip(".").endswith(".azuresre.ai"):
+        raise error
+    # Userinfo is dropped: requests would turn it into a Basic Authorization
+    # header that replaces the bearer token.
+    return f"https://{host}" + (f":{port}" if port is not None else "")
 
 
 def _read_target(args):
