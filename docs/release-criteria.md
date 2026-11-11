@@ -135,13 +135,31 @@ after, cleanup result.
 | Item | Value |
 |---|---|
 | Operating systems | Windows, macOS, Linux |
-| Tenants | Microsoft corporate; one non-Microsoft tenant (BAMI) |
+| Tenants | Corp, BAMI (non-Microsoft); AME and PME per the table below |
 | Agent channels | Stable; Preview where the command supports it |
 | Identities | One test identity with Administrator on the test agent; one identity with no role on the test agent |
 | Azure CLI | Minimum supported version and latest |
 
-AME and sovereign clouds are out of scope for this release unless a 1P customer
-scenario requires them.
+### Test matrix
+
+Run the E2E gates from the exact release wheel and record the result in each cell
+(✅ pass, ❌ fail with issue link, — not applicable). AME and PME need a SAW and
+production-tenant accounts.
+
+| Gate | Windows | Linux | macOS | Corp | BAMI | AME | PME |
+|---|---|---|---|---|---|---|---|
+| Package smoke | | | | n/a | n/a | n/a | n/a |
+| Core E2E | | | | | | | |
+| Security E2E | | | | | | | |
+| Feature-specific E2E | | | | | | | |
+
+| Tenant | Required for this release? |
+|---|---|
+| Corp | Yes |
+| BAMI (non-Microsoft) | Yes |
+| AME | Decision needed by sign-off owners |
+| PME | Decision needed by sign-off owners |
+| Sovereign clouds | No, unless SRE Agent is available there |
 
 ## GO / NO-GO
 
@@ -173,4 +191,7 @@ scenario requires them.
 
 | Issue | Severity | Owner | Decision |
 |---|---|---|---|
-| | | | |
+| [#54](https://github.com/charan-kamasani/az-sre-ext/issues/54) Add a LICENSE file and restore package metadata | P1 (release packaging) | Charan Kamasani | |
+| [#32](https://github.com/charan-kamasani/az-sre-ext/issues/32) Align ARM api-versions (generated 2026-01-01 vs hand-written 2026-11-01-preview) | P2 | Charan Kamasani | |
+| [#21](https://github.com/charan-kamasani/az-sre-ext/issues/21) Code Access: web-login (OAuth) flow gaps for ADO/GitHub and GitLab egress allowlist | P2 | Charan Kamasani | |
+| [#53](https://github.com/charan-kamasani/az-sre-ext/issues/53) Accessibility review of device flow, help and errors | P2 | Charan Kamasani | |
