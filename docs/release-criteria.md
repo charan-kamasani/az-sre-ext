@@ -1,12 +1,26 @@
 # Release criteria for `az sre`
 
 This document defines what must be true before an `az sre` release ships to customers.
-A release is **GO** only when every blocking gate below passes and the sign-off table
-is complete.
+A release is **GO** only when every required gate in the summary passes and the sign-off
+table is complete.
 
-Unit tests are required for every change, but they are **not** release evidence.
-Every gate below runs against the **exact wheel being released**, installed from that
-file, against live Azure.
+Every gate runs against the **exact wheel being released**, installed from that file.
+The E2E gates run against live Azure.
+
+## Release sign-off summary
+
+| Gate | Minimum evidence | Required | Detailed checks | Status |
+|---|---|---|---|---|
+| Candidate artifact | Exact release wheel builds and installs | ✅ | [Gate 1](#1-release-artifact-smoke) | |
+| Automated validation | Existing unit/regression suite passes | ✅ | CI on the release commit | |
+| Package smoke | Documented CLI surface loads from packaged artifact | ✅ | [Gate 1](#1-release-artifact-smoke) | |
+| Core E2E | Agent create → show/update → delete against service | ✅ | [Gate 2](#2-core-agent-lifecycle), [Gate 6](#6-destructive-operations-and-failure-behavior) | |
+| Security E2E | Identity/RBAC + auth/secret-sensitive path validated | ✅ | [Gate 3](#3-identity-and-rbac), [Gate 4](#4-connector-authentication-and-secret-safety) | |
+| Feature-specific E2E | Network/connector/etc. validated if shipping | ✅ | [Gate 4](#4-connector-authentication-and-secret-safety), [Gate 5](#5-network-configuration-blocking-only-if-network-commands-ship) | |
+| Defect bar | No known ship-blocking P0/P1 defects | ✅ | [GO / NO-GO](#go--no-go), [Known issues](#known-issues-and-decisions) | |
+| Release owner sign-off | Results reviewed against exact candidate | ✅ | [Sign-off](#sign-off) | |
+
+The sections below describe how each gate is checked and what evidence to attach.
 
 ## Sign-off
 
