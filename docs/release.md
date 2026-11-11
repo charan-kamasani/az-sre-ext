@@ -65,16 +65,21 @@ Record the workflow run URL and the release URL in the release tracking issue.
 | `--require-attestation` / `-RequireAttestation` | `SRE_INSTALL_REQUIRE_ATTESTATION` | Fail unless attestation verification ran. It always runs for GitHub downloads; this guards against `--base-url`. |
 | `--base-url` / `-BaseUrl` | `SRE_INSTALL_BASE_URL` | Download over HTTP from a directory instead of GitHub. Needs a release tag, doesn't need `gh`, skips attestation. For testing. |
 
-Without `--base-url`, both scripts need a signed-in GitHub CLI (`gh auth login`) whose
-account can see the repository, because the repository is private.
+Without `--base-url`, both scripts need GitHub CLI 2.68.0 or later (for
+`gh attestation verify --source-ref`), signed in (`gh auth login`) with an account that can
+see the repository, because the repository is private.
+
+When no tag is given, the scripts install the newest published release whose tag matches
+`v<major>.<minor>.<patch>b<n>`; releases with other tags are ignored.
 
 The installer never falls back to another version. If the release lookup, the checksum or
 the attestation check fails, it stops.
 
 ## Rollback
 
-Never replace assets or move a published tag. If a release is bad, mark it as a
-pre-release or delete the release entry, then publish a fixed version with a new tag.
+Never replace assets or move a published tag. If a release is bad, delete the release
+entry (the tag stays) or turn it back into a draft, so the installers' latest lookup skips
+it, then publish a fixed version with a new tag.
 
 ## Moving to ADC
 

@@ -50,13 +50,17 @@ if [ -n "$BASE_URL" ]; then
   command -v curl >/dev/null 2>&1 || fail "curl is required with --base-url"
 else
   command -v gh >/dev/null 2>&1 || fail "GitHub CLI not found. Install it from https://cli.github.com and run: gh auth login"
-  gh auth status >/dev/null 2>&1 || fail "GitHub CLI is not signed in. Run: gh auth login"
+  gh attestation verify --help 2>&1 | grep -q -e '--source-ref' ||
+    fail "GitHub CLI 2.68.0 or later is required to verify the release attestation. Update it from https://cli.github.com"
+  gh auth status --active --hostname github.com >/dev/null 2>&1 || fail "GitHub CLI is not signed in to github.com. Run: gh auth login"
 fi
 
 if [ -z "$RELEASE_TAG" ]; then
   [ -z "$BASE_URL" ] || fail "--base-url needs --release-tag"
-  RELEASE_TAG="$(gh api "repos/${REPO}/releases?per_page=20" --jq '[.[] | select(.draft | not)][0].tag_name // empty')" ||
+  TAGS="$(gh api "repos/${REPO}/releases?per_page=20" --jq '.[] | select(.draft | not) | .tag_name')" ||
     fail "release lookup failed for ${REPO}. Check that your GitHub account can see the repository."
+  # Only release tags count; other releases (for example manual previews) are skipped.
+  RELEASE_TAG="$(printf '%s\n' "$TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$' | head -n 1 || true)"
   [ -n "$RELEASE_TAG" ] || fail "no release found in ${REPO}"
 fi
 

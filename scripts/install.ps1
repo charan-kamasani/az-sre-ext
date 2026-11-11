@@ -5,7 +5,7 @@
 # GitHub build-provenance attestation.
 #
 # Usage:
-#   gh api -H 'Accept: application/vnd.github.raw+json' repos/charan-kamasani/az-sre-ext/contents/scripts/install.ps1 | Out-String | iex
+#   & ([scriptblock]::Create((gh api -H 'Accept: application/vnd.github.raw+json' repos/charan-kamasani/az-sre-ext/contents/scripts/install.ps1 | Out-String)))
 #   .\install.ps1 -ReleaseTag v1.0.0b1
 #
 # Parameters (each has a matching SRE_INSTALL_* environment variable):
@@ -34,15 +34,19 @@ if (-not $BaseUrl) {
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
         throw 'GitHub CLI not found. Install it from https://cli.github.com and run: gh auth login'
     }
-    gh auth status 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI is not signed in. Run: gh auth login' }
+    $ghHelp = & { $ErrorActionPreference = 'Continue'; gh attestation verify --help 2>&1 | Out-String }
+    if ($ghHelp -notmatch '--source-ref') { throw 'GitHub CLI 2.68.0 or later is required to verify the release attestation. Update it from https://cli.github.com' }
+    & { $ErrorActionPreference = 'Continue'; gh auth status --active --hostname github.com 2>$null | Out-Null }
+    if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI is not signed in to github.com. Run: gh auth login' }
 }
 
 if ($LatestRelease) { $ReleaseTag = '' }
 if (-not $ReleaseTag) {
     if ($BaseUrl) { throw '-BaseUrl needs -ReleaseTag' }
-    $ReleaseTag = gh api "repos/$Repo/releases?per_page=20" --jq '[.[] | select(.draft | not)][0].tag_name // empty'
+    $tags = @(gh api "repos/$Repo/releases?per_page=20" --jq '.[] | select(.draft | not) | .tag_name')
     if ($LASTEXITCODE -ne 0) { throw "Release lookup failed for $Repo. Check that your GitHub account can see the repository." }
+    # Only release tags count; other releases (for example manual previews) are skipped.
+    $ReleaseTag = $tags | Where-Object { $_ -match '^v\d+\.\d+\.\d+b\d+$' } | Select-Object -First 1
     if (-not $ReleaseTag) { throw "No release found in $Repo" }
 }
 if ($ReleaseTag -notmatch '^v\d+\.\d+\.\d+b\d+$') {

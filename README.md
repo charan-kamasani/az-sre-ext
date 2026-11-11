@@ -17,7 +17,7 @@ response plans under `az sre`.
 ## Install
 
 You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or
-later and the [GitHub CLI](https://cli.github.com), signed in (`gh auth login`) with an
+later and the [GitHub CLI](https://cli.github.com) 2.68.0 or later, signed in (`gh auth login`) with an
 account that can see this repository. The repository is private, so the script downloads
 through `gh`. It installs the latest release wheel after verifying its SHA-256 checksum
 and build-provenance attestation.
@@ -31,11 +31,14 @@ gh api -H 'Accept: application/vnd.github.raw+json' repos/charan-kamasani/az-sre
 Windows PowerShell:
 
 ```powershell
-gh api -H 'Accept: application/vnd.github.raw+json' repos/charan-kamasani/az-sre-ext/contents/scripts/install.ps1 | Out-String | iex
+& ([scriptblock]::Create((gh api -H 'Accept: application/vnd.github.raw+json' repos/charan-kamasani/az-sre-ext/contents/scripts/install.ps1 | Out-String)))
 ```
 
-To pin a release, pass `--release-tag v1.0.0b1` (PowerShell: `-ReleaseTag`), or set
-`SRE_INSTALL_RELEASE_TAG`. Check the install with `az sre --help`.
+To pin a release, pass the tag to the script: `... | sh -s -- --release-tag v1.0.0b1` on
+macOS, Linux and WSL, or `& ([scriptblock]::Create((...))) -ReleaseTag v1.0.0b1` in
+PowerShell. `SRE_INSTALL_RELEASE_TAG` also works; in the pipe form set it on `sh`
+(`... | SRE_INSTALL_RELEASE_TAG=v1.0.0b1 sh`), not before `gh`. Check the install with
+`az sre --help`.
 
 ## Quick start
 
