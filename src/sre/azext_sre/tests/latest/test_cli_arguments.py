@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from azure.cli.core import get_default_cli
@@ -132,6 +133,25 @@ class CliArgumentEnforcementTests(unittest.TestCase):
         self.assertEqual(command, ("sre", "connector", "create"))
         self.assertEqual(options["--data-connector-type"], "KnowledgeWebPage")
         self._assert_rejected(arguments + ["--type", "bogus"], "--type", "bogus")
+
+    def test_agent_url_token_only_goes_to_the_validated_host(self):
+        sent = []
+
+        def fake_send_raw_request(cli_ctx, method, url, **kwargs):
+            del cli_ctx, kwargs
+            sent.append((method, url))
+            return SimpleNamespace(content=b"{}", json=lambda: {"value": []})
+
+        arguments = ["sre", "response-plan", "list", "--agent-url"]
+        with patch("azext_sre.custom.send_raw_request", fake_send_raw_request):
+            # requests and urllib3 end the host at the backslash: attacker.example.
+            self._assert_rejected(
+                arguments + ["https://attacker.example\\@a.x.eastus2.azuresre.ai/api"], "--agent-url")
+            self.assertEqual(sent, [], "--agent-url was rejected, but a token-bearing request was still sent.")
+            code, errors = self._run(arguments + ["https://a.x.eastus2.azuresre.ai/ignored"])
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(sent[0][1].startswith("https://a.x.eastus2.azuresre.ai/api/"), sent)
 
     def test_knowledge_overwrite_is_accepted_by_connector_create(self):
         from azure.cli.core.aaz import AAZCommand

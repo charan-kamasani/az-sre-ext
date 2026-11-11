@@ -232,14 +232,25 @@ def _is_azuresre_https_url(url):
 
 
 def _validate_agent_url(agent_url):
-    """Accept only https agent endpoints, since a data-plane token is sent to it."""
-    parsed = urlparse(agent_url or "")
-    if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".azuresre.ai"):
-        raise CLIError(
-            "--agent-url must be an https agent endpoint on *.azuresre.ai, "
-            "for example https://<agent>.<hash>.eastus2.azuresre.ai"
-        )
-    return f"{parsed.scheme}://{parsed.netloc}"
+    """Return the https *.azuresre.ai origin of agent_url, since a data-plane token is sent to it.
+
+    Uses the same strict check as http-trigger invoke (_is_azuresre_https_url),
+    which rejects backslashes, userinfo and control characters that urlparse and
+    requests/urllib3 could read as different hosts. Only scheme, host and port
+    are kept in the returned origin.
+    """
+    error = CLIError(
+        "--agent-url must be an https agent endpoint on *.azuresre.ai, "
+        "for example https://<agent>.<hash>.eastus2.azuresre.ai"
+    )
+    if not _is_azuresre_https_url(agent_url):
+        raise error
+    parsed = urlparse(agent_url)
+    try:
+        port = parsed.port
+    except ValueError:
+        raise error from None
+    return f"https://{parsed.hostname}" + (f":{port}" if port is not None else "")
 
 
 def _read_target(args):

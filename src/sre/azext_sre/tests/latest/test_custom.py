@@ -1683,6 +1683,34 @@ class IncidentDataPlaneTests(unittest.TestCase):
             command._handler({})
         self.assertEqual(request.call_args.kwargs["agent_url"], "https://a-b.c.eastus2.azuresre.ai")
 
+    def test_agent_url_validates_the_host_the_token_is_sent_to(self):
+        from azext_sre.custom import _validate_agent_url
+        accepted = {
+            "https://x.azuresre.ai": "https://x.azuresre.ai",
+            "https://x.azuresre.ai:443/api?q=1": "https://x.azuresre.ai:443",
+            "HTTPS://X.AzureSRE.AI/": "https://x.azuresre.ai",
+        }
+        for url, expected in accepted.items():
+            with self.subTest(url=url):
+                self.assertEqual(_validate_agent_url(url), expected)
+        for url in (
+            # A backslash ends the host in requests/urllib3, so reject it outright.
+            "https://attacker.example\\@a--1.x.swedencentral.azuresre.ai/api",
+            "https://x.azuresre.ai\\foo",
+            # Userinfo would become a Basic Authorization header replacing the bearer token.
+            "https://evil.example@x.azuresre.ai",
+            "https://x.azuresre.ai@evil.example",
+            "https://x.azuresre.ai.evil.example",
+            "https://x.azuresre.ai:evil",
+            "https://x.azuresre.ai:99999",
+            " https://x.azuresre.ai",
+            "http://x.azuresre.ai",
+            "https://azuresre.ai",
+            "",
+        ):
+            with self.subTest(url=url), self.assertRaises(CLIError):
+                _validate_agent_url(url)
+
     def test_quickstart_plan_warning(self):
         with self.assertLogs("cli.azext_sre.custom", level="WARNING") as logs:
             _warn_if_quickstart_plan([{"name": "quickstart_response_plan"}], "agent")
