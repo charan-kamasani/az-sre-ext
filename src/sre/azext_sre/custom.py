@@ -1574,10 +1574,8 @@ def _check_connector_name(name, new=False):
 class _ConnectorNameCheckMixin:
     """Checks the connector name, including one taken from --ids, before any request."""
 
-    _new_connector = False
-
     def pre_operations(self):
-        _check_connector_name(_arg_value(self.ctx.args.connector_name), new=self._new_connector)
+        _check_connector_name(_arg_value(self.ctx.args.connector_name))
         super().pre_operations()
 
 
@@ -1988,7 +1986,6 @@ class _SecretHttpOperationMixin:
 
 @register_command("sre connector create")
 class ConnectorCreate(
-    _ConnectorNameCheckMixin,
     _DataConnectorTypeArgMixin,
     _ConnectorPartnerTypeMixin,
     _ConnectorConvenienceArgsMixin,
@@ -2030,13 +2027,18 @@ class ConnectorCreate(
     """
 
     _args_schema = None
-    _new_connector = True
 
     class AgentsConnectorsCreateOrUpdate(
         _SecretHttpOperationMixin,
         _GeneratedConnectorCreate.AgentsConnectorsCreateOrUpdate,
     ):
         pass
+
+    def pre_operations(self):
+        # Not through _ConnectorNameCheckMixin, which would give this class more
+        # ancestors than the lint allows. New names must also follow the service's rule.
+        _check_connector_name(_arg_value(self.ctx.args.connector_name), new=True)
+        super().pre_operations()
 
     def _output(self, *args, **kwargs):
         result = super()._output(*args, **kwargs)
