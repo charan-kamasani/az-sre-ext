@@ -2110,7 +2110,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
                  patch("azext_sre.custom.send_raw_request", side_effect=error):
                 if code == 404 and missing_ok:
                     self.assertIsNone(_data_plane_request(None, "agent", "rg", "GET", "/api/plan",
-                                                         missing_ok=True))
+                                                          missing_ok=True))
                 else:
                     with self.assertRaises(HTTPError):
                         _data_plane_request(None, "agent", "rg", "GET", "/api/plan", missing_ok=missing_ok)
