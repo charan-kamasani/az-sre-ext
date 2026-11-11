@@ -212,8 +212,8 @@ them.
 | Role | Name | Decision | Date |
 |---|---|---|---|
 | CLI owner | Charan Kamasani | | |
-| SRE Agent engineering | Dalibor (full name to confirm) | | |
-| SRE Agent PM | Deepthi (full name to confirm) | | |
+| SRE Agent engineering | Dalibor | | |
+| SRE Agent PM | Deepthi | | |
 | Developer tools | Paul Yuknewicz | | |
 
 ---
