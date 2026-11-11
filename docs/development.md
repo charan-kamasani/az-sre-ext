@@ -84,8 +84,10 @@ live-verification workflow this unlocks.
 ## Regenerating AAZ recipes
 
 If the `Microsoft.App/agents` Swagger changes (a new field, a new
-api-version), regenerate `azext_sre/aaz/latest/app/agent/...` with
-`aaz-dev` against the pinned `API_VERSION`. Never hand-edit anything under
+api-version), update `specification/` and rerun
+`scripts/generate_sre_extension.py` (see
+[CONTRIBUTING.md](../CONTRIBUTING.md#regenerating-the-generated-code)) to
+regenerate `azext_sre/aaz/latest/sre/...`. Never hand-edit anything under
 `aaz/latest/` — put any behavior the generator can't express in
 `custom.py` instead (see [docs/source-code.md](source-code.md#what-is-regenerated-from-swagger-and-what-is-not)
 for the full list of what's already hand-maintained and why).

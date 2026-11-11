@@ -54,5 +54,5 @@ jobs:
 # (unit tests + wheel build only). The full production pipeline -- swagger-drift
 # validation, codegen regeneration checks, SBOM generation, signed releases -- is
 # parked in .github/workflows-future/ until the command surface stabilizes and
-# the missing supporting scripts (validate_swagger.py, generate_sre_extension.py,
-# etc.) and docs/cli-reference.md are actually built.
+# the missing supporting scripts (validate_swagger.py, validate_release_metadata.py,
+# etc.) are actually built.
