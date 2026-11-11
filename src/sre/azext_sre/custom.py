@@ -5618,11 +5618,65 @@ class AutomationHttpTriggerShow(_PinnedExtensionShow):
     _args_schema = None
 
 
+def _https_origin(url):
+    """(host, port) that requests connects to for an https URL, or None."""
+    try:
+        parsed = urlparse(url)
+        port = parsed.port or 443
+    except (TypeError, ValueError):
+        return None
+    if parsed.scheme != "https" or not parsed.hostname:
+        return None
+    return parsed.hostname, port
+
+
+def _post_to_agent_endpoint(cli_ctx, agent_endpoint, url, body):
+    """POST body to url with a data-plane token, only on the agent's own endpoint.
+
+    Every agent the caller can reach accepts the same token, so it isn't sent
+    to another host. A redirect fails the call instead of being followed:
+    send_raw_request always follows redirects, and a 307 or 308 resends the
+    body to the new location.
+    """
+    from azure.cli.core._profile import Profile
+    from azure.cli.core.azclierror import HTTPError
+    from azure.cli.core.util import get_az_rest_user_agent, should_disable_connection_verify
+
+    with requests.Session() as session:
+        prepared = session.prepare_request(requests.Request("POST", url, data=body, headers={
+            "Content-Type": "application/json", "User-Agent": get_az_rest_user_agent()}))
+        # Compare the URL as requests will send it, not as it was written.
+        origin = _https_origin(prepared.url)
+        if origin is None or origin != _https_origin(agent_endpoint):
+            raise CLIError(
+                f"Refusing to send your Azure CLI token to '{url}' because it isn't on the agent's "
+                f"own endpoint, {agent_endpoint}.")
+        (token_type, token, _), _, _ = Profile(cli_ctx=cli_ctx).get_raw_token(resource=DATA_PLANE_AUDIENCE)
+        prepared.headers["Authorization"] = f"{token_type} {token}"
+        settings = session.merge_environment_settings(
+            prepared.url, {}, None, not should_disable_connection_verify(), None)
+        response = session.send(prepared, allow_redirects=False, **settings)
+    logger.debug("POST %s returned %s.", prepared.url, response.status_code)
+    if 300 <= response.status_code < 400:
+        location = response.headers.get("Location")
+        target = f" to '{location}'" if location else ""
+        raise CLIError(
+            f"The trigger answered with a redirect ({response.status_code}){target}. Redirects aren't "
+            "followed here, so your token and payload weren't sent anywhere else.")
+    if not response.ok:
+        reason = response.reason or f"HTTP {response.status_code}"
+        if response.text:
+            reason += f"({response.text})"
+        raise HTTPError(reason, response)
+    return response
+
+
 @register_command("sre automation http-trigger invoke")
 class AutomationHttpTriggerInvoke(_PinnedExtensionShow):
     """Call an HTTP trigger now, the same way an external webhook would.
 
     Uses your Azure CLI sign-in for the call, so you need data-plane access to the agent.
+    The call goes only to the agent's own endpoint, and redirects aren't followed.
 
     :example: Fire a trigger with no payload
         az sre automation http-trigger invoke -g myrg --agent-name myagent --name alert-webhook
@@ -5659,17 +5713,17 @@ class AutomationHttpTriggerInvoke(_PinnedExtensionShow):
         if value.get("triggerEnabled") is False:
             raise CLIError("This HTTP trigger is disabled.")
         payload = _arg_value(getattr(self.ctx.args, "payload", None))
+        body = None
         if payload:
             try:
-                json.loads(payload)
+                # Re-serialized as ASCII JSON, as send_raw_request did, since http.client
+                # sends a str body as latin-1.
+                body = json.dumps(json.loads(payload))
             except ValueError as ex:
                 raise CLIError(f"--payload must be a JSON document: {ex}") from ex
-        response = send_raw_request(
-            self.cli_ctx, "POST", trigger_url,
-            headers=["Content-Type=application/json"],
-            body=payload or None,
-            resource=DATA_PLANE_AUDIENCE,
-        )
+        endpoint = _resolve_agent_endpoint(
+            self.cli_ctx, _arg_value(self.ctx.args.agent_name), _arg_value(self.ctx.args.resource_group))
+        response = _post_to_agent_endpoint(self.cli_ctx, endpoint, trigger_url, body)
         if not response.content:
             return {}
         try:

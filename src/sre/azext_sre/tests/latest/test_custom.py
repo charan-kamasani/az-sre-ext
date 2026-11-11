@@ -3137,21 +3137,14 @@ class HttpTriggerInvokeTests(unittest.TestCase):
 
         command = _bare_command(AutomationHttpTriggerInvoke, agent_name="a", resource_group="rg",
                                 extension_name="hook", payload=payload)
-        response = SimpleNamespace(content=b"{}", json=lambda: {"success": True, "threadId": "t1"})
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._extension_resource_show",
                    return_value={"name": "hook", "properties": {"value": value}}), \
-             patch("azext_sre.custom.send_raw_request", return_value=response) as send:
-            return command._handler({}), send
-
-    def test_posts_the_payload_to_the_trigger_url_with_the_agent_audience(self):
-        url = "https://a--1.x.swedencentral.azuresre.ai/api/v1/httptriggers/trigger/hook"
-        result, send = self._invoke({"triggerUrl": url, "triggerEnabled": True}, payload='{"alert": "x"}')
-        self.assertEqual(result["threadId"], "t1")
-        args, kwargs = send.call_args
-        self.assertEqual(args[1:3], ("POST", url))
-        self.assertEqual(kwargs["body"], '{"alert": "x"}')
-        self.assertEqual(kwargs["resource"], "https://azuresre.dev")
+             patch("azext_sre.custom._post_to_agent_endpoint") as post:
+            try:
+                return command._handler({})
+            finally:
+                post.assert_not_called()
 
     def test_refuses_unexpected_hosts_and_bad_payloads(self):
         with self.assertRaisesRegex(CLIError, "unexpected"):

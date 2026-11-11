@@ -32,6 +32,10 @@ SUBSCRIPTION = "00000000-0000-0000-0000-000000000000"
 AGENT_ID = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/rg/providers/Microsoft.App/agents/myagent"
 ARM_HOST = "management.azure.com"
 AGENT_HOST = "myagent--1a2b3c4d.5e6f.eastus2.azuresre.ai"
+# Hosts that accept anything sent to them: another agent, and a redirect target.
+OTHER_AGENT_HOST = "otheragent--9f8e7d6c.5b4a.eastus2.azuresre.ai"
+REDIRECT_HOST = "elsewhere.example.com"
+DATA_PLANE_AUDIENCE = "https://azuresre.dev"
 EXTENSION_API_VERSION = "2026-11-01-preview"
 PAT = "PATSECRETzq81mx0vY7"
 HEADER_TOKEN = "HDRSECRETk4Lw2pQ9rT"
@@ -65,26 +69,26 @@ NOUNS = {
 DIRECT_ROUTES = {noun.direct_route: noun for noun in NOUNS.values() if noun.direct_route}
 ARM_TYPES = {noun.extension_type for noun in NOUNS.values()}
 
-Request = namedtuple("Request", "method host path query body")
+Request = namedtuple("Request", "method host path query body auth")
 
 
-def _response(request, status, body=None, content_type="application/json"):
+def _response(request, status, body=None, content_type="application/json", headers=None):
     response = requests.Response()
     response.status_code = status
     response.reason = {200: "OK", 202: "Accepted", 204: "No Content"}.get(status, "Fake error")
     response.url = request.url
     response.request = request
     response.encoding = "utf-8"
+    response.headers = CaseInsensitiveDict(headers or {})
     if body is None:
         response._content = b""
-        response.headers = CaseInsensitiveDict()
     else:
         if isinstance(body, str):
             body = body.encode()
         elif not isinstance(body, bytes):
             body = json.dumps(body).encode()
         response._content = body
-        response.headers = CaseInsensitiveDict({"Content-Type": content_type})
+        response.headers.setdefault("Content-Type", content_type)
     return response
 
 
@@ -102,17 +106,20 @@ class FakeAgentService:
         self.next_link_host = ARM_HOST
         self.direct_list_key = "value"
         self.direct_put_answer = None
-        self.trigger_answer = (200, {"success": True}, "application/json")
+        self.trigger_answer = (200, {"success": True}, "application/json", {})
 
     def send(self, request, **kwargs):
         del kwargs
         url = urlsplit(request.url)
         body = request.body.decode() if isinstance(request.body, bytes) else request.body
-        self.requests.append(Request(request.method, url.hostname, url.path, parse_qs(url.query), body))
+        self.requests.append(Request(request.method, url.hostname, url.path, parse_qs(url.query), body,
+                                     request.headers.get("Authorization")))
         if url.hostname == ARM_HOST:
             return self._arm(request, url, body)
         if url.hostname == AGENT_HOST:
             return self._agent_api(request, url, body)
+        if url.hostname in (OTHER_AGENT_HOST, REDIRECT_HOST):
+            return _response(request, 200, {"received": True})
         raise AssertionError(f"Request to an unexpected host: {request.method} {request.url}")
 
     def _arm(self, request, url, body):
@@ -142,8 +149,8 @@ class FakeAgentService:
     def _agent_api(self, request, url, body):
         path = url.path.rstrip("/")
         if path.startswith("/api/v1/httptriggers/trigger/") and request.method == "POST":
-            status, content, content_type = self.trigger_answer
-            return _response(request, status, content, content_type)
+            status, content, content_type, headers = self.trigger_answer
+            return _response(request, status, content, content_type, headers)
         prefix = "/api/v2/extendedAgent/"
         segments = path[len(prefix):].split("/") if path.startswith(prefix) else []
         if not segments or segments[0] not in DIRECT_ROUTES or len(segments) > 2:
@@ -492,20 +499,56 @@ class ExtensionCommandCliTests(unittest.TestCase):
         self.assertNotIn("unexpected error", err)
         self.assertEqual(self._puts(), [])
 
-    def test_invoke_reports_a_plain_text_reply_instead_of_failing(self):
-        trigger = {"agentPrompt": "p", "triggerUrl": f"https://{AGENT_HOST}/api/v1/httptriggers/trigger/alert",
-                   "triggerEnabled": True}
+    def _store_trigger(self, origin=AGENT_HOST):
+        self.service.store[("httpTriggers", "alert")] = {
+            "agentPrompt": "p", "triggerUrl": f"https://{origin}/api/v1/httptriggers/trigger/alert",
+            "triggerEnabled": True}
+
+    def _invoke_trigger(self, route):
+        return self._az(*self._command("http-trigger", "invoke", "--name", "alert", "--payload", '{"alert": "x"}'),
+                        route=route)
+
+    def _posts_and_requests_to(self, host):
+        return [(r.method, r.host) for r in self.service.requests if r.method == "POST" or r.host == host]
+
+    def test_invoke_posts_with_an_agent_token_and_reports_a_plain_text_reply(self):
         for route in ("arm", "direct"):
             with self.subTest(route=route):
                 self._reset()
-                self.service.store[("httpTriggers", "alert")] = trigger
-                self.service.trigger_answer = (202, "Accepted", "text/plain")
-                code, out, err = self._az(*self._command(
-                    "http-trigger", "invoke", "--name", "alert", "--payload", '{"alert": "x"}'), route=route)
+                self._store_trigger()
+                self.service.trigger_answer = (202, "Accepted", "text/plain", {})
+                code, out, err = self._invoke_trigger(route)
                 self.assertEqual(code, 0, err)
                 self.assertEqual(json.loads(out), {"statusCode": 202, "body": "Accepted"})
                 posts = [r for r in self.service.requests if r.method == "POST"]
-                self.assertEqual([(r.host, r.body) for r in posts], [(AGENT_HOST, '{"alert": "x"}')])
+                self.assertEqual([(r.host, r.body, r.auth) for r in posts],
+                                 [(AGENT_HOST, '{"alert": "x"}', f"Bearer FAKE-TOKEN[{DATA_PLANE_AUDIENCE}]")])
+
+    def test_invoke_sends_the_token_only_to_the_agents_own_endpoint(self):
+        for route in ("arm", "direct"):
+            for origin in (OTHER_AGENT_HOST, f"{AGENT_HOST}:8443"):
+                with self.subTest(route=route, origin=origin):
+                    self._reset()
+                    self._store_trigger(origin)
+                    code, out, err = self._invoke_trigger(route)
+                    self.assertNotEqual(code, 0)
+                    self.assertIn(origin, err)
+                    self.assertEqual(out.strip(), "")
+                    self.assertEqual(self._posts_and_requests_to(OTHER_AGENT_HOST), [])
+
+    def test_invoke_does_not_follow_a_redirect(self):
+        location = f"https://{REDIRECT_HOST}/collect"
+        for route in ("arm", "direct"):
+            for status in (307, 302):
+                with self.subTest(route=route, status=status):
+                    self._reset()
+                    self._store_trigger()
+                    self.service.trigger_answer = (status, None, None, {"Location": location})
+                    code, out, err = self._invoke_trigger(route)
+                    self.assertNotEqual(code, 0)
+                    self.assertIn(location, err)
+                    self.assertEqual(out.strip(), "")
+                    self.assertEqual(self._posts_and_requests_to(REDIRECT_HOST), [("POST", AGENT_HOST)])
 
     def test_plugin_install_needs_marketplace_plugin_and_source(self):
         for route in ("arm", "direct"):

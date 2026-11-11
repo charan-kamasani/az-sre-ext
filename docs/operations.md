@@ -1166,9 +1166,11 @@ Noun-specific commands include:
   `isEnabled` field on scheduled tasks.
 - `az sre automation http-trigger create/show/list/delete/invoke` -- run the
   agent from an inbound webhook call. `invoke` POSTs to the trigger's
-  `triggerUrl` with your Azure CLI token, which is handy for testing. If the
-  trigger answers with something other than JSON, `invoke` prints the status
-  code and body instead of failing, because the trigger has already run.
+  `triggerUrl` with your Azure CLI token, which is handy for testing. The
+  token goes only to the agent's own endpoint: a `triggerUrl` on another host
+  is refused, and a redirect fails the command instead of being followed. If
+  the trigger answers with something other than JSON, `invoke` prints the
+  status code and body instead of failing, because the trigger has already run.
 - `az sre response-plan create/show/list/delete/enable/disable` -- match
   incoming incidents (by platform/title/team/etc.) and route matches to
   a handling agent (portal: Incidents > "Triggers & response plans", a

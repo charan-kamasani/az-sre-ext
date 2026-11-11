@@ -2239,7 +2239,7 @@ Delete an HTTP trigger.
 
 Call an HTTP trigger now, the same way an external webhook would.
 
-Uses your Azure CLI sign-in for the call, so you need data-plane access to the agent.
+Uses your Azure CLI sign-in for the call, so you need data-plane access to the agent. The call goes only to the agent's own endpoint, and redirects aren't followed.
 
 **Syntax**
 
