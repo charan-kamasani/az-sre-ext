@@ -2027,6 +2027,21 @@ class ConnectorList(_GeneratedConnectorList):
         return value, next_link
 
 
+def _require_arm_resource(cli_ctx, resource_id, missing_message):
+    """Raise ResourceNotFoundError unless ARM has this resource. ARM answers a
+    DELETE of a resource that doesn't exist with success, so deletes check first."""
+    if _arm_request(cli_ctx, "GET", resource_id, API_VERSION, missing_ok=True) is None:
+        raise ResourceNotFoundError(missing_message)
+
+
+def _ctx_agent_id(ctx):
+    """ARM ID of the agent named by a command's --resource-group and --agent-name."""
+    return (
+        f"/subscriptions/{ctx.subscription_id}/resourceGroups/{_arg_value(ctx.args.resource_group)}"
+        f"/providers/Microsoft.App/agents/{_arg_value(ctx.args.agent_name)}"
+    )
+
+
 @register_command("sre connector delete")
 class ConnectorDelete(_GeneratedConnectorDelete):
     """Delete an Agent Connector.
@@ -2036,6 +2051,14 @@ class ConnectorDelete(_GeneratedConnectorDelete):
     """
 
     _args_schema = None
+
+    def pre_operations(self):
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        name = _arg_value(self.ctx.args.connector_name)
+        _require_arm_resource(
+            self.cli_ctx, f"{_ctx_agent_id(self.ctx)}/connectors/{quote(name, safe='')}",
+            f"Connector '{name}' not found on agent '{agent_name}'.")
+        super().pre_operations()
 
 
 @register_command("sre connector wait")
@@ -2982,6 +3005,9 @@ class KnowledgeDelete(AAZCommand):
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
         name = _arg_value(self.ctx.args.name)
+        _require_arm_resource(
+            self.cli_ctx, f"{_ctx_agent_id(self.ctx)}/connectors/{quote(name, safe='')}",
+            f"Knowledge source '{name}' not found on agent '{agent_name}'.")
 
         # Forward --yes to the inner "sre connector delete" self-invocation
         # (already confirmed once at this command's own prompt above).
@@ -3024,6 +3050,13 @@ class Delete(_GeneratedDelete):
     :example: Delete an agent without an interactive confirmation prompt
         az sre agent delete --name myagent --resource-group myrg --yes
     """
+
+    def pre_operations(self):
+        _require_arm_resource(
+            self.cli_ctx, _ctx_agent_id(self.ctx),
+            f"Agent '{_arg_value(self.ctx.args.agent_name)}' not found in resource group "
+            f"'{_arg_value(self.ctx.args.resource_group)}'.")
+        super().pre_operations()
 
 
 @register_command("sre agent start")
@@ -4919,6 +4952,7 @@ class _PinnedExtensionDelete(AAZCommand):
     """Base for a noun-specific 'delete' facade."""
 
     _EXTENSION_TYPE = None
+    _NOUN = "Item"
     _args_schema = None
 
     @classmethod
@@ -4944,6 +4978,15 @@ class _PinnedExtensionDelete(AAZCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         extension_name = _arg_value(self.ctx.args.extension_name)
 
+        # Deleting an item that doesn't exist still reports success, so look it up first.
+        try:
+            _extension_resource_show(
+                self.cli_ctx, agent_name, resource_group, self._EXTENSION_TYPE, extension_name,
+            )
+        except ResourceNotFoundError as ex:
+            raise ResourceNotFoundError(
+                f"{self._NOUN} '{extension_name}' not found on agent '{agent_name}'."
+            ) from ex
         # The user already confirmed via this command's own confirmation
         # prompt (see its @register_command(confirmation=...)). Like other
         # deletes, print nothing.
@@ -5061,6 +5104,7 @@ class ToolDelete(_PinnedExtensionDelete):
     """
 
     _EXTENSION_TYPE = "tools"
+    _NOUN = "Tool"
     _args_schema = None
 
 
@@ -5180,6 +5224,7 @@ class AutomationScheduledTaskDelete(_PinnedExtensionDelete):
     """
 
     _EXTENSION_TYPE = "scheduledTasks"
+    _NOUN = "Scheduled task"
     _args_schema = None
 
 
@@ -5300,6 +5345,7 @@ class AutomationHttpTriggerDelete(_PinnedExtensionDelete):
     """
 
     _EXTENSION_TYPE = "httpTriggers"
+    _NOUN = "HTTP trigger"
     _args_schema = None
 
 
@@ -6154,6 +6200,7 @@ class SkillDelete(_PinnedExtensionDelete):
     """
 
     _EXTENSION_TYPE = "skills"
+    _NOUN = "Skill"
     _args_schema = None
 
 
@@ -6287,6 +6334,7 @@ class SubagentDelete(_PinnedExtensionDelete):
     """
 
     _EXTENSION_TYPE = "subagents"
+    _NOUN = "Sub-agent"
     _args_schema = None
 
 
@@ -6367,6 +6415,7 @@ class HookDelete(_PinnedExtensionDelete):
     """
 
     _EXTENSION_TYPE = "hooks"
+    _NOUN = "Hook"
     _args_schema = None
 
 
@@ -6462,6 +6511,7 @@ class InstructionsDelete(_PinnedExtensionDelete):
     """
 
     _EXTENSION_TYPE = "commonPrompts"
+    _NOUN = "Instructions"
     _args_schema = None
 
 
@@ -6542,6 +6592,7 @@ class PluginMarketplaceDelete(_PinnedExtensionDelete):
     """
 
     _EXTENSION_TYPE = "pluginMarketplaces"
+    _NOUN = "Plugin marketplace"
     _args_schema = None
 
 
@@ -6614,6 +6665,7 @@ class PluginInstallDelete(_PinnedExtensionDelete):
     """
 
     _EXTENSION_TYPE = "pluginInstallations"
+    _NOUN = "Plugin"
     _args_schema = None
 
 
