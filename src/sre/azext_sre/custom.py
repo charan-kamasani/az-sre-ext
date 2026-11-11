@@ -1301,8 +1301,8 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
     The connection key is a secret. Typed on the command line, it shows up in
     --debug output and shell history, so put the configuration in a JSON file
     and pass it with @file instead, for example a pagerduty.json holding
-    {"type": "PagerDuty", "connectionName": "pagerduty", "connectionKey":
-    "<api-key>", "oboUser": "oncall@contoso.com"}.
+    `{"type": "PagerDuty", "connectionName": "pagerduty", "connectionKey":
+    "<api-key>", "oboUser": "oncall@contoso.com"}`.
 
     Azure Monitor must also be connected before a response plan can use it.
     A new agent has no incident platform set.
