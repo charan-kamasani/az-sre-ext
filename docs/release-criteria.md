@@ -14,32 +14,33 @@ The E2E gates run against live Azure.
 
 ## Status at a glance
 
-**Decision: NOT READY to ship.**
+**Decision: not ready to ship yet.** Testing on the release wheel has not started.
 
-**Testing is blocked** until the release wheel exists. Every gate must run against the
-exact wheel being released, and that wheel has not been built yet.
-
-To unblock testing:
+Nothing outside the team is stopping us. Every gate runs against the exact wheel being
+released, so the gates start once that wheel is built. Next steps:
 
 1. Merge the CI hardening PR (#78), then the install and release scripts PR (#35).
 2. Fix #54 (LICENSE file and package metadata), because it changes the wheel.
 3. Tag the release commit and build the release wheel (gate 1).
+4. Run gates 2 to 6 on that wheel.
 
-Testing in AME and PME (gates 4 to 6) is also blocked until the sign-off owners decide
-whether it is required and a SAW is available (see [Decisions needed](#decisions-needed)).
+AME and PME testing is optional until the sign-off owners decide it is required
+(see [Decisions needed](#decisions-needed)). If they require it, it needs a SAW.
 
 Every gate below is required to ship.
 
-| # | Gate | Status | Blocked by |
+| # | Gate | Status | Starts after |
 |---|---|---|---|
-| 1 | [Candidate artifact](#gate-1-candidate-artifact) | 🔴 Blocked | #78 and #35 not merged; #54 open; release not tagged |
-| 2 | [Automated validation](#gate-2-automated-validation) | 🔴 Blocked | Gate 1 (needs the release commit) |
-| 3 | [Package smoke](#gate-3-package-smoke) | 🔴 Blocked | Gate 1 (needs the release wheel) |
-| 4 | [Core E2E](#gate-4-core-e2e) | 🔴 Blocked | Gate 1 (needs the release wheel) |
-| 5 | [Security E2E](#gate-5-security-e2e) | 🔴 Blocked | Gate 1 (needs the release wheel) |
-| 6 | [Feature-specific E2E](#gate-6-feature-specific-e2e) | 🔴 Blocked | Gate 1 (needs the release wheel) |
-| 7 | [Defect bar](#gate-7-defect-bar) | 🔴 Not met | #54 open |
-| 8 | [Release owner sign-off](#gate-8-release-owner-sign-off) | 🔴 Blocked | Gates 1 to 7 |
+| 1 | [Candidate artifact](#gate-1-candidate-artifact) | ⚪ Not started | #78 and #35 merged, #54 fixed, release tagged |
+| 2 | [Automated validation](#gate-2-automated-validation) | ⚪ Not started | Gate 1 |
+| 3 | [Package smoke](#gate-3-package-smoke) | ⚪ Not started | Gate 1 |
+| 4 | [Core E2E](#gate-4-core-e2e) | ⚪ Not started | Gate 1 |
+| 5 | [Security E2E](#gate-5-security-e2e) | ⚪ Not started | Gate 1 |
+| 6 | [Feature-specific E2E](#gate-6-feature-specific-e2e) | ⚪ Not started | Gate 1 |
+| 7 | [Defect bar](#gate-7-defect-bar) | 🟡 Open: #54 | #54 fixed |
+| 8 | [Release owner sign-off](#gate-8-release-owner-sign-off) | ⚪ Not started | Gates 1 to 7 |
+
+Key: ✅ passed, 🟡 in progress or open, ⚪ not started, ❌ failed.
 
 ---
 
