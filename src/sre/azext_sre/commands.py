@@ -30,7 +30,7 @@
 def load_command_table(self, _):  # pylint: disable=unused-argument
     import inspect
 
-    from azure.cli.core.aaz import AAZCommand
+    from azure.cli.core.aaz import AAZCommand, AAZCommandGroup
 
     from . import custom
 
@@ -46,6 +46,13 @@ def load_command_table(self, _):  # pylint: disable=unused-argument
         if generated_name == "app" or generated_name.startswith("app "):
             renamed = "sre" + generated_name[len("app"):]
             self.command_group_table[renamed] = self.command_group_table.pop(generated_name)
+
+    # Generated group decorators also leave help entries under "app ...".
+    # Nothing is registered under those names, so drop them.
+    from knack.help_files import helps
+    for help_name in list(helps):
+        if help_name == "app" or help_name.startswith("app "):
+            del helps[help_name]
 
     def _is_custom_recipe(value):
         return (
@@ -63,7 +70,20 @@ def load_command_table(self, _):  # pylint: disable=unused-argument
         raise RuntimeError("azext_sre.custom registered no AAZ command recipes.")
     for recipe in recipes:
         table_transformer = TABLE_TRANSFORMERS.get(recipe.AZ_NAME)
-        self.command_table[recipe.AZ_NAME] = recipe(loader=self, table_transformer=table_transformer)
+        kwargs = {"table_transformer": table_transformer} if table_transformer else {}
+        self.command_table[recipe.AZ_NAME] = recipe(loader=self, **kwargs)
+
+    # Groups declared in custom.py also need to be in command_group_table so
+    # azdev linter matches their help entries to a real group.
+    for value in vars(custom).values():
+        if (
+            inspect.isclass(value)
+            and issubclass(value, AAZCommandGroup)
+            and value is not AAZCommandGroup
+            and getattr(value, "AZ_NAME", None)
+            and value.__module__ == custom.__name__
+        ):
+            self.command_group_table[value.AZ_NAME] = value(cli_ctx=self.cli_ctx)
 
     # Drop raw generated duplicates that custom.py deliberately does NOT
     # override/reuse, so they don't linger in the command surface as
@@ -96,5 +116,3 @@ def load_command_table(self, _):  # pylint: disable=unused-argument
     for name in list(self.command_group_table):
         if any(name == prefix or name.startswith(prefix + " ") for prefix in _retired_command_prefixes):
             del self.command_group_table[name]
-
-

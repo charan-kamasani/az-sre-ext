@@ -26,6 +26,8 @@
 # pylint: disable=too-many-lines
 # pylint: disable=too-many-statements
 # pylint: disable=protected-access
+# AAZ command/group subclasses intentionally expose only framework hooks.
+# pylint: disable=too-few-public-methods
 
 import base64
 import contextlib
@@ -36,7 +38,7 @@ import re
 import sys
 import uuid
 from functools import partial
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 # 'requests' is imported eagerly here (rather than left to its normal lazy
 # import inside azure.cli.core.util.send_raw_request) to avoid a real,
@@ -60,6 +62,7 @@ from azure.cli.core.aaz import (
     AAZBoolArg,
     AAZCommand,
     AAZCommandGroup,
+    AAZFreeFormDictArg,
     AAZIntArg,
     AAZListArg,
     AAZObjectArg,
@@ -90,10 +93,12 @@ from .aaz.latest.app.agent.connector import Update as _GeneratedConnectorUpdate
 from .aaz.latest.app.agent.connector import Show as _GeneratedConnectorShow
 from .aaz.latest.app.agent.connector import List as _GeneratedConnectorList
 from .aaz.latest.app.agent.connector import Delete as _GeneratedConnectorDelete
+from .aaz.latest.app.agent.connector import Wait as _GeneratedConnectorWait
 from .aaz.latest.app.agent.connector import ListSecret as _GeneratedConnectorListSecret
 from .aaz.latest.app.agent.identity import Assign as _GeneratedIdentityAssign
 from .aaz.latest.app.agent.identity import Remove as _GeneratedIdentityRemove
 from .aaz.latest.app.agent.identity import Show as _GeneratedIdentityShow
+from .aaz.latest.app.agent.identity import Wait as _GeneratedIdentityWait
 from .aaz.latest.app.supported_agent_model import List as _GeneratedSupportedAgentModelList
 
 logger = get_logger(__name__)
@@ -207,31 +212,45 @@ def _resolve_agent_endpoint(cli_ctx, agent_name, resource_group):
     return endpoint
 
 
+def _is_azuresre_https_url(url):
+    """True only for a plain https URL whose host is under .azuresre.ai.
+
+    urlparse and requests/urllib3 disagree on backslashes and userinfo, so
+    'https://evil\\@x.azuresre.ai' passes a urlparse host check but is sent
+    to 'evil'. Reject anything either parser could read differently.
+    """
+    if not isinstance(url, str) or "\\" in url or any(ord(c) < 33 for c in url):
+        return False
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    return (
+        parsed.scheme == "https"
+        and "@" not in parsed.netloc
+        and parsed.netloc.lower().split(":")[0] == hostname
+        and hostname.endswith(".azuresre.ai")
+    )
+
+
 def _validate_agent_url(agent_url):
     """Return the https *.azuresre.ai origin of agent_url, since a data-plane token is sent to it.
 
-    The URL is checked after azure-cli's normalize_url, the same normalization
-    send_raw_request applies before sending, so the validated host is the host
-    that receives the token (e.g. a backslash ends the host, as in browsers).
+    Uses the same strict check as http-trigger invoke (_is_azuresre_https_url),
+    which rejects backslashes, userinfo and control characters that urlparse and
+    requests/urllib3 could read as different hosts. Only scheme, host and port
+    are kept in the returned origin.
     """
-    from urllib.parse import urlparse
-    from azure.cli.core.util import normalize_url
-
     error = CLIError(
         "--agent-url must be an https agent endpoint on *.azuresre.ai, "
         "for example https://<agent>.<hash>.eastus2.azuresre.ai"
     )
+    if not _is_azuresre_https_url(agent_url):
+        raise error
+    parsed = urlparse(agent_url)
     try:
-        parsed = urlparse(normalize_url(agent_url or ""))
         port = parsed.port
     except ValueError:
         raise error from None
-    host = parsed.hostname or ""
-    if parsed.scheme != "https" or not host.rstrip(".").endswith(".azuresre.ai"):
-        raise error
-    # Userinfo is dropped: requests would turn it into a Basic Authorization
-    # header that replaces the bearer token.
-    return f"https://{host}" + (f":{port}" if port is not None else "")
+    return f"https://{parsed.hostname}" + (f":{port}" if port is not None else "")
 
 
 def _read_target(args):
@@ -256,7 +275,7 @@ def _add_read_target_args(schema, short_name=True):
     schema.resource_group = AAZResourceGroupNameArg()
     schema.agent_url = AAZStrArg(
         options=["--agent-url"],
-        help="Agent endpoint URL (https://<agent>.<hash>.<region>.azuresre.ai) for a shared "
+        help="Agent endpoint URL (`https://<agent>.<hash>.<region>.azuresre.ai`) for a shared "
              "agent that is not in your subscription. Read-only commands only.",
     )
 
@@ -285,6 +304,19 @@ def _data_plane_request(cli_ctx, agent_name, resource_group, method, path, body=
     return response.json()
 
 
+# Nested commands that take --subscription. 'ad signed-in-user show' does not.
+_SUBSCRIPTION_COMMAND_PREFIXES = (
+    ("sre",),
+    ("role", "assignment"),
+    ("account", "show"),
+    ("account", "get-access-token"),
+)
+
+
+def _accepts_subscription(args):
+    return any(tuple(args[:len(prefix)]) == prefix for prefix in _SUBSCRIPTION_COMMAND_PREFIXES)
+
+
 def _cli_invoke(cli_ctx, *args, allow_missing=False):
     """Run another public `az sre ...` command in-process and return its
     parsed result.
@@ -292,12 +324,12 @@ def _cli_invoke(cli_ctx, *args, allow_missing=False):
     import io
 
     from azure.cli.core import get_default_cli
-    from azure.cli.core.azclierror import ResourceNotFoundError as _RNFE
 
     args = list(args)
-    # The nested CLI starts fresh, so pass along the caller's --subscription.
+    # The nested CLI starts fresh, so pass along the caller's --subscription
+    # to commands that accept it.
     subscription = (getattr(cli_ctx, "data", None) or {}).get("subscription_id")
-    if (subscription and args and args[0] == "sre"
+    if (subscription and _accepts_subscription(args)
             and "--subscription" not in args and "--ids" not in args):
         args += ["--subscription", subscription]
 
@@ -305,7 +337,7 @@ def _cli_invoke(cli_ctx, *args, allow_missing=False):
     cli.out_file = io.StringIO()
     try:
         exit_code = cli.invoke(list(args), out_file=io.StringIO())
-    except (_RNFE, SystemExit) as ex:
+    except (ResourceNotFoundError, SystemExit) as ex:
         if allow_missing:
             return None
         raise CLIError(f"'{' '.join(args)}' failed: {ex}") from ex
@@ -464,6 +496,14 @@ class _ModelProviderArgMixin:
                     "portal), but the API never accepts those friendly "
                     "strings. Case-insensitive."
                 )
+        # azdev linter requires an option of 22 characters or fewer.
+        for arg_name, alias in (
+            ("incident_management_configuration", "--incident-config"),
+            ("knowledge_graph_configuration", "--knowledge-graph"),
+        ):
+            arg = getattr(schema, arg_name, None)
+            if arg is not None and alias not in arg._options:
+                arg._options = [*arg._options, alias]
         return schema
 
     def pre_operations(self):
@@ -557,7 +597,6 @@ def _show_internal_features():
     return _is_microsoft_first_party_tenant(tenant_id) or tenant_id.lower() in ICM_MANAGED_IDENTITY_TENANT_IDS
 
 
-
 def _resolve_signed_in_user_object_id(cli_ctx):
     """Resolve the signed-in user's AAD object ID via 'az ad signed-in-user show'.
 
@@ -620,13 +659,20 @@ class _GrantAccessToMeMixin:
             return
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
-        object_id = _resolve_signed_in_user_object_id(self.cli_ctx)
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        invoke(
-            "sre", "access", "grant",
-            "--agent-name", agent_name, "--resource-group", resource_group,
-            "--role", role_key, "--assignee", object_id,
-        )
+        try:
+            object_id = _resolve_signed_in_user_object_id(self.cli_ctx)
+            invoke = partial(_cli_invoke, self.cli_ctx)
+            invoke(
+                "sre", "access", "grant",
+                "--agent-name", agent_name, "--resource-group", resource_group,
+                "--role", role_key, "--assignee", object_id,
+            )
+        except Exception as ex:
+            raise CLIError(
+                f"Agent '{agent_name}' was created, but granting you the '{role_key}' role failed: {ex}\n"
+                f"Retry with: az sre access grant --agent-name {agent_name} "
+                f"--resource-group {resource_group} --role {role_key} --assignee-me"
+            ) from ex
         logger.warning(
             "Granted '%s' role to signed-in user (%s) on agent '%s'.",
             GrantAccess._ROLES[role_key], object_id, agent_name,
@@ -655,6 +701,24 @@ def _create_user_assigned_identity(cli_ctx, subscription_id, resource_group, loc
     return resource_id
 
 
+class _CleanupOnFailurePolling:
+    """Wraps an LRO polling method so a failed run triggers a cleanup callback."""
+
+    def __init__(self, polling, on_failure):
+        self._polling = polling
+        self._on_failure = on_failure
+
+    def run(self):
+        try:
+            self._polling.run()
+        except Exception:
+            self._on_failure()
+            raise
+
+    def __getattr__(self, name):
+        return getattr(self._polling, name)
+
+
 class _DefaultSystemIdentityMixin:
     """Defaults 'agent create' to match the Azure Portal's own identity
     default when neither --mi-system-assigned nor --mi-user-assigned is
@@ -679,6 +743,37 @@ class _DefaultSystemIdentityMixin:
     system-assigned-only behavior.
     """
 
+    _auto_identity_id = None
+    _agent_created = False
+
+    def _execute_operations(self):
+        # If the agent create fails, delete the identity we made for it so
+        # retries don't pile up orphaned identities. With --no-wait only the
+        # synchronous part (pre_operations and the initial PUT) is covered.
+        try:
+            for polling in super()._execute_operations():
+                yield _CleanupOnFailurePolling(polling, self._delete_auto_identity)
+        except Exception:
+            self._delete_auto_identity()
+            raise
+
+    def _delete_auto_identity(self):
+        identity_id = self._auto_identity_id
+        if not identity_id or self._agent_created:
+            return
+        self._auto_identity_id = None
+        try:
+            _arm_request(self.cli_ctx, "DELETE", identity_id, "2023-01-31", missing_ok=True)
+            logger.warning("Agent creation failed; deleted the identity '%s' created for it.",
+                           identity_id.rsplit("/", 1)[-1])
+        except Exception as ex:  # pylint: disable=broad-except
+            logger.warning("Agent creation failed and the identity created for it could not be "
+                           "deleted (%s). Delete it manually: az identity delete --ids %s", ex, identity_id)
+
+    def post_operations(self):
+        self._agent_created = True
+        super().post_operations()
+
     def pre_operations(self):
         args = self.ctx.args
         system_assigned = getattr(args, "mi_system_assigned", None)
@@ -692,6 +787,7 @@ class _DefaultSystemIdentityMixin:
             identity_id = _create_user_assigned_identity(
                 self.cli_ctx, self.ctx.subscription_id, resource_group, location, agent_name,
             )
+            self._auto_identity_id = identity_id
             args.mi_system_assigned = "True"
             args.mi_user_assigned = [identity_id]
             logger.warning(
@@ -764,6 +860,75 @@ class _IcmIncidentPlatformGateMixin:
         super().pre_operations()
 
 
+def _add_experimental_settings_arg(schema):
+    schema.experimental_settings = AAZFreeFormDictArg(
+        options=["--experimental-settings"],
+        arg_group="Properties",
+        help="Preview feature flags as JSON or @file, e.g. '{\"EnableWorkspaceTools\": true}'. "
+        "Merged into the agent's existing flags.",
+    )
+    schema.monthly_unit_limit = AAZIntArg(
+        options=["--monthly-unit-limit"],
+        arg_group="Properties",
+        help="Monthly agent unit (AAU) cap for this agent. 0 restores the service default. "
+        "The service enforces a minimum (currently 500).",
+    )
+
+
+def _monthly_unit_limit(args):
+    limit = _arg_value(getattr(args, "monthly_unit_limit", None))
+    if limit is not None and limit < 0:
+        raise CLIError("--monthly-unit-limit cannot be negative.")
+    return limit
+
+
+def _extra_agent_properties(args):
+    """Agent properties the generated create can't carry, applied with a PATCH afterward."""
+    properties = {}
+    settings = _experimental_settings(args)
+    if settings:
+        properties["experimentalSettings"] = settings
+    limit = _monthly_unit_limit(args)
+    if limit is not None:
+        properties["monthlyAgentUnitLimit"] = limit
+    return properties
+
+
+def _experimental_settings(args):
+    settings = _arg_value(getattr(args, "experimental_settings", None))
+    if settings is not None and not isinstance(settings, dict):
+        raise CLIError("--experimental-settings must be a JSON object.")
+    return settings or None
+
+
+class _ExperimentalSettingsOnCreateMixin:
+    """Applies --experimental-settings and --monthly-unit-limit with a PATCH once the agent exists.
+
+    The generated create can't carry these properties, and a PUT that does carry
+    experimentalSettings replaces the service's own flags instead of adding to them.
+    """
+
+    def pre_operations(self):
+        if _extra_agent_properties(self.ctx.args) and _arg_value(getattr(self.ctx.args, "no_wait", None)):
+            raise CLIError(
+                "--experimental-settings and --monthly-unit-limit cannot be combined with --no-wait: "
+                "they are applied after the agent finishes provisioning. Run 'az sre agent update' "
+                "with them afterward instead."
+            )
+        super().pre_operations()
+
+    def post_operations(self):
+        super().post_operations()
+        properties = _extra_agent_properties(self.ctx.args)
+        if not properties:
+            return
+        resource_id = (
+            f"/subscriptions/{self.ctx.subscription_id}/resourceGroups/{_arg_value(self.ctx.args.resource_group)}"
+            f"/providers/Microsoft.App/agents/{_arg_value(self.ctx.args.agent_name)}"
+        )
+        _arm_request(self.cli_ctx, "PATCH", resource_id, API_VERSION, body={"properties": properties})
+
+
 class _ActionModeEnum(AAZArgEnum):
     """The generated --action-configuration mode enum without 'ReadOnly'."""
 
@@ -800,12 +965,19 @@ class _ActionModeArgMixin:
 
 
 @register_command("sre agent create")
-class Create(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeArgMixin, _GrantAccessToMeMixin, _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
+class Create(  # pylint: disable=too-many-ancestors
+        _IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeArgMixin,
+        _GrantAccessToMeMixin, _ExperimentalSettingsOnCreateMixin, _DefaultSystemIdentityMixin,
+        _LogConfigurationWarningMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
     :example: Create an agent with an Anthropic default model
         az sre agent create --name myagent --resource-group myrg \\
             --location eastus2 --default-model "{provider:anthropic,name:automatic}"
+
+    :example: Create an agent with preview feature flags turned on
+        az sre agent create --name myagent --resource-group myrg --location eastus2 \\
+            --experimental-settings "{\\"EnableWorkspaceTools\\": true}"
     """
 
     _args_schema = None
@@ -836,6 +1008,7 @@ class Create(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
         schema.log_configuration._help["short-summary"] = (
             "Application Insights link for traces. Without it, a warning is shown and trace view is unavailable."
         )
+        _add_experimental_settings_arg(schema)
         cls._args_schema = schema
         return cls._args_schema
 
@@ -867,9 +1040,69 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
     :example: Connect ServiceNow as the incident platform with Basic Auth
         az sre agent update --name myagent --resource-group myrg \\
             --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:https://contoso.service-now.com,connection-key:<credentials>}"
+
+    :example: Turn on preview feature flags from a file
+        az sre agent update --name myagent --resource-group myrg \\
+            --experimental-settings @experimental.json
     """
 
     _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        _add_experimental_settings_arg(schema)
+        cls._args_schema = schema
+        return cls._args_schema
+
+    def post_instance_update(self, instance):
+        super().post_instance_update(instance)
+        # The service never returns the App Insights connection string, so
+        # writing the agent back as-is sends an appId without it and the PUT
+        # is rejected. Leaving logConfiguration out of a PUT clears it, so
+        # drop it and PATCH instead, which keeps the existing link.
+        data = instance.to_serialized_data() or {}
+        log = (data.get("properties") or {}).get("logConfiguration") or {}
+        app_insights = log.get("applicationInsightsConfiguration") or {}
+        if app_insights and not app_insights.get("connectionString"):
+            if len(log) > 1:
+                del instance.properties.log_configuration.application_insights_configuration
+            else:
+                del instance.properties.log_configuration
+            self.ctx.sre_use_patch = True
+        # A PUT replaces the whole experimentalSettings map; PATCH merges it.
+        if _extra_agent_properties(self.ctx.args):
+            self.ctx.sre_use_patch = True
+
+    class AgentsGet(_GeneratedUpdate.AgentsGet):
+
+        def on_200(self, session):
+            # The generated model has no monthlyAgentUnitLimit, and a PUT that
+            # leaves it out resets the agent to the default limit.
+            data = self.deserialize_http_content(session)
+            properties = data.get("properties") if isinstance(data, dict) else None
+            if isinstance(properties, dict):
+                self.ctx.sre_monthly_unit_limit = properties.get("monthlyAgentUnitLimit")
+            super().on_200(session)
+
+    class AgentsCreateOrUpdate(_GeneratedUpdate.AgentsCreateOrUpdate):
+
+        @property
+        def method(self):
+            return "PATCH" if getattr(self.ctx, "sre_use_patch", False) else "PUT"
+
+        @property
+        def content(self):
+            body = super().content
+            extra = _extra_agent_properties(self.ctx.args)
+            current_limit = getattr(self.ctx, "sre_monthly_unit_limit", None)
+            if current_limit is not None and self.method == "PUT":
+                extra.setdefault("monthlyAgentUnitLimit", current_limit)
+            if extra:
+                body.setdefault("properties", {}).update(extra)
+            return body
 
 
 # Real wire values confirmed via the control-plane source
@@ -980,15 +1213,18 @@ DATA_CONNECTOR_TYPE_ALIASES = {
     "microsoft dgrep": "Dgrep",
 }
 
-# Connector types the portal's connector picker offers, in help-list order.
-# Other accepted values (Kusto, Documentation, MonitorClient, Knowledge*, ...)
-# still work but are not advertised.
+# Connector types the portal's connector picker offers, in help-list order,
+# plus MonitorClient. Other accepted values (Kusto, Documentation,
+# Knowledge*, ...) still work but are not advertised.
 PORTAL_CONNECTOR_NAMES = {
     "KustoClient": "Azure Data Explorer",
     "KustoUser": "Database query connector (user)",
     "KustoDataIndexer": "Database indexing connector",
     "LogAnalytics": "Log Analytics Workspace",
     "AppInsights": "Application Insights",
+    # No portal card; the portal adds it alongside the Log Analytics and App
+    # Insights connectors, and labs create it directly.
+    "MonitorClient": "MonitorClient",
     "Mcp": "MCP server",
     "Outlook": "Office 365 Outlook",
     "Teams": "Microsoft Teams",
@@ -1052,6 +1288,7 @@ def _connector_access_reminder(connector):
             connector.get("name"),
         )
 
+
 # Wire value -> real portal display name, for the subset of types with a
 # confirmed portal picker entry. Confirmed live against the portal's
 # "Connectors" dialog (screenshots reviewed 2026-11-03, plus a full catalog
@@ -1080,7 +1317,8 @@ def _connector_access_reminder(connector):
 # ConnectorGateway, AzureMonitor, MonitorClient. These accept creation via
 # the CLI/API (the backend's V1 allowlist), but have no portal entry point
 # today, so they're intentionally left out of this map and fall back to
-# showing the wire value as-is.
+# showing the wire value as-is. MonitorClient is the exception: it is
+# listed under its wire value because labs and templates create it directly.
 #
 # High-confidence but NOT create-and-inspect-confirmed correlations (strong
 # naming match between the wire value and a catalog card's Title/
@@ -1198,11 +1436,12 @@ class _DataConnectorTypeArgMixin:
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
             data_source._help["short-summary"] = (
                 "Connection string or endpoint. For Kusto, include the database: "
-                "https://cluster.kusto.windows.net/database."
+                "`https://cluster.kusto.windows.net/database`."
             )
         for _name, _text in (
             ("endpoint", "Endpoint URL, used by endpoint-based connector types such as Mcp."),
-            ("identity", "Managed identity resource ID used to reach the data source. Default: the agent's system-assigned identity."),
+            ("identity", "'system' for the agent's system-assigned identity, or a user-assigned identity "
+             "resource ID. If omitted, no identity is set."),
             ("extended_properties", "Type-specific settings as JSON or shorthand."),
         ):
             _arg = getattr(schema, _name, None)
@@ -1268,7 +1507,7 @@ class _ConnectorConvenienceArgsMixin:
         schema.github = AAZBoolArg(
             options=["--github"],
             arg_group="MCP",
-            help="For Mcp: connect the public GitHub Copilot MCP server (https://api.githubcopilot.com/mcp/).",
+            help="For Mcp: connect the public GitHub Copilot MCP server (`https://api.githubcopilot.com/mcp/`).",
         )
         schema.tool_access = AAZBoolArg(
             options=["--tool-access"],
@@ -1299,7 +1538,7 @@ class _ConnectorConvenienceArgsMixin:
         schema.mi_token_scope = AAZStrArg(
             options=["--mi-token-scope"],
             arg_group="MCP",
-            help="For Mcp with --managed-identity-auth: token scope to request. Default: https://management.azure.com/.default.",
+            help="For Mcp with --managed-identity-auth: token scope to request. Default: `https://management.azure.com/.default`.",
         )
         schema.oauth_dcr = AAZBoolArg(
             options=["--oauth-dcr"],
@@ -1331,7 +1570,7 @@ class _ConnectorConvenienceArgsMixin:
     # the file silently never got sent.
     _file_path_used = False
 
-    def pre_operations(self):
+    def pre_operations(self):  # pylint: disable=too-many-branches
         args = self.ctx.args
         connector_type = _arg_value(getattr(args, "data_connector_type", None))
         file_path = _arg_value(getattr(args, "file_path", None))
@@ -1357,6 +1596,8 @@ class _ConnectorConvenienceArgsMixin:
             if connector_type != "Mcp":
                 raise CLIError("--github/--mcp-endpoint require --data-connector-type Mcp.")
             endpoint = GITHUB_COPILOT_MCP_ENDPOINT if github else mcp_endpoint
+            if urlparse(endpoint).scheme.lower() != "https":
+                raise InvalidArgumentValueError("--mcp-endpoint must be an https:// URL.")
             args.data_source = endpoint
             existing = _arg_value(getattr(args, "extended_properties", None)) or {}
             if not isinstance(existing, dict):
@@ -1386,7 +1627,7 @@ class _ConnectorConvenienceArgsMixin:
                     "fileName": os.path.basename(file_path),
                 }
             else:
-                with open(file_path, "r", encoding="utf-8") as handle:
+                with open(file_path, "r", encoding="utf-8-sig") as handle:
                     text = handle.read()
                 args.extended_properties = {"content": text}
             self._file_path_used = True
@@ -1431,6 +1672,14 @@ class _ConnectorConvenienceArgsMixin:
                     "bearerToken": bearer_token,
                 }
             elif managed_identity_auth or mi_token_scope:
+                if not mi_token_scope:
+                    target = existing.get("endpoint") or _arg_value(getattr(args, "data_source", None)) or ""
+                    logger.warning(
+                        "--managed-identity-auth without --mi-token-scope sends the agent's managed "
+                        "identity ARM token (https://management.azure.com/.default) to '%s'. Only use "
+                        "this with an MCP server you trust, or pass --mi-token-scope for its own audience.",
+                        urlparse(target).hostname or target or "the MCP endpoint",
+                    )
                 existing = {
                     **existing,
                     "authType": "AzureARM",
@@ -1489,7 +1738,22 @@ class _ConnectorExistenceGuardMixin:
     so a 404 on a brand-new connector name no longer prints anything.
     """
 
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        if hasattr(schema, "overwrite"):
+            return schema
+        schema.overwrite = AAZBoolArg(
+            options=["--overwrite"],
+            help="Replace an existing connector with the same name instead of failing.",
+            default=False,
+        )
+        return schema
+
     def pre_operations(self):
+        if _arg_value(getattr(self.ctx.args, "overwrite", None)):
+            super().pre_operations()
+            return
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
         connector_name = _arg_value(self.ctx.args.connector_name)
@@ -1500,9 +1764,58 @@ class _ConnectorExistenceGuardMixin:
             raise ResourceExistsError(
                 f"A connector named '{connector_name}' already exists on agent "
                 f"'{agent_name}'. Use 'az sre connector update' to change "
-                "it, or choose another --name."
+                "it, pass --overwrite to replace it, or choose another --name."
             )
         super().pre_operations()
+
+
+class _ConnectorPartnerTypeMixin:
+    """Adds --partner-type, stored as extendedProperties.partnerType on Mcp connectors."""
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        if not hasattr(schema, "partner_type"):
+            schema.partner_type = AAZStrArg(
+                options=["--partner-type"],
+                arg_group="MCP",
+                help="For Mcp: the partner integration this server belongs to, for example DynatraceMcp. "
+                     "On update, also pass --data-source and --extended-properties, since the service "
+                     "doesn't return the endpoint or credentials.",
+            )
+        return schema
+
+    def pre_operations(self):
+        args = self.ctx.args
+        partner_type = _arg_value(getattr(args, "partner_type", None))
+        connector_type = _arg_value(getattr(args, "data_connector_type", None))
+        if partner_type and connector_type is not None and connector_type != "Mcp":
+            raise CLIError("--partner-type requires --data-connector-type Mcp.")
+        if partner_type and isinstance(self, _GeneratedConnectorUpdate) and (
+                _arg_value(getattr(args, "data_source", None)) is None
+                or _arg_value(getattr(args, "extended_properties", None)) is None):
+            # GET never returns the endpoint or bearer token, so a PUT built
+            # from it alone would wipe them from the connector.
+            raise CLIError(
+                "--partner-type on update also needs --data-source and --extended-properties "
+                "(including the endpoint and credentials), because the service doesn't return "
+                "them and they would otherwise be cleared."
+            )
+        if partner_type and not isinstance(self, _GeneratedConnectorUpdate):
+            existing = _arg_value(getattr(args, "extended_properties", None)) or {}
+            if not isinstance(existing, dict):
+                existing = {}
+            args.extended_properties = {**existing, "partnerType": partner_type}
+        super().pre_operations()
+
+    def post_instance_update(self, instance):
+        super().post_instance_update(instance)
+        partner_type = _arg_value(getattr(self.ctx.args, "partner_type", None))
+        if not partner_type:
+            return
+        if instance.properties.data_connector_type.to_serialized_data() != "Mcp":
+            raise CLIError("--partner-type only applies to Mcp connectors.")
+        instance.properties.extended_properties["partnerType"] = partner_type
 
 
 class _SecretHttpOperationMixin:
@@ -1515,6 +1828,7 @@ class _SecretHttpOperationMixin:
 @register_command("sre connector create")
 class ConnectorCreate(
     _DataConnectorTypeArgMixin,
+    _ConnectorPartnerTypeMixin,
     _ConnectorConvenienceArgsMixin,
     _ConnectorExistenceGuardMixin,
     _GeneratedConnectorCreate,
@@ -1534,6 +1848,12 @@ class ConnectorCreate(
             --name mcp --data-connector-type Mcp \\
             --mcp-endpoint "https://myserver.contoso.com/mcp" \\
             --bearer-token @token.txt
+
+    :example: Connect a Dynatrace MCP server
+        az sre connector create --agent-name myagent --resource-group myrg \\
+            --name dynatrace --data-connector-type Mcp \\
+            --mcp-endpoint "https://myenv.apps.dynatrace.com/platform-reserved/mcp-gateway/v0.1/servers/dynatrace-mcp/mcp" \\
+            --bearer-token "$DT_TOKEN" --partner-type DynatraceMcp
 
     :example: Connect a custom MCP server with the agent's managed identity
         az sre connector create --agent-name myagent --resource-group myrg \\
@@ -1562,12 +1882,16 @@ class ConnectorCreate(
 
 
 @register_command("sre connector update")
-class ConnectorUpdate(_DataConnectorTypeArgMixin, _GeneratedConnectorUpdate):
+class ConnectorUpdate(_DataConnectorTypeArgMixin, _ConnectorPartnerTypeMixin, _GeneratedConnectorUpdate):
     """Update an Agent Connector.
 
     :example: Point a Kusto connector at a different database
         az sre connector update -g myrg --agent-name myagent -n conn-kusto \\
             --data-connector-type "Azure Data Explorer" \\
+
+    :example: Mark an MCP connector as a Dynatrace integration. The service doesn't return the endpoint or token, so pass them again.
+        az sre connector update -g myrg --agent-name myagent -n dynatrace --partner-type DynatraceMcp \\
+            --data-source "$DT_MCP_URL" --extended-properties @dynatrace-mcp.json
     """
 
     _args_schema = None
@@ -1725,6 +2049,17 @@ class ConnectorDelete(_GeneratedConnectorDelete):
     _args_schema = None
 
 
+@register_command("sre connector wait")
+class ConnectorWait(_GeneratedConnectorWait):
+    """Wait for a connector to reach a desired state.
+
+    :example: Wait until a connector created with --no-wait exists
+        az sre connector wait -g myrg --agent-name myagent -n conn-kusto --created
+    """
+
+    _args_schema = None
+
+
 class _ConnectorNameAliasMixin:
     """Adds the usual '-n'/'--name' aliases to --connector-name, matching
     show/update/delete -- the generated ListSecret recipe is missing them
@@ -1819,6 +2154,17 @@ class IdentityShow(_GeneratedIdentityShow):
 
     :example: Show an agent's identities
         az sre identity show -g myrg --agent-name myagent
+    """
+
+    _args_schema = None
+
+
+@register_command("sre identity wait")
+class IdentityWait(_GeneratedIdentityWait):
+    """Wait for an agent's identity update to finish.
+
+    :example: Wait for an identity assignment started with --no-wait
+        az sre identity wait -g myrg --agent-name myagent --updated
     """
 
     _args_schema = None
@@ -2038,10 +2384,10 @@ class AgentSettingsUpdate(AAZCommand):
 # _RoleAssignmentScopeCommand above, just with assignee and scope reversed.
 #
 # The two built-in roles are NOT user-selectable in the portal -- the
-# dialog always grants both together, so grant/revoke always operate on
-# both roles as a pair rather than exposing a --role flag (confirmed
-# "Reader and ... Monitoring Contributor roles" wording, plural, no choice
-# shown anywhere in the 3 tabs' dialogs). The portal's friendly label
+# dialog always grants both together, so that pair is the default here.
+# --roles overrides it for setups that want a different set (the
+# zava-aks-postgres lab, for example, also grants Contributor and uses
+# Monitoring Reader). The portal's friendly label
 # "Azure Monitor Monitoring Contributor" is NOT the real role name -- the
 # actual built-in RBAC role is just "Monitoring Contributor", confirmed
 # live via 'az role definition list'.
@@ -2068,19 +2414,19 @@ def _resolve_managed_resource_scope(cli_ctx, scope, target_subscription, target_
     convenience_flags_used = any((target_subscription, target_resource_group, management_group))
     if scope and convenience_flags_used:
         raise CLIError(
-            "Specify either --scope or --target-subscription/--target-resource-group/"
-            "--management-group, not both."
+            "Specify --scope on its own, or use --target-subscription/--target-rg/"
+            "--management-group instead -- not both."
         )
     if scope:
         return scope
     if management_group:
         if target_subscription or target_resource_group:
             raise CLIError(
-                "--management-group cannot be combined with --target-subscription/--target-resource-group."
+                "--management-group cannot be combined with --target-subscription/--target-rg."
             )
         return f"/providers/Microsoft.Management/managementGroups/{management_group}"
     if target_resource_group and not target_subscription:
-        raise CLIError("--target-resource-group requires --target-subscription.")
+        raise CLIError("--target-rg requires --target-subscription.")
     if target_subscription:
         sub_id = _resolve_subscription_id(cli_ctx, target_subscription)
         if target_resource_group:
@@ -2088,7 +2434,7 @@ def _resolve_managed_resource_scope(cli_ctx, scope, target_subscription, target_
         return f"/subscriptions/{sub_id}"
     raise CLIError(
         "Specify a target scope: --scope, --target-subscription, --target-subscription with "
-        "--target-resource-group, or --management-group."
+        "--target-rg, or --management-group."
     )
 
 
@@ -2211,21 +2557,21 @@ class _ManagedResourceScopeCommand(_ManagedResourceIdentityMixin, AAZCommand):
             options=["-n", "--name", "--agent-name"], help="Name of the SRE Agent.", required=True,
         )
         schema.resource_group = AAZResourceGroupNameArg(
-            help="Resource group of the SRE Agent, not of the target scope. "
-            "For the target, use --target-resource-group.",
+            help="Resource group of the SRE Agent (NOT the target scope -- use "
+            "--target-rg for that).",
             required=True,
         )
         schema.scope = AAZStrArg(
             options=["--scope"],
             help=f"Full resource ID of the scope to {cls._VERB} access on/from. "
-            "Alternative to --target-subscription/--target-resource-group/--management-group.",
+            "Alternative to --target-subscription/--target-rg/--management-group.",
         )
         schema.target_subscription = AAZStrArg(
             options=["--target-subscription"],
-            help="Target subscription name or ID. Alone: subscription scope. With --target-resource-group: resource-group scope.",
+            help="Target subscription name or ID. Alone: subscription scope. With --target-rg: resource-group scope.",
         )
         schema.target_resource_group = AAZStrArg(
-            options=["--target-resource-group"],
+            options=["--target-rg"],
             help="Target resource group name (requires --target-subscription). Distinct "
             "from --resource-group, which locates the agent itself.",
         )
@@ -2233,8 +2579,18 @@ class _ManagedResourceScopeCommand(_ManagedResourceIdentityMixin, AAZCommand):
             options=["--management-group"],
             help="Target management group name/ID.",
         )
+        schema.roles = AAZListArg(
+            options=["--roles"],
+            help=f"Roles to {cls._VERB} instead of the default Reader and Monitoring Contributor, "
+            "e.g. --roles Reader \"Monitoring Reader\" Contributor. Names or role definition IDs.",
+        )
+        schema.roles.Element = AAZStrArg()
         cls._args_schema = schema
         return schema
+
+    def _roles(self):
+        roles = [r for r in (_arg_value(getattr(self.ctx.args, "roles", None)) or []) if r and r.strip()]
+        return roles or list(MANAGED_RESOURCE_ROLES)
 
     def _resolve(self):
         principal_id = self._resolve_principal_id()
@@ -2253,7 +2609,8 @@ class _ManagedResourceGroup(AAZCommandGroup):
     """Let the agent monitor resources outside its resource group.
 
     Grants/revokes the built-in 'Reader' + 'Monitoring Contributor' roles
-    together on a subscription, resource group, or management group.
+    together on a subscription, resource group, or management group. Use
+    --roles to pick different roles, e.g. Contributor or Monitoring Reader.
     Defaults to the system-assigned identity. Use --identity with an
     assigned user-assigned identity's ARM resource ID to target it instead.
     """
@@ -2265,14 +2622,20 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
 
     Targets the system-assigned identity by default. Use --identity to
     select an assigned user-assigned identity without changing runtime settings.
+    Use --roles to grant a different set of roles.
 
     :example: Grant on a subscription
         az sre managed-resource grant --agent-name myagent --resource-group myrg \\
             --target-subscription my-sub
 
+    :example: Grant Reader, Monitoring Reader and Contributor on a resource group
+        az sre managed-resource grant --agent-name myagent --resource-group myrg \\
+            --target-subscription my-sub --target-rg monitored-rg \\
+            --roles Reader "Monitoring Reader" Contributor
+
     :example: Grant on a resource group
         az sre managed-resource grant --agent-name myagent --resource-group myrg \\
-            --target-subscription my-sub --target-resource-group monitored-rg
+            --target-subscription my-sub --target-rg monitored-rg
 
     :example: Grant on a management group
         az sre managed-resource grant --agent-name myagent --resource-group myrg \\
@@ -2281,7 +2644,7 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
     :example: Grant an assigned user-assigned identity access to a resource group
         az sre managed-resource grant -g myrg --agent-name myagent \\
             --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \\
-            --target-subscription my-sub --target-resource-group monitored-rg
+            --target-subscription my-sub --target-rg monitored-rg
     """
 
     _args_schema = None
@@ -2292,7 +2655,7 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
         principal_id, scope = self._resolve()
         invoke = partial(_cli_invoke, self.cli_ctx)
         results = []
-        for role in MANAGED_RESOURCE_ROLES:
+        for role in self._roles():
             results.append(invoke(
                 "role", "assignment", "create",
                 "--role", role, "--assignee", principal_id, "--scope", scope,
@@ -2304,18 +2667,18 @@ class ManagedResourceGrant(_ManagedResourceScopeCommand):
 class ManagedResourceRevoke(_ManagedResourceScopeCommand):
     """Remove the agent's Reader and Monitoring Contributor on a scope.
 
-    Only removes these two roles for the selected identity on the exact
-    requested scope. Other identities, roles, and scopes are unaffected.
-    Defaults to the system-assigned identity.
+    Only removes these two roles (or the ones given with --roles) for the
+    selected identity on the exact requested scope. Other identities, roles,
+    and scopes are unaffected. Defaults to the system-assigned identity.
 
     :example: Revoke access to a resource group
         az sre managed-resource revoke --agent-name myagent --resource-group myrg \\
-            --target-subscription my-sub --target-resource-group monitored-rg
+            --target-subscription my-sub --target-rg monitored-rg
 
     :example: Revoke an assigned user-assigned identity's access
         az sre managed-resource revoke -g myrg --agent-name myagent \\
             --identity /subscriptions/<sub-id>/resourceGroups/identity-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/runtime \\
-            --target-subscription my-sub --target-resource-group monitored-rg
+            --target-subscription my-sub --target-rg monitored-rg
     """
 
     _args_schema = None
@@ -2325,12 +2688,11 @@ class ManagedResourceRevoke(_ManagedResourceScopeCommand):
         super()._handler(command_args)
         principal_id, scope = self._resolve()
         invoke = partial(_cli_invoke, self.cli_ctx)
-        for role in MANAGED_RESOURCE_ROLES:
+        for role in self._roles():
             invoke(
                 "role", "assignment", "delete",
                 "--role", role, "--assignee", principal_id, "--scope", scope,
             )
-        return None
 
 
 @register_command("sre managed-resource list")
@@ -3187,39 +3549,27 @@ class UpdateNetwork(AAZCommand):
                 "Specify at least one of --vnet-configuration or --sandbox-configuration."
             )
 
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        agent = invoke(
-            "sre", "agent", "show", "--name", name, "--resource-group", resource_group,
-        )
-        if not isinstance(agent, dict):
-            raise ResourceNotFoundError(
-                f"Could not resolve SRE Agent '{name}' in resource group '{resource_group}'."
-            )
-        resource_id = agent.get("id")
-        if not resource_id:
-            raise CLIError(f"Could not resolve the resource ID of agent '{name}'.")
+        resource_id = _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
 
-        # Re-GET at the networking-capable api-version rather than reusing
-        # the 2026-01-01 'show' response above, since that response won't
-        # contain (and would silently drop on PUT) any networking fields
-        # already set on the resource by another caller.
-        current = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION)
-        if not isinstance(current, dict):
-            raise ResourceNotFoundError(
-                f"Could not re-resolve SRE Agent '{name}' at api-version {NETWORK_API_VERSION}."
-            )
-        properties = current.setdefault("properties", {})
+        # PATCH only the networking properties. A GET-then-PUT of the whole
+        # agent fails on agents with App Insights logging, because the GET
+        # hides the connection string and the PUT then sends an appId alone.
         # `network show` prints unset fields as null; drop them so its output
         # can be passed back here unchanged.
+        properties = {}
         if vnet_configuration is not None:
             properties["vnetConfiguration"] = _drop_nulls(_camelize_keys(vnet_configuration))
         if sandbox_configuration is not None:
             properties["sandboxConfiguration"] = _drop_nulls(_camelize_keys(sandbox_configuration))
 
-        updated = _arm_request(self.cli_ctx, "PUT", resource_id, NETWORK_API_VERSION, body=current)
+        updated = _arm_request(
+            self.cli_ctx, "PATCH", resource_id, NETWORK_API_VERSION, body={"properties": properties},
+        )
+        if not (isinstance(updated, dict) and updated.get("properties")):
+            updated = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION)
 
-        # The PUT targets the agent resource itself, so trim the response to the
-        # networking fields like the other extension commands do.
+        # The PATCH targets the agent resource itself, so trim the response to
+        # the networking fields like the other extension commands do.
         return _network_view(updated)
 
 
@@ -3508,11 +3858,22 @@ def _validate_incident_filters_shape(parsed):
     if "mergeWindowHours" in parsed and (
             isinstance(parsed["mergeWindowHours"], bool) or not isinstance(parsed["mergeWindowHours"], int)):
         raise CLIError("--value.mergeWindowHours must be an integer.")
+    if "maxAutomatedInvestigationAttempts" in parsed and (
+            isinstance(parsed["maxAutomatedInvestigationAttempts"], bool)
+            or not isinstance(parsed["maxAutomatedInvestigationAttempts"], int)):
+        raise CLIError("--value.maxAutomatedInvestigationAttempts must be an integer.")
     for list_field in ("owningTeamIds", "handlingAgents"):
         if list_field in parsed:
             value = parsed[list_field]
             if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
                 raise CLIError(f"--value.{list_field} must be a JSON array of strings.")
+    _require_str(parsed, "alertId", "--value")
+    if "azMonitorFilterSettings" in parsed:
+        settings = parsed["azMonitorFilterSettings"]
+        if not isinstance(settings, dict):
+            raise CLIError("--value.azMonitorFilterSettings must be a JSON object.")
+        for key in ("targetResourceType", "targetResource"):
+            _require_str(settings, key, "--value.azMonitorFilterSettings")
 
 
 def _validate_incident_handlers_shape(parsed):
@@ -3554,7 +3915,7 @@ def _require_str_list(obj, key, path):
 # YamlMember aliases are camelCase and line up 1:1 with other confirmed
 # types' JsonPropertyName casing (see HookSpecV2), so these are used
 # directly as the JSON wire field names.
-def _validate_tools_shape(parsed):
+def _validate_tools_shape(parsed):  # pylint: disable=too-many-branches
     if not isinstance(parsed, dict):
         raise CLIError(
             "--value must be a JSON object that describes the tool."
@@ -3643,9 +4004,9 @@ def _validate_subagents_shape(parsed):
         )
     _require_str(parsed, "instructions", "--value")
     instructions = parsed.get("instructions")
-    if instructions and instructions.strip() and     len(instructions) < 50:
+    if instructions and instructions.strip() and len(instructions) < 50:
         raise CLIError(
-                "--value.instructions must be at least 50 characters. "
+            "--value.instructions must be at least 50 characters. "
             "Expand the sub-agent instructions with meaningful guidance and retry."
         )
     _require_str(parsed, "handoffDescription", "--value")
@@ -3781,6 +4142,25 @@ def _validate_scheduled_tasks_shape(parsed):
             raise CLIError(f"--value.{date_field} must be an ISO-8601 date-time string.")
     if "maxExecutions" in parsed and not isinstance(parsed["maxExecutions"], (int, float)):
         raise CLIError("--value.maxExecutions must be a number.")
+    _require_bool(parsed, "isEnabled", "--value")
+    if "status" in parsed and parsed["status"] not in SCHEDULED_TASK_STATUSES:
+        raise CLIError(
+            "--value.status must be one of: " + ", ".join(f'"{s}"' for s in SCHEDULED_TASK_STATUSES) + ".")
+    if "isEnabled" in parsed and "status" in parsed and parsed["status"] != (
+            "Active" if parsed["isEnabled"] else "Paused"):
+        raise CLIError("--value.isEnabled and --value.status disagree; set only one of them.")
+
+
+SCHEDULED_TASK_STATUSES = ("Active", "Paused", "Completed", "Failed", "Expired")
+
+
+def _scheduled_task_enabled_to_status(parsed):
+    """The service has no isEnabled field on scheduled tasks; it pauses them through status."""
+    if isinstance(parsed, dict) and "isEnabled" in parsed:
+        enabled = parsed.pop("isEnabled")
+        parsed.setdefault("status", "Active" if enabled else "Paused")
+        return True
+    return False
 
 
 # repositories: confirmed via sreagent-runtime
@@ -3885,7 +4265,7 @@ def _validate_http_triggers_shape(parsed):
     for str_field in ("name", "description", "agentPrompt", "agent", "modelTier", "threadId"):
         _require_str(parsed, str_field, "--value")
     if "agentMode" in parsed:
-        if not isinstance(parsed["agentMode"], str) or parsed["agentMode"] not in (
+        if not isinstance(parsed["agentMode"], str) or parsed["agentMode"].lower() not in (
             "readonly", "review", "autonomous",
         ):
             raise CLIError("--value.agentMode must be \"readonly\", \"review\", or \"autonomous\".")
@@ -3910,18 +4290,14 @@ EXTENSION_VALUE_VALIDATORS = {
 }
 
 
-def _encode_extension_value(raw_value, extension_type=None):
-    """Base64-encode a user-supplied JSON string for properties.value, the
-    wire format confirmed in Agents.http (e.g. pluginMarketplaces' example
-    body). Validates the input is JSON first so typos fail fast client-side
-    instead of as an opaque base64 blob the service will silently accept
-    but the data plane can't parse. Additionally applies a per-type shape
-    check for any extension_type we have a confirmed real shape for (see
-    EXTENSION_VALUE_VALIDATORS) -- unconfirmed types are passed through
-    with only the baseline JSON-syntax check. The legacy PythonTool name is
-    normalized to the runtime's PythonFunctionTool discriminator.
+def _normalize_extension_value(raw_value, extension_type=None):
+    """Parse and validate a user-supplied --value, returning the JSON text to
+    send. Applies a per-type shape check for any extension_type we have a
+    confirmed real shape for (see EXTENSION_VALUE_VALIDATORS) -- unconfirmed
+    types only get the baseline JSON-syntax check. The legacy PythonTool name
+    is normalized to the runtime's PythonFunctionTool discriminator. Shared by
+    the ARM and direct (agent endpoint) create paths.
     """
-    import base64
 
     try:
         parsed = json.loads(raw_value)
@@ -3933,10 +4309,41 @@ def _encode_extension_value(raw_value, extension_type=None):
     if extension_type == "tools" and isinstance(parsed, dict) and parsed.get("type") == "PythonTool":
         parsed["type"] = "PythonFunctionTool"
         raw_value = json.dumps(parsed)
+    # The service matches agent modes case-insensitively and stores them lowercase.
+    if (extension_type in ("httpTriggers", "scheduledTasks") and isinstance(parsed, dict)
+            and isinstance(parsed.get("agentMode"), str) and parsed["agentMode"] != parsed["agentMode"].lower()):
+        parsed["agentMode"] = parsed["agentMode"].lower()
+        raw_value = json.dumps(parsed)
     validator = EXTENSION_VALUE_VALIDATORS.get(extension_type)
     if validator is not None:
         validator(parsed)
+    if extension_type == "scheduledTasks" and _scheduled_task_enabled_to_status(parsed):
+        raw_value = json.dumps(parsed)
+    return raw_value
+
+
+def _encode_extension_value(raw_value, extension_type=None):
+    """Base64-encode a validated --value for properties.value, the wire format
+    confirmed in Agents.http (e.g. pluginMarketplaces' example body)."""
+    raw_value = _normalize_extension_value(raw_value, extension_type)
     return base64.b64encode(raw_value.encode("utf-8")).decode("ascii")
+
+
+def _is_http_client_tool(extension_type, raw_value):
+    if extension_type != "tools":
+        return False
+    parsed = json.loads(raw_value)
+    return isinstance(parsed, dict) and parsed.get("type") == "HttpClientTool"
+
+
+def _require_existing_http_client_tool(existing_tool):
+    if not isinstance(existing_tool, dict) or existing_tool.get("type") != "HttpClientTool":
+        raise CLIError(
+            "Creating new HttpClientTool tools is no longer supported. "
+            "--overwrite can update an existing HttpClientTool of the same name, "
+            "but cannot create one or replace a different tool type. "
+            "Use PythonFunctionTool or an MCP server for new HTTP integrations."
+        )
 
 
 def _decode_extension_envelope(envelope):
@@ -3945,9 +4352,6 @@ def _decode_extension_envelope(envelope):
     Falls back to leaving the raw base64 untouched if it's not valid
     UTF-8/JSON -- some extension types may carry opaque/binary payloads.
     """
-    import base64
-    import contextlib
-
     if not isinstance(envelope, dict):
         return envelope
     properties = envelope.get("properties")
@@ -3999,21 +4403,6 @@ EXTENSION_TYPE_CREATE_NOUN = {
     "azureDevOpsAuths": "az sre repo connect",
     "globalSettings": "az sre agent settings update",
 }
-
-
-def _resolve_agent_resource_id(cli_ctx, agent_name, resource_group):
-    invoke = partial(_cli_invoke, cli_ctx)
-    agent = invoke(
-        "sre", "agent", "show", "--name", agent_name, "--resource-group", resource_group,
-    )
-    if not isinstance(agent, dict):
-        raise ResourceNotFoundError(
-            f"Could not resolve SRE Agent '{agent_name}' in resource group '{resource_group}'."
-        )
-    agent_resource_id = agent.get("id")
-    if not agent_resource_id:
-        raise CLIError(f"Could not resolve the resource ID of agent '{agent_name}'.")
-    return agent_resource_id
 
 
 INTERNAL_TENANT_ONLY_MARKER = "restricted to internal tenants only"
@@ -4086,7 +4475,7 @@ def _direct_extension_to_arm_shape(extension_type, envelope):
 
 
 def _direct_extension_create(cli_ctx, agent_name, resource_group, extension_type, name, raw_value, overwrite):
-    _encode_extension_value(raw_value, extension_type)
+    raw_value = _normalize_extension_value(raw_value, extension_type)
     properties = json.loads(raw_value)
     properties.pop("name", None)
     path = _direct_extension_path(extension_type, name)
@@ -4094,13 +4483,19 @@ def _direct_extension_create(cli_ctx, agent_name, resource_group, extension_type
     if envelope_type is None:
         result = _direct_extension_request(cli_ctx, agent_name, resource_group, "PUT", path, body=properties)
         return _direct_extension_to_arm_shape(extension_type, {"name": name, "properties": result})
-    if not overwrite and extension_type not in DIRECT_SKIP_EXISTS_CHECK and _direct_extension_request(
-            cli_ctx, agent_name, resource_group, "GET", path, missing_ok=True) is not None:
+    check_exists = not overwrite and extension_type not in DIRECT_SKIP_EXISTS_CHECK
+    http_client_tool = _is_http_client_tool(extension_type, raw_value)
+    existing = None
+    if check_exists or http_client_tool:
+        existing = _direct_extension_request(cli_ctx, agent_name, resource_group, "GET", path, missing_ok=True)
+    if check_exists and existing is not None:
         raise ResourceExistsError(
             f"An extension named '{name}' of type '{extension_type}' already exists on "
             f"agent '{agent_name}'. Pass --overwrite to replace it intentionally, or "
             "choose another name."
         )
+    if http_client_tool:
+        _require_existing_http_client_tool(existing.get("properties") if isinstance(existing, dict) else None)
     envelope = {"name": name, "type": envelope_type, "properties": properties}
     result = _direct_extension_request(cli_ctx, agent_name, resource_group, "PUT", path, body=envelope)
     return _direct_extension_to_arm_shape(
@@ -4151,6 +4546,19 @@ def _direct_extension_delete(cli_ctx, agent_name, resource_group, extension_type
         path = _direct_extension_path(extension_type, name)
     return _direct_extension_request(cli_ctx, agent_name, resource_group, "DELETE", path, missing_ok=True)
 
+
+def _is_safe_extension_name(name):
+    return (isinstance(name, str) and name not in (".", "..")
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) is not None)
+
+
+def _arm_extension_resource_id(agent_resource_id, extension_type, extension_name):
+    """Quote the name so '/' or '..' can't retarget the request to another resource."""
+    if not extension_name or extension_name in (".", ".."):
+        raise CLIError(f"'{extension_name}' isn't a valid extension name.")
+    return f"{agent_resource_id}/{extension_type}/{quote(extension_name, safe='')}"
+
+
 def _arm_extension_create(
     cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False
 ):
@@ -4158,7 +4566,7 @@ def _arm_extension_create(
     specific 'create'/'update' facade (tool/skill/hook/instructions/
     automation/plugin/repo connect/agent settings)."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
-    resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    resource_id = _arm_extension_resource_id(agent_resource_id, extension_type, extension_name)
     existing = None
     if not overwrite:
         existing = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
@@ -4169,20 +4577,14 @@ def _arm_extension_create(
                 "Pass --overwrite to replace it intentionally, or choose "
                 "another name."
             )
-    encoded_value = _encode_extension_value(raw_value, extension_type)
-    if extension_type == "tools" and json.loads(raw_value).get("type") == "HttpClientTool":
+    raw_value = _normalize_extension_value(raw_value, extension_type)
+    encoded_value = _encode_extension_value(raw_value)
+    if _is_http_client_tool(extension_type, raw_value):
         if overwrite:
             existing = _arm_request(cli_ctx, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
         existing = _decode_extension_envelope(existing)
         properties = existing.get("properties") if isinstance(existing, dict) else None
-        existing_tool = properties.get("value") if isinstance(properties, dict) else None
-        if not isinstance(existing_tool, dict) or existing_tool.get("type") != "HttpClientTool":
-            raise CLIError(
-                "Creating new HttpClientTool tools is no longer supported. "
-                "--overwrite can update an existing HttpClientTool of the same name, "
-                "but cannot create one or replace a different tool type. "
-                "Use PythonFunctionTool or an MCP server for new HTTP integrations."
-            )
+        _require_existing_http_client_tool(properties.get("value") if isinstance(properties, dict) else None)
     body = {
         "type": f"microsoft.app/agents/{extension_type}",
         "properties": {"value": encoded_value},
@@ -4195,7 +4597,7 @@ def _arm_extension_show(cli_ctx, agent_name, resource_group, extension_type, ext
     """Show an agent extension resource. Shared by every noun-specific
     'show' facade."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
-    resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    resource_id = _arm_extension_resource_id(agent_resource_id, extension_type, extension_name)
     result = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION, missing_ok=True)
     if result is None:
         raise ResourceNotFoundError(
@@ -4212,21 +4614,20 @@ def _arm_extension_list(cli_ctx, agent_name, resource_group, extension_type):
     result = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION)
     if isinstance(result, dict) and isinstance(result.get("value"), list):
         result["value"] = [_decode_extension_envelope(item) for item in result["value"]]
-        if not result["value"]:
-            create_noun = EXTENSION_TYPE_CREATE_NOUN.get(extension_type)
-            hint = f" Add one with '{create_noun}'." if create_noun else ""
-            logger.warning(
-                "No '%s' extensions found on agent '%s'.%s",
-                extension_type, agent_name, hint,
-            )
     return result
+
+
+def _warn_no_extensions(extension_type, agent_name):
+    create_noun = EXTENSION_TYPE_CREATE_NOUN.get(extension_type)
+    hint = f" Add one with '{create_noun}'." if create_noun else ""
+    logger.warning("No '%s' extensions found on agent '%s'.%s", extension_type, agent_name, hint)
 
 
 def _arm_extension_delete(cli_ctx, agent_name, resource_group, extension_type, extension_name):
     """Delete an agent extension resource. Shared by every noun-specific
     'delete' facade."""
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
-    resource_id = f"{agent_resource_id}/{extension_type}/{extension_name}"
+    resource_id = _arm_extension_resource_id(agent_resource_id, extension_type, extension_name)
     return _extension_arm_request(cli_ctx, extension_type, "DELETE", resource_id, EXTENSION_API_VERSION, missing_ok=True)
 
 
@@ -4513,9 +4914,16 @@ class _PinnedExtensionList(AAZCommand):
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
 
-        return _extension_resource_list(
+        result = _extension_resource_list(
             self.cli_ctx, agent_name, resource_group, self._EXTENSION_TYPE,
         )
+        # Return a bare array like the other list commands, so
+        # --query "[].name" works.
+        if isinstance(result, dict) and isinstance(result.get("value"), list):
+            if not result["value"]:
+                _warn_no_extensions(self._EXTENSION_TYPE, agent_name)
+            return result["value"]
+        return result
 
 
 class _PinnedExtensionDelete(AAZCommand):
@@ -4548,30 +4956,36 @@ class _PinnedExtensionDelete(AAZCommand):
         extension_name = _arg_value(self.ctx.args.extension_name)
 
         # The user already confirmed via this command's own confirmation
-        # prompt (see its @register_command(confirmation=...)).
-        return _extension_resource_delete(
+        # prompt (see its @register_command(confirmation=...)). Like other
+        # deletes, print nothing.
+        _extension_resource_delete(
             self.cli_ctx, agent_name, resource_group, self._EXTENSION_TYPE, extension_name,
         )
 
 
 def _parse_skill_md(file_path):
-    """Parse a SKILL.md-style file into (description, skill_content).
+    """Parse a SKILL.md-style file into (description, skill_content)."""
+    frontmatter, content = _read_skill_md(file_path)
+    return frontmatter.get("description"), content
+
+
+def _read_skill_md(file_path):
+    """Parse a SKILL.md-style file into (frontmatter, skill_content).
 
     Matches the portal's "Skill builder" > "Create skill" dialog's own file
     template: an optional '---'-delimited YAML frontmatter block containing
     'name:'/'description:' lines, followed by the skill's markdown
-    instructions body. Only 'description:' is extracted from the
-    frontmatter (the service's skills wire shape has no 'name' field --
-    the skill's name is the extension-name, confirmed via
-    _validate_skills_shape above); the body becomes 'skillContent' verbatim.
-    A plain file with no frontmatter is treated as the body only.
+    instructions body. The service's skill shape has no 'name' field; a
+    skill's name is the resource name, so the frontmatter 'name:' can only
+    stand in for --name. The body becomes 'skillContent' verbatim. A plain
+    file with no frontmatter is treated as the body only.
     """
     if not os.path.isfile(file_path):
         raise CLIError(f"--file-path '{file_path}' does not exist.")
-    with open(file_path, "r", encoding="utf-8") as handle:
+    with open(file_path, "r", encoding="utf-8-sig") as handle:
         text = handle.read()
 
-    description = None
+    frontmatter = {}
     content = text
     lines = text.splitlines()
     if lines and lines[0].strip() == "---":
@@ -4585,10 +4999,12 @@ def _parse_skill_md(file_path):
                 if ":" not in line:
                     continue
                 key, _, value = line.partition(":")
-                if key.strip().lower() == "description" and value.strip():
-                    description = value.strip()
+                key = key.strip().lower()
+                value = value.strip().strip("'\"")
+                if key in ("name", "description") and value:
+                    frontmatter[key] = value
             content = "\n".join(lines[end_idx + 1:]).strip("\n")
-    return description, content
+    return frontmatter, content
 
 
 # ---- sre tool (portal: Extensions > Tools > Custom tools) ----
@@ -4692,7 +5108,8 @@ class AutomationScheduledTaskCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "scheduledTasks"
     _args_schema = None
     _VALUE_HELP = (
-        "Task configuration as JSON. Fields: cronExpression, agentPrompt, description, agent, threadId, startTime, endTime, maxExecutions."
+        "Task configuration as JSON. Fields: cronExpression, agentPrompt, description, agent, threadId, startTime, endTime, maxExecutions, "
+        "agentMode (readonly, review or autonomous), and isEnabled or status (Active or Paused)."
     )
 
 
@@ -4717,6 +5134,48 @@ class AutomationScheduledTaskList(_PinnedExtensionList):
     """
 
     _EXTENSION_TYPE = "scheduledTasks"
+    _args_schema = None
+
+
+class _ScheduledTaskSetStatus(_PinnedExtensionShow):
+    _EXTENSION_TYPE = "scheduledTasks"
+    _STATUS = None
+
+    def _handler(self, command_args):
+        current = super()._handler(command_args)
+        properties = current.get("properties") if isinstance(current, dict) else None
+        value = properties.get("value") if isinstance(properties, dict) else None
+        if not isinstance(value, dict):
+            raise CLIError("Could not read the scheduled task's current configuration.")
+        value = {k: v for k, v in value.items() if v is not None}
+        value["status"] = self._STATUS
+        return _extension_resource_create(
+            self.cli_ctx, _arg_value(self.ctx.args.agent_name), _arg_value(self.ctx.args.resource_group),
+            self._EXTENSION_TYPE, _arg_value(self.ctx.args.extension_name), json.dumps(value), overwrite=True,
+        )
+
+
+@register_command("sre automation scheduled-task pause")
+class AutomationScheduledTaskPause(_ScheduledTaskSetStatus):
+    """Pause a scheduled task so it stops running until resumed.
+
+    :example: Pause a scheduled task
+        az sre automation scheduled-task pause -g myrg --agent-name myagent --name daily-digest
+    """
+
+    _STATUS = "Paused"
+    _args_schema = None
+
+
+@register_command("sre automation scheduled-task resume")
+class AutomationScheduledTaskResume(_ScheduledTaskSetStatus):
+    """Resume a paused scheduled task.
+
+    :example: Resume a paused scheduled task
+        az sre automation scheduled-task resume -g myrg --agent-name myagent --name daily-digest
+    """
+
+    _STATUS = "Active"
     _args_schema = None
 
 
@@ -4756,7 +5215,8 @@ class AutomationHttpTriggerCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "httpTriggers"
     _args_schema = None
     _VALUE_HELP = (
-        "Trigger configuration as JSON. Fields: agentPrompt, description, agent, threadId."
+        "Trigger configuration as JSON. Fields: agentPrompt, description, agent, threadId, "
+        "agentMode (readonly, review or autonomous)."
     )
 
 
@@ -4770,6 +5230,61 @@ class AutomationHttpTriggerShow(_PinnedExtensionShow):
 
     _EXTENSION_TYPE = "httpTriggers"
     _args_schema = None
+
+
+@register_command("sre automation http-trigger invoke")
+class AutomationHttpTriggerInvoke(_PinnedExtensionShow):
+    """Call an HTTP trigger now, the same way an external webhook would.
+
+    Uses your Azure CLI sign-in for the call, so you need data-plane access to the agent.
+
+    :example: Fire a trigger with no payload
+        az sre automation http-trigger invoke -g myrg --agent-name myagent --name alert-webhook
+
+    :example: Fire a trigger with a JSON payload from a file
+        az sre automation http-trigger invoke -g myrg --agent-name myagent --name alert-webhook \\
+            --payload @alert.json
+    """
+
+    _EXTENSION_TYPE = "httpTriggers"
+    _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        schema.payload = AAZStrArg(
+            options=["--payload"],
+            help="JSON body to send with the call. The agent sees it alongside the trigger's prompt.",
+        )
+        cls._args_schema = schema
+        return schema
+
+    def _handler(self, command_args):
+        trigger = super()._handler(command_args)
+        properties = trigger.get("properties") if isinstance(trigger, dict) else None
+        value = properties.get("value") if isinstance(properties, dict) else None
+        trigger_url = value.get("triggerUrl") if isinstance(value, dict) else None
+        if not trigger_url:
+            raise CLIError("This HTTP trigger has no triggerUrl yet, so it can't be called.")
+        if not _is_azuresre_https_url(trigger_url):
+            raise CLIError(f"Refusing to send a token to unexpected trigger URL '{trigger_url}'.")
+        if value.get("triggerEnabled") is False:
+            raise CLIError("This HTTP trigger is disabled.")
+        payload = _arg_value(getattr(self.ctx.args, "payload", None))
+        if payload:
+            try:
+                json.loads(payload)
+            except ValueError as ex:
+                raise CLIError(f"--payload must be a JSON document: {ex}") from ex
+        response = send_raw_request(
+            self.cli_ctx, "POST", trigger_url,
+            headers=["Content-Type=application/json"],
+            body=payload or None,
+            resource=DATA_PLANE_AUDIENCE,
+        )
+        return response.json() if response.content else {}
 
 
 @register_command("sre automation http-trigger list")
@@ -4910,12 +5425,6 @@ def _incident_resource_create(cli_ctx, agent_name, resource_group, extension_typ
     return _incident_unwrap(kind, result)
 
 
-
-
-
-
-
-
 def _set_incident_filter_enabled(command, enabled):
     return _response_plan_apply_filter_changes(
         command.cli_ctx, _arg_value(command.ctx.args.agent_name),
@@ -4937,19 +5446,7 @@ def _incident_filter_toggle_schema(cls, schema):
     return schema
 
 
-
-
-
-
 # ---- incident handler helpers ----
-
-
-
-
-
-
-
-
 
 
 # ---- sre response-plan (portal: Incidents > Triggers & response plans) ----
@@ -5023,6 +5520,22 @@ def _add_response_plan_criteria_args(schema):
         options=["--merge-window-hours"],
         help="Hours within which related incidents are merged. Service default: 3.",
     )
+    schema.max_investigation_attempts = AAZIntArg(
+        options=["--max-investigation-attempts", "--max-attempts"],
+        help="How many times the agent automatically investigates a matched incident. Service default: 3.",
+    )
+    schema.alert_id = AAZStrArg(
+        options=["--alert-id"], arg_group="Azure Monitor",
+        help="Only match incidents raised by this alert rule (its resource ID).",
+    )
+    schema.target_resource_type = AAZStrArg(
+        options=["--target-resource-type"], arg_group="Azure Monitor",
+        help="Only match alerts on this resource type, for example Microsoft.App/containerApps.",
+    )
+    schema.target_resource = AAZStrArg(
+        options=["--target-resource"], arg_group="Azure Monitor",
+        help="Only match alerts on this resource.",
+    )
     schema.instructions = AAZStrArg(
         options=["--instructions"], help="Custom instructions the subagent follows for matched incidents.",
     )
@@ -5042,10 +5555,19 @@ def _response_plan_criteria(args):
         values = _arg_value(arg)
         if values:
             flt[key] = list(values)
-    for key, arg in (("titleContains", args.title_contains), ("impactedService", args.impacted_service)):
+    for key, arg in (("titleContains", args.title_contains), ("impactedService", args.impacted_service),
+                     ("alertId", getattr(args, "alert_id", None))):
         value = _arg_value(arg)
         if value:
             flt[key] = value
+    az_monitor = {}
+    for key, arg in (("targetResourceType", getattr(args, "target_resource_type", None)),
+                     ("targetResource", getattr(args, "target_resource", None))):
+        value = _arg_value(arg)
+        if value:
+            az_monitor[key] = value
+    if az_monitor:
+        flt["azMonitorFilterSettings"] = az_monitor
     merge_enabled = _arg_value(args.merge_enabled)
     if merge_enabled is not None:
         flt["mergeEnabled"] = bool(merge_enabled)
@@ -5054,6 +5576,11 @@ def _response_plan_criteria(args):
         if window < 1:
             raise CLIError("--merge-window-hours must be at least 1.")
         flt["mergeWindowHours"] = window
+    attempts = _arg_value(getattr(args, "max_investigation_attempts", None))
+    if attempts is not None:
+        if attempts < 1:
+            raise CLIError("--max-investigation-attempts must be at least 1.")
+        flt["maxAutomatedInvestigationAttempts"] = attempts
     return flt
 
 
@@ -5108,7 +5635,7 @@ class ResponsePlanCreate(AAZCommand):
         )
         schema.subagent = AAZStrArg(
             options=["--subagent"], required=True,
-            help="Name of the existing subagent that handles matched incidents.",
+            help="Name of the existing subagent that handles matched incidents. Use meta_agent for the main agent.",
         )
         _add_response_plan_criteria_args(schema)
         schema.mode = AAZStrArg(
@@ -5149,9 +5676,13 @@ class ResponsePlanCreate(AAZCommand):
         flt.update(_response_plan_criteria(args))
         _validate_incident_filters_shape(flt)
         filter_body = {"name": name, "type": "IncidentFilter", "properties": flt}
-        result = {"filter": _incident_resource_create(
-            self.cli_ctx, agent_name, resource_group, "incidentFilters", name,
-            flt, _incident_filter_path(name), filter_body, overwrite)}
+        try:
+            result = {"filter": _incident_resource_create(
+                self.cli_ctx, agent_name, resource_group, "incidentFilters", name,
+                flt, _incident_filter_path(name), filter_body, overwrite)}
+        except Exception as ex:  # pylint: disable=broad-except
+            _raise_if_platform_not_connected(self.cli_ctx, agent_name, resource_group, platform, ex)
+            raise
         handler_fields = _response_plan_handler_fields(args)
         if handler_fields:
             handler = {"id": name, "incidentFilterId": name, **handler_fields}
@@ -5174,6 +5705,29 @@ class ResponsePlanCreate(AAZCommand):
         return result
 
 
+def _raise_if_platform_not_connected(cli_ctx, agent_name, resource_group, platform, error):
+    """The service rejects a plan for an unconnected platform with a generic error; explain it."""
+    try:
+        agent = _cli_invoke(cli_ctx, "sre", "agent", "show", "--name", agent_name,
+                            "--resource-group", resource_group)
+        config = ((agent or {}).get("properties") or {}).get("incidentManagementConfiguration") or {}
+    except Exception:  # pylint: disable=broad-except
+        return
+    connected = config.get("type")
+    if connected and str(connected).lower() == platform.lower():
+        return
+    status = f"is connected to '{connected}'" if connected else "has no incident platform connected"
+    if platform == "AzMonitor":
+        hint = (f"  az sre agent update -g {resource_group} -n {agent_name} "
+                "--incident-management-configuration '{type:AzMonitor,connection-name:azmonitor}'")
+    else:
+        hint = "  See 'az sre agent update -h' for --incident-management-configuration examples."
+    raise CLIError(
+        f"Agent '{agent_name}' {status}, so it can't route {platform} incidents. "
+        f"Connect {platform} first:\n{hint}"
+    ) from error
+
+
 def _response_plan_read_filter(cli_ctx, agent_name, resource_group, name):
     return _incident_unwrap("filter", _extension_resource_show(
         cli_ctx, agent_name, resource_group, "incidentFilters", name))
@@ -5185,6 +5739,11 @@ def _response_plan_apply_filter_changes(cli_ctx, agent_name, resource_group, nam
         existing = _response_plan_read_filter(cli_ctx, agent_name, resource_group, name)
     # ARM echoes unset fields as null, which the service rejects on write.
     properties = {k: v for k, v in (existing.get("properties") or {}).items() if v is not None}
+    if isinstance(changes.get("azMonitorFilterSettings"), dict):
+        current = properties.get("azMonitorFilterSettings")
+        merged = {k: v for k, v in current.items() if v is not None} if isinstance(current, dict) else {}
+        merged.update(changes["azMonitorFilterSettings"])
+        changes = {**changes, "azMonitorFilterSettings": merged}
     properties.update(changes)
     _validate_incident_filters_shape(properties)
     return _incident_resource_create(
@@ -5223,7 +5782,8 @@ class ResponsePlanUpdate(AAZCommand):
             + ", ".join(p for p in RESPONSE_PLAN_PLATFORMS if p != "Icm" or _show_internal_features()) + ".",
         )
         schema.subagent = AAZStrArg(
-            options=["--subagent"], help="Name of the existing subagent that handles matched incidents.",
+            options=["--subagent"],
+            help="Name of the existing subagent that handles matched incidents. Use meta_agent for the main agent.",
         )
         schema.mode = AAZStrArg(
             options=["--mode"], help="Agent autonomy: autonomous or review.",
@@ -5449,28 +6009,6 @@ class ResponsePlanDisable(AAZCommand):
         return _set_incident_filter_enabled(self, False)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ---- sre skill (portal: Extensions > Skills / Skill builder) ----
 @register_command_group("sre skill")
 class _SkillGroup(AAZCommandGroup):
@@ -5489,6 +6027,9 @@ class SkillCreate(_PinnedExtensionCreate):
     :example: Create a skill from a SKILL.md file
         az sre skill create --agent-name myagent --resource-group myrg --name my-skill \\
             --file-path SKILL.md --tools kusto-query log-search
+
+    :example: Name the skill from the SKILL.md frontmatter 'name:' line
+        az sre skill create --agent-name myagent --resource-group myrg --file-path SKILL.md
 
     :example: Create a skill from a raw JSON value
         az sre skill create --agent-name myagent --resource-group myrg --name my-skill \\
@@ -5511,12 +6052,15 @@ class SkillCreate(_PinnedExtensionCreate):
         # since --file-path is the other, mutually-exclusive way to supply
         # it (enforced in _prepare_value below).
         schema.value._required = False
+        # --name can come from the SKILL.md frontmatter instead.
+        schema.extension_name._required = False
         schema.file_path = AAZStrArg(
             options=["--file-path"],
             arg_group="Skill builder",
             help="Path to a SKILL.md-style file: an optional frontmatter "
-            "block between '---' lines with a 'description:' line, followed "
-            "by the skill's Markdown instructions. Alternative to --value.",
+            "block between '---' lines with 'name:' and 'description:' lines, followed "
+            "by the skill's Markdown instructions. The frontmatter name is used when "
+            "--name is omitted. Alternative to --value.",
         )
         schema.tools = AAZListArg(
             options=["--tools"],
@@ -5542,11 +6086,28 @@ class SkillCreate(_PinnedExtensionCreate):
             raise CLIError("Specify either --file-path or --value, not both.")
         if not file_path and not explicit_value:
             raise CLIError("Specify either --file-path or --value.")
+        name = _arg_value(getattr(args, "extension_name", None))
         if not file_path:
+            if not name:
+                raise CLIError("--name is required with --value.")
             return
 
-        description, content = _parse_skill_md(file_path)
-        description = _arg_value(getattr(args, "description", None)) or description
+        frontmatter, content = _read_skill_md(file_path)
+        md_name = frontmatter.get("name")
+        if md_name is not None and not _is_safe_extension_name(md_name):
+            raise CLIError(
+                f"SKILL.md frontmatter name '{md_name}' isn't a valid skill name. Use letters, "
+                "digits, '.', '_' or '-', or pass --name."
+            )
+        if not name:
+            if not md_name:
+                raise CLIError("Pass --name, or add a 'name:' line to the SKILL.md frontmatter.")
+            args.extension_name = md_name
+        elif md_name and md_name != name:
+            logger.warning(
+                "Creating skill '%s'; the SKILL.md frontmatter name '%s' is ignored because --name was given.",
+                name, md_name)
+        description = _arg_value(getattr(args, "description", None)) or frontmatter.get("description")
         if not description:
             raise CLIError(
                 "No description found. Add a 'description:' line to the "
@@ -5623,8 +6184,8 @@ class SubagentCreate(_PinnedExtensionCreate):
     _EXTENSION_TYPE = "subagents"
     _args_schema = None
     _VALUE_HELP = (
-        "Sub-agent configuration as JSON. Nonblank instructions must be at least "
-        "50 characters. Fields: instructions, handoffDescription, "
+        "Sub-agent configuration as JSON. instructions (at least 50 characters) and "
+        "handoffDescription are required. Other fields: "
         "tools, mcpTools, commonTools, allowedSkills, allowParallelToolCalls."
     )
 
@@ -5634,7 +6195,7 @@ class SubagentCreate(_PinnedExtensionCreate):
             return cls._args_schema
         schema = super()._build_arguments_schema(*args, **kwargs)
         schema.pre_tool_use_script_file = AAZStrArg(
-            options=["--pre-tool-use-script-file"],
+            options=["--pre-tool-use-script-file", "--pre-tool-use-script"],
             arg_group="Hooks",
             help="Path to a script file to run before every tool call this "
             "sub-agent makes, like the portal's Manage Hooks > Pre Tool Use "
@@ -5659,7 +6220,7 @@ class SubagentCreate(_PinnedExtensionCreate):
             raise CLIError(f"--value must be a JSON document: {ex}") from ex
         if not isinstance(parsed, dict):
             raise CLIError("--value must be a JSON object that describes the sub-agent.")
-        with open(script_file, "r", encoding="utf-8") as handle:
+        with open(script_file, "r", encoding="utf-8-sig") as handle:
             script = handle.read()
         hooks = parsed.setdefault("hooks", {})
         hooks["PreToolUse"] = [
@@ -5672,6 +6233,23 @@ class SubagentCreate(_PinnedExtensionCreate):
             }
         ]
         args.value = json.dumps(parsed)
+
+    def _handler(self, command_args):
+        try:
+            return super()._handler(command_args)
+        except Exception as ex:  # pylint: disable=broad-except
+            if "configuration is invalid" not in str(ex):
+                raise
+            try:
+                parsed = json.loads(_arg_value(self.ctx.args.value))
+            except (TypeError, ValueError):
+                raise ex from None
+            if isinstance(parsed, dict) and not str(parsed.get("handoffDescription") or "").strip():
+                raise CLIError(
+                    f"{ex}\nThe service needs --value.handoffDescription: one sentence telling the "
+                    "main agent when to hand work to this sub-agent."
+                ) from ex
+            raise
 
 
 @register_command("sre subagent show")
@@ -6246,8 +6824,6 @@ def _print_sign_in_text(*lines):
     each line would get a misleading "WARNING:" label. stdout stays clean
     for -o json and --query.
     """
-    import sys
-
     for line in lines:
         print(line, file=sys.stderr, flush=True)
 
@@ -6267,35 +6843,45 @@ def _github_token(explicit_token=None, hostname="github.com"):
     for env_var in ("GITHUB_TOKEN", "GH_TOKEN"):
         env_token = os.environ.get(env_var)
         if env_token:
+            logger.warning(
+                "Using the GitHub token from the %s environment variable; it will be stored on the "
+                "agent. Pass a fine-grained, repo-scoped token with --github-token to control this.",
+                env_var,
+            )
             return env_token
 
     return _github_device_flow(hostname=hostname)
 
 
-def _devops_pat_token(cli_ctx, organization, display_name):
-    """Mint a short-lived Azure DevOps PAT via the vssps REST API.
-
-    `az devops` has no PAT-creation command, so this calls the same
-    vssps.dev.azure.com/_apis/tokens/pats endpoint the Portal's "New token"
-    button uses, authenticated with an AAD token scoped to Azure DevOps's own
-    resource ID (499b84ac-1321-427f-aa17-267ca6975798). Confirmed live this
-    session against a real Azure DevOps org.
-    """
-    import datetime
-
+def _devops_access_token(cli_ctx):
     # Reuses the public `az account get-access-token` command (via
     # _cli_invoke, same pattern as every other cross-command call in this
     # file) instead of touching azure.cli.core internals directly -- the
     # resource is the bare Azure DevOps application ID GUID, NOT an
-    # "https://<guid>" URI (that form was tried first and fails tenant-wide
-    # with AADSTS500011, confirmed live 2026-10-27).
+    # "https://<guid>" URI (that form fails tenant-wide with AADSTS500011).
     token_response = _cli_invoke(
         cli_ctx, "account", "get-access-token", "--resource", ADO_PAT_RESOURCE_ID,
     )
     token = (token_response or {}).get("accessToken")
     if not token:
         raise CLIError("Could not acquire an Azure DevOps access token.")
-    valid_to = (datetime.datetime.utcnow() + datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return token
+
+
+def _devops_pat_token(cli_ctx, organization, display_name):
+    """Mint a short-lived Azure DevOps PAT via the vssps REST API and return
+    (pat, authorization_id); the authorization ID is what revokes it.
+
+    `az devops` has no PAT-creation command, so this calls the same
+    vssps.dev.azure.com/_apis/tokens/pats endpoint the Portal's "New token"
+    button uses, authenticated with an AAD token scoped to Azure DevOps's own
+    resource ID (499b84ac-1321-427f-aa17-267ca6975798).
+    """
+    import datetime
+
+    token = _devops_access_token(cli_ctx)
+    valid_to = (datetime.datetime.now(datetime.timezone.utc)
+                + datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     body = {
         "displayName": display_name,
         "scope": "vso.code",
@@ -6310,24 +6896,58 @@ def _devops_pat_token(cli_ctx, organization, display_name):
         headers=[f"Authorization=Bearer {token}", "Content-Type=application/json"],
         body=json.dumps(body),
     )
-    pat = response.json().get("patToken", {}).get("token")
+    pat_token = response.json().get("patToken") or {}
+    pat = pat_token.get("token")
     if not pat:
         raise CLIError("Azure DevOps did not return a PAT token.")
-    return pat
+    return pat, pat_token.get("authorizationId")
+
+
+def _revoke_devops_pat(cli_ctx, organization, authorization_id):
+    """Best-effort revoke of a PAT minted by _devops_pat_token."""
+    if not authorization_id:
+        logger.warning("Could not revoke the Azure DevOps PAT created for this agent; revoke it "
+                       "manually in Azure DevOps (User settings > Personal access tokens).")
+        return
+    try:
+        token = _devops_access_token(cli_ctx)
+        url = (f"https://vssps.dev.azure.com/{organization}/_apis/tokens/pats"
+               f"?authorizationId={quote(authorization_id, safe='')}&api-version=7.1-preview.1")
+        send_raw_request(cli_ctx, "DELETE", url, headers=[f"Authorization=Bearer {token}"])
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.warning("Could not revoke the Azure DevOps PAT created for this agent (%s); revoke "
+                       "it manually in Azure DevOps (User settings > Personal access tokens).", ex)
 
 
 def _detect_repo_provider(repo_url):
-    from urllib.parse import urlparse
-
     host = (urlparse(repo_url).hostname or "").lower()
     if host == "github.com":
         return "GitHub"
-    if host.endswith("dev.azure.com") or host.endswith("visualstudio.com"):
+    if any(host == d or host.endswith("." + d) for d in ("dev.azure.com", "visualstudio.com")):
         return "AzureDevOps"
     raise CLIError(
         f"Could not detect the repo provider from '{repo_url}'. Pass "
         "--provider GitHub or --provider AzureDevOps explicitly."
     )
+
+
+# Characters ARM rejects in resource names; the repository name becomes one.
+_INVALID_REPO_NAME_CHARS = ("/", "\\", "?", "#", "%", "&", ":", "<", ">", "*")
+
+
+def _repo_name_from_url(repo_url):
+    name = urlparse(repo_url).path.rstrip("/").rsplit("/", 1)[-1]
+    if name.lower().endswith(".git"):
+        name = name[:-4]
+    return name
+
+
+def _devops_organization_from_url(repo_url):
+    parsed = urlparse(repo_url)
+    host = (parsed.hostname or "").lower()
+    if host.endswith(".visualstudio.com"):
+        return host.split(".", 1)[0]
+    return parsed.path.strip("/").split("/", 1)[0]
 
 
 @register_command("sre repo connect")
@@ -6382,7 +7002,7 @@ class RepoConnect(AAZCommand):
         )
         schema.display_name = AAZStrArg(
             options=["--display-name", "--name", "-n"],
-            help="Display name for the repo. Defaults to the last path segment of --repo-url.",
+            help="Display name for the repo. Defaults to the repo name from --repo-url (without .git).",
         )
         schema.branch = AAZStrArg(
             options=["--branch"],
@@ -6390,7 +7010,9 @@ class RepoConnect(AAZCommand):
         )
         schema.github_token = AAZStrArg(
             options=["--github-token"],
-            help="GitHub token. Defaults to GITHUB_TOKEN or GH_TOKEN, then to browser sign-in with a one-time code.",
+            help="GitHub token. Defaults to GITHUB_TOKEN or GH_TOKEN, then to browser sign-in "
+                 "with a one-time code. A fine-grained, repo-scoped token is recommended; "
+                 "it is stored on the agent.",
         )
         schema.devops_organization = AAZStrArg(
             options=["--devops-organization"],
@@ -6407,11 +7029,11 @@ class RepoConnect(AAZCommand):
             help="Managed identity resource ID. Required with --devops-auth-type managed-identity.",
         )
         schema.devops_federated_client_id = AAZStrArg(
-            options=["--devops-federated-client-id"],
+            options=["--devops-federated-client-id", "--devops-fed-client-id"],
             help="Federated client ID, for an identity in a different tenant. Use with --devops-federated-tenant-id.",
         )
         schema.devops_federated_tenant_id = AAZStrArg(
-            options=["--devops-federated-tenant-id"],
+            options=["--devops-federated-tenant-id", "--devops-fed-tenant-id"],
             help="Federated tenant ID. Use with --devops-federated-client-id.",
         )
         cls._args_schema = schema
@@ -6423,7 +7045,7 @@ class RepoConnect(AAZCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         repo_url = _arg_value(self.ctx.args.repo_url)
         provider = _arg_value(self.ctx.args.provider) or _detect_repo_provider(repo_url)
-        display_name = _arg_value(self.ctx.args.display_name) or repo_url.rstrip("/").rsplit("/", 1)[-1]
+        display_name = _arg_value(self.ctx.args.display_name) or _repo_name_from_url(repo_url)
         branch = _arg_value(self.ctx.args.branch)
         github_token = _arg_value(self.ctx.args.github_token)
         devops_organization = _arg_value(self.ctx.args.devops_organization)
@@ -6431,6 +7053,20 @@ class RepoConnect(AAZCommand):
         devops_identity = _arg_value(self.ctx.args.devops_identity)
         devops_federated_client_id = _arg_value(self.ctx.args.devops_federated_client_id)
         devops_federated_tenant_id = _arg_value(self.ctx.args.devops_federated_tenant_id)
+        pat_authorization_id = None
+
+        # Validate the repository before touching auth: the auth write below
+        # replaces any existing credentials for the host/org.
+        if not display_name or any(ch in display_name for ch in _INVALID_REPO_NAME_CHARS):
+            raise InvalidArgumentValueError(
+                f"'{display_name}' is not a valid repository name. Pass --display-name with a name "
+                "that is not empty and has none of these characters: " + " ".join(_INVALID_REPO_NAME_CHARS)
+            )
+        repo_type = provider
+        repo_body = {"url": repo_url, "type": repo_type, "description": display_name}
+        if branch:
+            repo_body["branch"] = branch
+        repo_value = _normalize_extension_value(json.dumps(repo_body), "repositories")
 
         if provider == "GitHub":
             if github_token:
@@ -6445,11 +7081,8 @@ class RepoConnect(AAZCommand):
                 self.cli_ctx, agent_name, resource_group, "githubAuths", "github_com",
                 auth_value, overwrite=True,
             )
-            repo_type = "GitHub"
         else:
-            from urllib.parse import urlparse
-
-            organization = devops_organization or urlparse(repo_url).path.strip("/").split("/", 1)[0]
+            organization = devops_organization or _devops_organization_from_url(repo_url)
             if not organization:
                 raise CLIError(
                     "Could not detect the Azure DevOps organization from --repo-url. "
@@ -6475,7 +7108,8 @@ class RepoConnect(AAZCommand):
             else:
                 try:
                     with _no_http_trace():
-                        pat = _devops_pat_token(self.cli_ctx, organization, f"sre-agent-{agent_name}")
+                        pat, pat_authorization_id = _devops_pat_token(
+                            self.cli_ctx, organization, f"sre-agent-{agent_name}")
                 except Exception as ex:
                     if "DisablePatCreationPolicyViolation" in str(ex):
                         raise CLIError(
@@ -6489,17 +7123,28 @@ class RepoConnect(AAZCommand):
                     auth_value = json.dumps({"authType": "Pat", "pat": pat})
                 finally:
                     pat = None
-            auth_result = _extension_resource_create(
-                self.cli_ctx, agent_name, resource_group, "azureDevOpsAuths", organization,
-                auth_value, overwrite=True,
-            )
-            repo_type = "AzureDevOps"
+            try:
+                auth_result = _extension_resource_create(
+                    self.cli_ctx, agent_name, resource_group, "azureDevOpsAuths", organization,
+                    auth_value, overwrite=True,
+                )
+            except Exception:
+                if devops_auth_type != "managed-identity":
+                    _revoke_devops_pat(self.cli_ctx, organization, pat_authorization_id)
+                raise
 
-        repo_body = {"url": repo_url, "type": repo_type, "description": display_name}
-        if branch:
-            repo_body["branch"] = branch
-        repo_result = _extension_resource_create(
-            self.cli_ctx, agent_name, resource_group, "repositories", display_name,
-            json.dumps(repo_body), overwrite=True,
-        )
+        try:
+            repo_result = _extension_resource_create(
+                self.cli_ctx, agent_name, resource_group, "repositories", display_name,
+                repo_value, overwrite=True,
+            )
+        except Exception:
+            # The auth write above already replaced the old credentials, so
+            # the agent can't fall back to them.
+            auth_name = "github_com" if provider == "GitHub" else organization
+            logger.warning(
+                "Saved new %s credentials ('%s') on agent '%s', but connecting repository '%s' failed. "
+                "Re-run 'az sre repo connect' to finish.", repo_type, auth_name, agent_name, display_name,
+            )
+            raise
         return {"auth": _redact_auth_result(auth_result), "repository": repo_result}

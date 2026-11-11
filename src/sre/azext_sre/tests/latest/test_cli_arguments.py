@@ -144,14 +144,38 @@ class CliArgumentEnforcementTests(unittest.TestCase):
 
         arguments = ["sre", "response-plan", "list", "--agent-url"]
         with patch("azext_sre.custom.send_raw_request", fake_send_raw_request):
-            # requests and azure-cli end the host at the backslash: attacker.example.
+            # requests and urllib3 end the host at the backslash: attacker.example.
             self._assert_rejected(
                 arguments + ["https://attacker.example\\@a.x.eastus2.azuresre.ai/api"], "--agent-url")
             self.assertEqual(sent, [], "--agent-url was rejected, but a token-bearing request was still sent.")
-            code, errors = self._run(arguments + ["https://a.x.eastus2.azuresre.ai\\ignored"])
+            code, errors = self._run(arguments + ["https://a.x.eastus2.azuresre.ai/ignored"])
         self.assertEqual(code, 0, errors)
         self.assertEqual(len(sent), 1)
         self.assertTrue(sent[0][1].startswith("https://a.x.eastus2.azuresre.ai/api/"), sent)
+
+    def test_knowledge_overwrite_is_accepted_by_connector_create(self):
+        from azure.cli.core.aaz import AAZCommand
+        from azext_sre.custom import ConnectorCreate
+
+        command, options = self._accepted_call([
+            "sre", "knowledge", "create", "--agent-name", "myagent", "--resource-group", "myrg",
+            "--name", "docs", "--url", "https://learn.microsoft.com/azure/", "--type", "webpage",
+            "--overwrite",
+        ])
+        self.assertEqual(command, ("sre", "connector", "create"))
+        nested = list(self.nested_calls[-1])
+        self.assertIn("--overwrite", nested)
+
+        seen = {}
+
+        def fake_handler(cmd, command_args):
+            AAZCommand._handler(cmd, command_args)
+            seen["overwrite"] = cmd.ctx.args.overwrite.to_serialized_data()
+
+        with patch.object(ConnectorCreate, "_handler", fake_handler):
+            code, errors = self._run(nested)
+        self.assertEqual(code, 0, errors)
+        self.assertTrue(seen["overwrite"])
 
 
 if __name__ == "__main__":

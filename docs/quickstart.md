@@ -5,7 +5,7 @@ and a data source, share it, let it monitor your Azure resources, add a custom s
 route incidents to it. The first steps repeat the [README quick start](../README.md#quick-start),
 so you can follow this page on its own.
 
-You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.90.0 or
+You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or
 later with the `sre` extension installed, and a subscription where you can create
 resources. The examples use bash. In PowerShell, set variables as `$RG = "my-rg"` and end
 continued lines with a backtick (`` ` ``). Flags that take JSON need extra care on Windows;
@@ -101,10 +101,10 @@ az sre managed-resource grant \
   --resource-group "$RG" \
   --agent-name "$AGENT" \
   --target-subscription "$SUBSCRIPTION_ID" \
-  --target-resource-group "<resource-group-to-monitor>"
+  --target-rg "<resource-group-to-monitor>"
 ```
 
-To cover a whole subscription, omit `--target-resource-group`. Check the result with
+To cover a whole subscription, omit `--target-rg`. Check the result with
 `az sre managed-resource list` and undo it with `az sre managed-resource revoke`.
 
 These commands default to the agent's system-assigned identity. If the runtime
@@ -144,8 +144,39 @@ az sre skill create \
 
 ## Route incidents to the agent
 
-Send high-severity Azure Monitor incidents to a subagent. Start in review mode, so the
-agent proposes actions and you approve each one. The subagent must already exist.
+Send high-severity Azure Monitor incidents to a subagent. First connect Azure Monitor as
+the agent's incident platform:
+
+```bash
+az sre agent update \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --name "$AGENT" \
+  --incident-management-configuration '{type:AzMonitor,connection-name:azmonitor}'
+```
+
+Then create the subagent that handles the incidents. Save its configuration as
+`subagent.json`. `instructions` must be at least 50 characters, and `handoffDescription`
+tells the main agent when to hand work over:
+
+```json
+{
+  "instructions": "You triage Azure Monitor alerts for the web API and summarize the evidence you find.",
+  "handoffDescription": "Use for triaging Azure Monitor alerts on the web API."
+}
+```
+
+```bash
+az sre subagent create \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RG" \
+  --agent-name "$AGENT" \
+  --name triage \
+  --value @subagent.json
+```
+
+Now create the response plan. Start in review mode, so the agent proposes actions and you
+approve each one:
 
 ```bash
 az sre response-plan create \
@@ -154,7 +185,7 @@ az sre response-plan create \
   --agent-name "$AGENT" \
   --name sev1-api \
   --platform AzMonitor \
-  --subagent "<subagent-name>" \
+  --subagent triage \
   --priority Sev0 Sev1 \
   --mode review
 ```

@@ -162,6 +162,18 @@ class ManagedResourceIdentityCliTests(unittest.TestCase):
         self.assertEqual(output.strip(), "")
         self.assertEqual(self.assignments, [])
 
+    def test_roles_override_the_default_pair(self):
+        self._add_assignment(self.SYSTEM_PRINCIPAL, "Monitoring Contributor", self.SCOPE)
+        preserved = copy.deepcopy(self.assignments)
+        roles = ["Reader", "Monitoring Reader", "Contributor"]
+        output, _ = self._invoke("grant", "--scope", self.SCOPE, "--roles", *roles)
+        self.assertEqual(
+            {(item["principalId"], item["roleDefinitionName"], item["scope"]) for item in json.loads(output)},
+            {(self.SYSTEM_PRINCIPAL, role, self.SCOPE) for role in roles},
+        )
+        self._invoke("revoke", "--scope", self.SCOPE, "--roles", *roles)
+        self.assertEqual(self.assignments, preserved)
+
     def test_uami_grant_list_revoke_preserves_unrelated_assignments(self):
         for principal, role, scope in (
             (self.SYSTEM_PRINCIPAL, "Reader", self.SCOPE),
@@ -292,7 +304,7 @@ class ManagedResourceIdentityCliTests(unittest.TestCase):
     def test_existing_scope_forms_work_with_selected_uami(self):
         for arguments, expected_scope in (
             (["--target-subscription", "target-sub"], f"/subscriptions/{self.SUBSCRIPTION}"),
-            (["--target-subscription", "target-sub", "--target-resource-group", "monitored-rg"], self.SCOPE),
+            (["--target-subscription", "target-sub", "--target-rg", "monitored-rg"], self.SCOPE),
             (["--management-group", "my-mg"], "/providers/Microsoft.Management/managementGroups/my-mg"),
             (["--scope", self.SCOPE + "/providers/Microsoft.Storage/storageAccounts/store"],
              self.SCOPE + "/providers/Microsoft.Storage/storageAccounts/store"),
@@ -315,7 +327,7 @@ class ManagedResourceIdentityCliTests(unittest.TestCase):
         for arguments in (
             [],
             ["--scope", self.SCOPE, "--target-subscription", "target-sub"],
-            ["--target-resource-group", "monitored-rg"],
+            ["--target-rg", "monitored-rg"],
             ["--management-group", "my-mg", "--target-subscription", "target-sub"],
         ):
             for action in ("grant", "revoke"):

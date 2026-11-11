@@ -18,7 +18,7 @@ response plans under `az sre`.
 
 Create an agent, connect a repository and an Azure Data Explorer data source, then clean
 up. You need
-[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.90.0 or later with
+[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or later with
 the `sre` extension installed, and a subscription where you can create resources.
 
 Sign in, then set the subscription and a unique test context. The examples use bash; in
@@ -124,7 +124,7 @@ az group delete \
 | `subagent` | `create, show, list, delete` | Manage named subagents the main agent hands work to (portal: Agent Canvas). |
 | `tool` | `create, show, list, delete` | Manage custom tools the agent can invoke. |
 | `usage` | `list` | View agent usage and billing statistics. |
-| `automation` | **scheduled-task:** `create, show, list, delete`<br>**http-trigger:** `create, show, list, delete` | Manage scheduled runs and inbound webhook triggers. |
+| `automation` | **scheduled-task:** `create, show, list, delete, pause, resume`<br>**http-trigger:** `create, show, list, delete, invoke` | Manage scheduled runs and inbound webhook triggers. |
 
 Run `az sre <group> --help` for any group.
 

@@ -32,7 +32,7 @@ def _short_timestamp(value):
     """
     if not value:
         return value
-    return value.split(".", 1)[0].split("+", 1)[0] + "Z"
+    return value.split(".", 1)[0].split("+", 1)[0].rstrip("Z") + "Z"
 
 
 def access_list_table_format(result):
