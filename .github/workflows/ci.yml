@@ -77,6 +77,9 @@ jobs:
       - name: azdev style + linter
         run: |
           set -euo pipefail
+          # azdev refuses to run outside a virtualenv (it reads VIRTUAL_ENV).
+          python -m venv "$RUNNER_TEMP/azdev-venv"
+          source "$RUNNER_TEMP/azdev-venv/bin/activate"
           python -m pip install --upgrade pip
           python -m pip install azdev wheel build flake8 pylint
 
@@ -107,9 +110,10 @@ jobs:
           fi
 
   wheel-smoke:
-    # Installs the exact wheel built above into a clean Azure CLI on every OS,
-    # at the minimum supported CLI (azext_metadata.json minCliCoreVersion) and
-    # the version the generated code is pinned to.
+    # Installs the exact wheel built above into a clean Azure CLI. Linux covers
+    # both the minimum supported CLI (azext_metadata.json minCliCoreVersion)
+    # and the pinned version; Windows and macOS cover OS-specific install and
+    # loading on the pinned version.
     name: wheel-smoke (${{ matrix.os }}, az ${{ matrix.azure-cli }})
     needs: build-and-test
     runs-on: ${{ matrix.os }}
@@ -117,8 +121,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        azure-cli: ["2.75.0", "2.81.0"]
+        include:
+          - { os: ubuntu-latest, azure-cli: "2.75.0" }
+          - { os: ubuntu-latest, azure-cli: "2.81.0" }
+          - { os: windows-latest, azure-cli: "2.81.0" }
+          - { os: macos-latest, azure-cli: "2.81.0" }
 
     steps:
       - name: Check out repository

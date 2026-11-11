@@ -8,8 +8,9 @@
   `azdev linter` at medium severity, using the AI Gateway lint config
   vendored in `.github/lint-config/`. Fails if the linter cannot load the
   extension (which would otherwise "pass" with zero commands checked).
-- **wheel-smoke** (Windows/macOS/Linux × Azure CLI 2.75.0 minimum and 2.81.0
-  pinned): `verify_installed_wheel.py` installs the exact built wheel into a
+- **wheel-smoke** (Linux on Azure CLI 2.75.0 minimum and 2.81.0 pinned;
+  Windows and macOS on 2.81.0): `verify_installed_wheel.py` installs the
+  exact built wheel into a
   clean CLI and checks versions, `--help` for every documented command, that
   the installed inventory matches `docs/cli-reference.md`, and that unknown
   arguments are rejected. Run it locally with
