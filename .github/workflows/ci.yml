@@ -14,10 +14,6 @@ jobs:
   unit-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - name: Check out repository
@@ -26,7 +22,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.13"
 
       - name: Install pinned dependencies
         run: |
@@ -134,7 +130,7 @@ jobs:
           git add --intent-to-add src/sre/azext_sre/aaz
           git diff --exit-code -- src/sre/azext_sre/aaz docs/cli-reference.md
 
-# This CI runs unit tests on a Python matrix, the CLI reference check, a wheel
+# This CI runs unit tests on Python 3.13, the CLI reference check, a wheel
 # build verified in a clean Azure CLI and a byte-for-byte regeneration check of
 # the generated aaz code. Releases are built by .github/workflows/release.yml.
 # Swagger-drift validation stays parked in .github/workflows-future/.

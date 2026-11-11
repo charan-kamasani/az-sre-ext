@@ -94,7 +94,7 @@ for the full list of what's already hand-maintained and why).
 
 ## Artifact and release policy
 
-- CI (`.github/workflows/ci.yml`) runs the unit tests on Python 3.10-3.13
+- CI (`.github/workflows/ci.yml`) runs the unit tests on Python 3.13
   with a pinned Azure CLI, checks the CLI reference, builds a wheel, installs
   it into a clean pinned Azure CLI and into the minimum supported Azure CLI
   (`azext.minCliCoreVersion`) and loads every documented command, then uploads
