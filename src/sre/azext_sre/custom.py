@@ -301,7 +301,16 @@ def _data_plane_request(cli_ctx, agent_name, resource_group, method, path, body=
         raise
     if not response.content:
         return {}
+    content_type = (getattr(response, "headers", None) or {}).get("Content-Type")
+    if isinstance(content_type, str) and "html" in content_type.lower():
+        # Agents without this API route answer with their web app's HTML page and a 200.
+        raise DataPlaneRouteUnavailableError(
+            f"The agent doesn't support '{method} {path}' (it returned a web page, not data).")
     return response.json()
+
+
+class DataPlaneRouteUnavailableError(CLIError):
+    """The agent endpoint does not serve the requested API route."""
 
 
 # Nested commands that take --subscription. 'ad signed-in-user show' does not.
@@ -5564,7 +5573,13 @@ def _response_plan_target_schema(schema, with_name=True):
 
 
 def _response_plan_handlers_for(cli_ctx, agent_name, resource_group, plan_name, agent_url=None):
-    handlers = _incident_handlers_list(cli_ctx, agent_name, resource_group, agent_url=agent_url)
+    try:
+        handlers = _incident_handlers_list(cli_ctx, agent_name, resource_group, agent_url=agent_url)
+    except DataPlaneRouteUnavailableError:
+        logger.warning(
+            "This agent doesn't expose response-plan instructions, so they were skipped for '%s'.",
+            plan_name)
+        return []
     return [handler for handler in handlers if handler.get("incidentFilterId") == plan_name]
 
 
@@ -5572,7 +5587,9 @@ def _add_response_plan_criteria_args(schema):
     """Match criteria and handler options shared by response-plan create/update."""
     schema.priorities = AAZListArg(
         options=["--priority"],
-        help="Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2). Default: all.",
+        help="Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2"
+        + ("; IcM severities are plain numbers such as 3 4" if _show_internal_features() else "")
+        + "). Default: all.",
     )
     schema.priorities.Element = AAZStrArg()
     schema.title_contains = AAZStrArg(
@@ -5585,7 +5602,8 @@ def _add_response_plan_criteria_args(schema):
     schema.title_not_contains.Element = AAZStrArg()
     schema.incident_types = AAZListArg(
         options=["--incident-type"],
-        help="Space-separated incident types to match (for example LiveSite). Portal: Incident type.",
+        help="Space-separated incident types to match (for example LiveSite)"
+        + (". Required with --platform Icm" if _show_internal_features() else "") + ". Portal: Incident type.",
     )
     schema.incident_types.Element = AAZStrArg()
     schema.impacted_service = AAZStrArg(
@@ -5640,6 +5658,9 @@ def _response_plan_criteria(args):
         values = _arg_value(arg)
         if values:
             flt[key] = list(values)
+    if flt.get("incidentTypes"):
+        # The portal reads the legacy single field and treats the plan as invalid without it.
+        flt["incidentType"] = flt["incidentTypes"][0]
     for key, arg in (("titleContains", args.title_contains), ("impactedService", args.impacted_service),
                      ("alertId", getattr(args, "alert_id", None))):
         value = _arg_value(arg)
@@ -5764,6 +5785,9 @@ class ResponsePlanCreate(AAZCommand):
         if mode not in RESPONSE_PLAN_MODES:
             raise CLIError(f"--mode must be one of: {', '.join(RESPONSE_PLAN_MODES)}.")
         if platform == "Icm":
+            if not _arg_value(args.incident_types):
+                raise CLIError(
+                    "--incident-type is required with --platform Icm (for example --incident-type LiveSite).")
             _require_first_party(self.cli_ctx, agent_name, resource_group, "--platform Icm")
         flt = {
             "incidentPlatform": platform,
@@ -6073,8 +6097,17 @@ class ResponsePlanDelete(AAZCommand):
             _data_plane_request(
                 self.cli_ctx, agent_name, resource_group, "DELETE",
                 _incident_handler_path(handler_id), missing_ok=True)
-        if has_filter:
+        if not has_filter:
+            return
+        try:
             _extension_resource_delete(
+                self.cli_ctx, agent_name, resource_group, "incidentFilters", name)
+        except Exception as ex:  # pylint: disable=broad-except
+            if getattr(getattr(ex, "response", None), "status_code", None) != 403:
+                raise
+            # SRE Agent Administrator has the agent's data-plane delete but not the ARM delete action.
+            logger.info("ARM refused the delete; using the agent's own API for '%s'.", name)
+            _direct_extension_delete(
                 self.cli_ctx, agent_name, resource_group, "incidentFilters", name)
 
 
