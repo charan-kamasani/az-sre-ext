@@ -5716,7 +5716,7 @@ def _response_plan_target_schema(schema, with_name=True):
 
 
 def _response_plan_handlers_for(cli_ctx, agent_name, resource_group, plan_name, agent_url=None):
-    """The instructions (incident handlers) linked to a plan, for show and delete.
+    """The instructions (incident handlers) linked to a plan, for commands that don't write them.
 
     On an agent without the handler API these carry on without instructions. Commands that
     write instructions use _response_plan_handlers_to_write, which fails before any write.
@@ -5729,6 +5729,22 @@ def _response_plan_handlers_for(cli_ctx, agent_name, resource_group, plan_name, 
             plan_name)
         return []
     return [handler for handler in handlers if handler.get("incidentFilterId") == plan_name]
+
+
+def _warn_if_plan_has_instructions(cli_ctx, agent_name, resource_group, name):
+    """Warn when a plan created without instructions uses ones already linked to its name, such
+    as instructions a partly failed delete left behind. Advisory, so it never fails the create."""
+    try:
+        linked = _response_plan_handlers_for(cli_ctx, agent_name, resource_group, name)
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.debug("Could not check response plan '%s' for existing instructions: %s", name, ex)
+        return
+    if linked:
+        logger.warning(
+            "Response plan '%s' uses instructions that already existed for that name, for example "
+            "ones left over from a deleted plan. To replace them, run this command again with "
+            "--instructions and --overwrite. To remove them, delete the plan with "
+            "'az sre response-plan delete' and create it again.", name)
 
 
 def _response_plan_handlers_to_write(cli_ctx, agent_name, resource_group, name, handler_fields,
@@ -6071,6 +6087,8 @@ class ResponsePlanCreate(AAZCommand):
                 raise CLIError(
                     f"Response plan '{name}' was created, but its instructions were not saved: {ex}"
                 ) from ex
+        if not handler_fields:
+            _warn_if_plan_has_instructions(self.cli_ctx, agent_name, resource_group, name)
         try:
             existing = _incident_unwrap_list("filter", _extension_resource_list(
                 self.cli_ctx, agent_name, resource_group, "incidentFilters"))

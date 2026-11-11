@@ -1883,6 +1883,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
         command = _bare_command(ResponsePlanCreate, **base, max_investigation_attempts=2)
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._incident_resource_create", return_value={}) as create, \
+             patch("azext_sre.custom._data_plane_request", return_value=[]), \
              patch("azext_sre.custom._extension_resource_list", return_value={"value": []}):
             command._handler(None)
         flt = create.call_args.args[5]

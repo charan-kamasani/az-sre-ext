@@ -1202,7 +1202,9 @@ the instructions. Write it with `=`: PowerShell drops a separate `""` argument.
 
 `response-plan delete` deletes the filter first and the linked handlers after
 it, so a failure part-way never leaves an active plan without its
-instructions; running the delete again removes leftover handlers. When ARM
+instructions; running the delete again removes leftover handlers. Until then,
+a `create` with the same name and no `--instructions` or `--processing-guide`
+warns that the new plan uses the leftover handlers. When ARM
 refuses the filter delete with `AuthorizationFailed` (SRE Agent Administrator
 has the agent's delete permission but not the ARM delete action), the CLI
 warns and deletes the filter through the agent's own API. Any other ARM

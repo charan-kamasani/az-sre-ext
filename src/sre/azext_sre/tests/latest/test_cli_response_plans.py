@@ -61,6 +61,7 @@ class _FakeAzure:
         self.incident_platform = "AzMonitor"
         self.requests = []
         self.failures = []
+        self.unexpected = []
 
     def fail(self, method, api, kind, status, body=None, name=None, content_type="application/json"):
         """Answer matching requests (name None matches any) with this response from now on."""
@@ -89,6 +90,7 @@ class _FakeAzure:
         else:
             match = None
         if match is None:
+            self.unexpected.append(f"{request.method} {request.url}")
             raise AssertionError(f"Unexpected request: {request.method} {request.url}")
         kind, name = match["kind"], unquote(match["name"]) if match["name"] else None
         failure = next((f for f in self.failures if f[:3] == (request.method, api, kind)
@@ -188,9 +190,14 @@ class _ResponsePlanCliTests:
             "socket.socket.connect", side_effect=AssertionError("Response-plan CLI tests must not use the network.")))
         stack.enter_context(patch("azext_sre.custom._cli_invoke", self._nested_command))
 
+    def tearDown(self):
+        # Advisory checks swallow errors, so an unmodeled request could otherwise go unnoticed.
+        self.assertEqual(self.azure.unexpected, [], "A command made a request the fake doesn't model.")
+
     def _nested_command(self, cli_ctx, *args, **kwargs):
         del cli_ctx, kwargs
         if args[:3] != ("sre", "agent", "show"):
+            self.azure.unexpected.append(f"az {' '.join(args)}")
             raise AssertionError(f"Unexpected nested command: {args}")
         platform = self.azure.incident_platform
         return {"id": AGENT_ID, "name": "myagent", "properties": {
@@ -244,6 +251,34 @@ class _ResponsePlanCliTests:
         self.assertIn("Something went wrong.", errors)
         self.assertEqual(self.azure.handlers.get("p", {}).get("customInstructions"), "Check logs")
         self.assertIn("p", self.azure.filters)
+
+    def test_create_without_instructions_warns_when_the_name_already_has_some(self):
+        # 'x' was left behind by a delete that removed the plan but not its instructions.
+        self.azure.handlers.update({
+            "x": {"id": "x", "incidentFilterId": "x", "customInstructions": "Left over"},
+            "a": {"id": "a", "incidentFilterId": "a", "customInstructions": "Plan a's own"}})
+        warning = "uses instructions that already existed for that name"
+        for name, warned in (("x", True), ("y", False)):
+            with self.subTest(name=name):
+                code, _, errors = self._az("create", "-n", name, "--platform", "AzMonitor", "--subagent", "responder")
+                self.assertEqual(code, 0, errors)
+                self.assertIn(name, self.azure.filters)
+                self.assertEqual(warning in errors, warned, errors)
+
+    def test_create_without_instructions_succeeds_when_instructions_cant_be_read(self):
+        with self.subTest("agent without the handler API: warn and skip"):
+            self.azure.fail("GET", "agent", "incidentHandlers", 200, "<!doctype html><html></html>",
+                            content_type="text/html; charset=utf-8")
+            code, _, errors = self._az("create", "-n", "p", "--platform", "AzMonitor", "--subagent", "responder")
+            self.assertEqual(code, 0, errors)
+            self.assertIn("doesn't expose response-plan instructions", errors)
+            self.assertIn("p", self.azure.filters)
+        with self.subTest("no role on the agent's own API"):
+            self.azure.failures.clear()
+            self.azure.fail("GET", "agent", "incidentHandlers", 403, {"error": "Forbidden: Access denied by PDP"})
+            code, _, errors = self._az("create", "-n", "q", "--platform", "AzMonitor", "--subagent", "responder")
+            self.assertEqual(code, 0, errors)
+            self.assertIn("q", self.azure.filters)
 
     def test_create_refuses_another_plans_instructions_id(self):
         other = {"id": "b", "customInstructions": "Instructions of plan a"}
