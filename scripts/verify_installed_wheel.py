@@ -5,7 +5,7 @@ Installs the exact wheel with ``az extension add --source`` into throwaway
 config/extension directories (so nothing from the developer machine leaks in),
 then checks that:
 
-* the wheel filename, ``az extension show`` and ``az sre version`` agree on
+* the wheel filename, ``az extension show``, ``az version`` and ``az sre version`` agree on
   the version (and match ``--expected-version`` when given);
 * every command and group documented in ``docs/cli-reference.md`` answers
   ``--help`` without error;
@@ -125,13 +125,20 @@ def main() -> int:
         if ext_version != wheel_version:
             fail(f"az extension show reports {ext_version!r}, wheel is {wheel_version!r}")
 
+        # Azure CLI reads extension versions through pkginfo; wheel metadata it
+        # cannot parse makes `az version` report the extension as "Unknown".
+        listed = run_az(az, ["version", "-o", "json"], env)
+        listed_version = json.loads(listed.stdout).get("extensions", {}).get("sre") if listed.returncode == 0 else None
+        if listed_version != wheel_version:
+            fail(f"az version reports sre {listed_version!r}, wheel is {wheel_version!r}")
+
         reported = run_az(az, ["sre", "version", "-o", "json"], env)
         if reported.returncode != 0:
             fail(f"az sre version failed:\n{reported.stderr}")
         sre_version = json.loads(reported.stdout).get("extensionVersion")
         if sre_version != wheel_version:
             fail(f"az sre version reports {sre_version!r}, wheel is {wheel_version!r}")
-        print(f"Version {wheel_version} confirmed by filename, extension show and az sre version")
+        print(f"Version {wheel_version} confirmed by filename, extension show, az version and az sre version")
 
         surfaces = documented_surfaces()
         command_count = sum(1 for is_group in surfaces.values() if not is_group)
