@@ -137,7 +137,7 @@ after, cleanup result.
 | Operating systems | Windows, macOS, Linux |
 | Tenants | Corp, BAMI (non-Microsoft); AME and PME per the table below |
 | Agent channels | Stable; Preview where the command supports it |
-| Identities | One test identity with Administrator on the test agent; one identity with no role on the test agent |
+| Identities | Administrator on the test agent; no role on the test agent; Reader-only; guest (B2B) user; service principal or managed identity (non-interactive) |
 | Azure CLI | Minimum supported version and latest |
 
 ### Test matrix
@@ -146,12 +146,20 @@ Run the E2E gates from the exact release wheel and record the result in each cel
 (✅ pass, ❌ fail with issue link, — not applicable). AME and PME need a SAW and
 production-tenant accounts.
 
-| Gate | Windows | Linux | macOS | Corp | BAMI | AME | PME |
-|---|---|---|---|---|---|---|---|
-| Package smoke | | | | n/a | n/a | n/a | n/a |
-| Core E2E | | | | | | | |
-| Security E2E | | | | | | | |
-| Feature-specific E2E | | | | | | | |
+| Gate | Windows | Linux | macOS | Corp | BAMI | AME | PME | Non-interactive (SP/MI) |
+|---|---|---|---|---|---|---|---|---|
+| Package smoke | | | | n/a | n/a | n/a | n/a | n/a |
+| Core E2E | | | | | | | | |
+| Security E2E | | | | | | | | |
+| Feature-specific E2E | | | | | | | | |
+
+Security E2E must also cover these identities, recording the result for each:
+
+| Identity | Expected result |
+|---|---|
+| Reader-only | Reads succeed; every create, update, delete, grant and revoke fails with a clear authorization error and no state change |
+| Guest (B2B) user | Supported commands work, or fail with a clear error; `--assignee` and sign-in lookups resolve the right principal |
+| Service principal or managed identity | Commands run without prompts or Graph user lookups; `--grant-access-to-me` fails clearly |
 
 | Tenant | Required for this release? |
 |---|---|
@@ -160,6 +168,10 @@ production-tenant accounts.
 | AME | Decision needed by sign-off owners |
 | PME | Decision needed by sign-off owners |
 | Sovereign clouds | No, unless SRE Agent is available there |
+
+| Other validation | Required for this release? |
+|---|---|
+| Internal customer testing (dogfood period with named users and a feedback channel, see #27) | Decision needed by sign-off owners |
 
 ## GO / NO-GO
 
