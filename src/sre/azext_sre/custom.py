@@ -2539,6 +2539,13 @@ def _identity_patch(current, system, user_assigned, remove, agent_name):
         identity_type = "SystemAssigned"
     else:
         identity_type = "UserAssigned" if kept else "None"
+    if remove and identity_type == "None":
+        # The service rejects this (ManagedIdentityRequired), but the rejected
+        # PATCH still deletes the system-assigned identity's service principal,
+        # leaving the agent pointing at a principal that no longer exists.
+        raise CLIError(
+            f"Agent '{agent_name}' needs at least one managed identity, and this would remove the last one. "
+            "Nothing was changed. Assign another identity first ('az sre identity assign'), then remove this one.")
     patch = {"type": identity_type}
     if kept:
         patch["userAssignedIdentities"] = {
