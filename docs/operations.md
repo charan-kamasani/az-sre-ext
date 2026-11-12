@@ -754,7 +754,7 @@ hatch: every extension type now has a dedicated front-door noun (`tool`,
 scheduled-task`/`http-trigger`, `response-plan`). The one remaining
 generic command group, `az sre managed-resource`, is unrelated RBAC
 plumbing, not an extension-type front door. Status as of the last
-live-verification pass (12 of 15 extension types confirmed live):
+live-verification pass (13 of 15 extension types confirmed live):
 
 | Extension type | Confirmed shape | Status |
 | --- | --- | --- |
@@ -764,12 +764,27 @@ live-verification pass (12 of 15 extension types confirmed live):
 | `tools` (`tool`), `skills` (`skill`), `hooks` (`hook`), `repositories` (`repo connect`) | Confirmed | Live-verified end to end (PUT + GET round-trip against a real agent) |
 | `incidentFilters` (`response-plan`), `incidentHandlers` (`response-plan`) | Filter: `{name,type:"IncidentFilter",properties:{...}}`; handler: flat JSON with `id` | Filter operations use ARM, including enable/disable; linked handler operations use the agent's v2 API because the deployed ARM handler proxy returns 404. Read back both halves when verifying a plan; configuration persistence alone does not prove real alert ingestion. |
 | `githubAuths`, `azureDevOpsAuths` (both wired up for you by `repo connect`) | Shape-confirmed from authoritative source | Live-create rejected by real credential/token validation on the service side, not a shape defect |
-| `subagents` | No model found | Believed server-managed / Agent-Canvas-only, not CLI-creatable |
+| `subagents` (`subagent`) | `{"instructions": "<at least 50 characters>", "handoffDescription": "<string>"}` plus optional `tools`/`mcpTools`/`commonTools`/`allowedSkills`/`allowParallelToolCalls`/`hooks` | Create, show, list and delete live-verified through ARM (2026-11-05). On tenants that ARM refuses, the CLI uses the agent's `/api/v2/extendedAgent/agents` route; create, show and list on that route have been used live, delete not yet |
 
 A universal constraint applies to every extension type: the decoded
 `--value` must be a JSON **object** at the root. A bare JSON array is
 always rejected with `"request body contains an invalid or unrecognized
 property"`.
+
+Every extension name goes into the request URL, so the CLI refuses a name
+that is empty, only dots, or contains `/`, `\` or control characters before
+it sends anything. On the agent's own API an empty name or `.` would address
+the whole collection.
+
+### Credentials in tool and plugin values
+
+A plugin marketplace's `credentials.pat`, an HttpClientTool's auth headers
+(such as `Authorization` or an API key) and a plugin install's
+`source.credentials.pat` are secrets. `show`, `list` and `create` for `tool`,
+`plugin marketplace` and `plugin install` print them as `******` and keep the
+service's replies out of `--debug` and the Azure CLI log file. Don't paste
+that output back as `--value`: `create` refuses a value that still has
+`******` in a credential field, so the mask can't replace the real secret.
 
 ### Non-Microsoft tenants
 
@@ -778,15 +793,17 @@ non-Microsoft tenants with "This feature is restricted to internal tenants
 only". When that happens, these commands retry on the agent's own API, the
 same one the Azure SRE portal uses:
 
-`tool`, `skill`, `hook`, `instructions`, `automation scheduled-task`,
+`tool`, `skill`, `hook`, `instructions`, `subagent`, `automation scheduled-task`,
 `automation http-trigger`, `plugin marketplace`, `plugin install`,
 `agent settings`, `response-plan`, `repo connect` and its GitHub / Azure DevOps
-credentials.
+credentials. On that API, sub-agents are `agents`
+(`/api/v2/extendedAgent/agents`).
 
 Changing anything through the agent's API needs the **SRE Agent Author** or
 **SRE Agent Administrator** role on the agent. `agent settings` can be shown and
-updated but not listed or deleted this way. Other types (for example
-`subagents`) still show a plain "not available for this tenant" message.
+updated but not listed or deleted this way. A request the agent's API has no
+route for fails with a message that ARM refused the tenant and points to the
+Azure SRE Agent portal.
 
 The CLI asks the agent once (`GET /api/v1/feature/status`) whether it is a
 Microsoft first-party agent, and remembers the answer for 24 hours in
@@ -1173,7 +1190,11 @@ Noun-specific commands include:
   `isEnabled` field on scheduled tasks.
 - `az sre automation http-trigger create/show/list/delete/invoke` -- run the
   agent from an inbound webhook call. `invoke` POSTs to the trigger's
-  `triggerUrl` with your Azure CLI token, which is handy for testing.
+  `triggerUrl` with your Azure CLI token, which is handy for testing. The
+  token goes only to the agent's own endpoint: a `triggerUrl` on another host
+  is refused, and a redirect fails the command instead of being followed. If
+  the trigger answers with something other than JSON, `invoke` prints the
+  status code and body instead of failing, because the trigger has already run.
 - `az sre response-plan create/show/list/delete/enable/disable` -- match
   incoming incidents (by platform/title/team/etc.) and route matches to
   a handling agent (portal: Incidents > "Triggers & response plans", a
@@ -1234,20 +1255,11 @@ replace existing resources unless `--overwrite` is supplied.
 Creating and reading configuration does not prove that a real alert has
 triggered an investigation; that requires a separate incident-flow test.
 
-**Intentionally not wrapped (yet):**
-- `subagents` -- **confirmed not buildable this way**: the portal's real
-  "Create a custom agent" dialog bypasses the ARM extensions proxy
-  entirely. Switching its UI to YAML view shows it PUTs a raw
-  `kubectl apply`-style YAML document (`kind: AgentConfiguration`,
-  snake_case fields like `system_prompt`/`agent_type`) directly to
-  `sreagent-runtime`'s `Agent.Web` `PUT api/v1/extendedAgent/apply` --
-  a data-plane-only endpoint this ARM-only CLI never reaches. A live
-  test confirmed `az sre extension create --extension-type subagents`
-  *does* reach the data plane (via the ARM-proxied `ExtendedAgentView`
-  v2 route), but is rejected -- consistent with that being the wrong,
-  unsupported schema for subagent creation. Use the portal or `srectl`
-  to create subagents instead; this is permanently out of scope for
-  `az sre automation`, not merely deferred.
+Sub-agents have their own group, `az sre subagent create/show/list/delete`.
+It sends the JSON shape that `--value` describes, through ARM or, on tenants
+that ARM refuses, the agent's `/api/v2/extendedAgent/agents` route. The
+portal's "Create a custom agent" dialog uses a YAML document and
+`PUT /api/v1/extendedAgent/apply` instead.
 
 **Confirmed out of scope entirely (not ARM resources):** the portal's
 Release triggers, S360 triggers, and Incident Retrospective Response

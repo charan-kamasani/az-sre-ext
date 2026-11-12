@@ -174,9 +174,10 @@ az sre repo connect --agent-name ... --repo-url <url>
   distinct concepts, not one generic bucket.
 
 **Cons:**
-- More code: 12 of the 15 types each have their own dedicated
-  create/show/list/delete command set (`subagents`/`scheduledTasks` are
-  permanently out of CLI scope as a platform boundary; see PLAN.md).
+- More code: most of the 15 types each have their own dedicated
+  create/show/list/delete command set, including `subagents` and
+  `scheduledTasks` (an earlier draft left those two out of CLI scope; live
+  tests showed both work).
 - A brand-new extension type added by the service later needs new CLI code
   before it's usable (no auto-coverage via a generic noun). Accepted as the
   right tradeoff: discoverability for the ~15 types that exist today

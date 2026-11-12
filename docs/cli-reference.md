@@ -1080,7 +1080,7 @@ Important: this doesn't clear the portal's "Custom instructions" box (see 'az sr
 
 **Examples**
 
-- Delete an agent's custom instructions
+- Delete a reusable prompt snippet
 
   ```bash
   az sre instructions delete -g myrg --agent-name myagent --name default
@@ -1103,7 +1103,7 @@ Important: these aren't the portal's "Custom instructions" box (see 'az sre inst
 
 **Examples**
 
-- List an agent's custom instructions entries
+- List an agent's reusable prompt snippets
 
   ```bash
   az sre instructions list -g myrg --agent-name myagent
@@ -1127,7 +1127,7 @@ Important: this isn't the portal's "Custom instructions" box (see 'az sre instru
 
 **Examples**
 
-- Show an agent's current custom instructions
+- Show a reusable prompt snippet
 
   ```bash
   az sre instructions show -g myrg --agent-name myagent --name default
@@ -1775,8 +1775,8 @@ Create or update a custom skill.
 | `--name`, `-n`, `--extension-name` | String | No |  |  | Name of this instance. |
 | `--value` | String | No |  |  | Skill configuration as a JSON document. Alternative to --file-path (specify exactly one of the two). |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
-| `--file-path` | String | No |  |  | Path to a SKILL.md-style file: an optional frontmatter block between '---' lines with 'name:' and 'description:' lines, followed by the skill's Markdown instructions. The frontmatter name is used when --name is omitted. Alternative to --value. |
-| `--tools` | List | No |  |  | Space-separated tool names this skill can use when active. Only used with --file-path; defaults to none. |
+| `--file-path` | String | No |  |  | Path to a SKILL.md-style file: an optional YAML frontmatter block between '---' lines with name, description and tools, followed by the skill's Markdown instructions. The frontmatter name is used when --name is omitted. Alternative to --value. |
+| `--tools` | List | No |  |  | Space-separated tool names this skill can use when active. Only used with --file-path; overrides the SKILL.md frontmatter's 'tools'. Defaults to none. |
 | `--description` | String | No |  |  | Skill description. Only used with --file-path; overrides the SKILL.md frontmatter's 'description:' line if both are given. |
 
 **Examples**
@@ -2241,7 +2241,7 @@ Delete an HTTP trigger.
 
 Call an HTTP trigger now, the same way an external webhook would.
 
-Uses your Azure CLI sign-in for the call, so you need data-plane access to the agent.
+Uses your Azure CLI sign-in for the call, so you need data-plane access to the agent. The call goes only to the agent's own endpoint, and redirects aren't followed.
 
 **Syntax**
 
@@ -2498,8 +2498,7 @@ Install a plugin from a connected marketplace.
 
   ```bash
   az sre plugin install create -g myrg --agent-name myagent --name datadog \
-  --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", \
-  "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}'
+  --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}'
   ```
 
 ### `az sre plugin install delete`
