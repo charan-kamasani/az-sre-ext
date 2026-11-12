@@ -253,6 +253,7 @@ az sre response-plan show -g "$RG" --agent-name "$AGENT" --name sev1-checkout
 | Step | Label | How |
 | --- | --- | --- |
 | Change severities, mode or other settings | CLI | `az sre response-plan update`. A list flag such as `--priority` replaces the whole list. |
+| Remove a criterion or the instructions | CLI | `az sre response-plan update` with an empty value, such as `--title-contains=""`, `--priority=""` or `--instructions=""`. Keep the `=`: PowerShell drops a separate `""`. |
 | Turn a plan off and on | CLI | `az sre response-plan disable`, `az sre response-plan enable` |
 | Delete a plan | CLI | `az sre response-plan delete -g "$RG" --agent-name "$AGENT" --name sev1-checkout --yes` when you no longer need it. Check the exact name first with `az sre response-plan list`. |
 

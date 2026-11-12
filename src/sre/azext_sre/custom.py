@@ -4655,11 +4655,17 @@ def _validate_incident_filters_shape(parsed):
             isinstance(parsed["maxAutomatedInvestigationAttempts"], bool)
             or not isinstance(parsed["maxAutomatedInvestigationAttempts"], int)):
         raise CLIError("--value.maxAutomatedInvestigationAttempts must be an integer.")
-    for list_field in ("owningTeamIds", "handlingAgents"):
-        if list_field in parsed:
-            value = parsed[list_field]
-            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-                raise CLIError(f"--value.{list_field} must be a JSON array of strings.")
+    if "handlingAgents" in parsed:
+        value = parsed["handlingAgents"]
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise CLIError("--value.handlingAgents must be a JSON array of strings.")
+    if "owningTeamIds" in parsed:
+        # IcM team IDs are numbers, and the service may store them that way; response-plan
+        # update, enable and disable send stored values back unchanged.
+        value = parsed["owningTeamIds"]
+        if not isinstance(value, list) or not all(
+                isinstance(v, str) or (isinstance(v, int) and not isinstance(v, bool)) for v in value):
+            raise CLIError("--value.owningTeamIds must be a JSON array of strings or numbers.")
     _require_str(parsed, "alertId", "--value")
     if "azMonitorFilterSettings" in parsed:
         settings = parsed["azMonitorFilterSettings"]
@@ -6497,6 +6503,11 @@ def _response_plan_target_schema(schema, with_name=True):
 
 
 def _response_plan_handlers_for(cli_ctx, agent_name, resource_group, plan_name, agent_url=None):
+    """The instructions (incident handlers) linked to a plan, for commands that don't write them.
+
+    On an agent without the handler API these carry on without instructions. Commands that
+    write instructions use _response_plan_handlers_to_write, which fails before any write.
+    """
     try:
         handlers = _incident_handlers_list(cli_ctx, agent_name, resource_group, agent_url=agent_url)
     except DataPlaneRouteUnavailableError:
@@ -6505,6 +6516,83 @@ def _response_plan_handlers_for(cli_ctx, agent_name, resource_group, plan_name, 
             plan_name)
         return []
     return [handler for handler in handlers if handler.get("incidentFilterId") == plan_name]
+
+
+def _warn_if_plan_has_instructions(cli_ctx, agent_name, resource_group, name):
+    """Warn when a plan created without instructions uses ones already linked to its name, such
+    as instructions a partly failed delete left behind. Advisory, so it never fails the create."""
+    try:
+        linked = _response_plan_handlers_for(cli_ctx, agent_name, resource_group, name)
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.debug("Could not check response plan '%s' for existing instructions: %s", name, ex)
+        return
+    if linked:
+        logger.warning(
+            "Response plan '%s' uses instructions that already existed for that name, for example "
+            "ones left over from a deleted plan. To replace them, run this command again with "
+            "--instructions and --overwrite. To remove them, delete the plan with "
+            "'az sre response-plan delete' and create it again.", name)
+
+
+def _response_plan_handlers_to_write(cli_ctx, agent_name, resource_group, name, handler_fields,
+                                     overwrite, creating):
+    """The instructions (incident handlers) to save for a plan, worked out before anything is written.
+
+    The plan's linked handlers get the new fields and keep the rest, such as tools set in the
+    portal. A plan without instructions gets a new handler named after it. If a handler already
+    has that ID, overwrite takes it over when it isn't linked to any plan, for example one left
+    with an empty incidentFilterId. A handler linked to another plan is never taken over.
+    """
+    _validate_incident_handlers_shape(handler_fields)
+    try:
+        handlers = _incident_handlers_list(cli_ctx, agent_name, resource_group)
+    except DataPlaneRouteUnavailableError as ex:
+        raise CLIError(
+            f"Agent '{agent_name}' doesn't support response-plan instructions, so nothing was saved. "
+            "Run the command again without --instructions and --processing-guide."
+        ) from ex
+    linked = [handler for handler in handlers if handler.get("incidentFilterId") == name]
+    if linked:
+        if not overwrite:
+            raise ResourceExistsError(
+                f"Response plan '{name}' already has instructions on agent '{agent_name}'. "
+                "Pass --overwrite to replace them intentionally.")
+        return [{**_drop_nulls(handler), **handler_fields} for handler in linked]
+    if not any(handler_fields.values()):
+        return []  # there are no instructions to clear
+    taken = next((handler for handler in handlers if handler.get("id") == name), None)
+    if taken is not None:
+        owner = taken.get("incidentFilterId")
+        if owner:
+            raise CLIError(
+                f"Instructions with ID '{name}' already belong to response plan '{owner}'. Saving "
+                f"instructions for plan '{name}' would take them over, so nothing was saved."
+                + (" Choose another name for the new plan." if creating else ""))
+        if not overwrite:
+            raise ResourceExistsError(
+                f"Instructions with ID '{name}' already exist and aren't linked to a response plan, "
+                "so nothing was saved. Pass --overwrite to take them over, or choose another name "
+                "for the new plan.")
+        logger.warning(
+            "Instructions '%s', which weren't linked to a response plan, are being taken over "
+            "for plan '%s'.", name, name)
+        return [{**_drop_nulls(taken), **handler_fields, "incidentFilterId": name}]
+    return [{"id": name, "incidentFilterId": name, **handler_fields}]
+
+
+def _response_plan_save_handlers(cli_ctx, agent_name, resource_group, handlers, result):
+    """Write the handlers from _response_plan_handlers_to_write and add them to the command result."""
+    saved = []
+    for handler in handlers:
+        handler_id = handler.get("id") or handler["incidentFilterId"]
+        saved.append(_incident_resource_create(
+            cli_ctx, agent_name, resource_group, "incidentHandlers", handler_id, handler,
+            _incident_handler_path(handler_id), handler, True))
+    if len(saved) == 1:
+        result["handler"] = saved[0]
+    elif saved:
+        result["handlers"] = saved
+    return result
 
 
 def _add_response_plan_criteria_args(schema):
@@ -6573,29 +6661,45 @@ def _add_response_plan_criteria_args(schema):
     schema.processing_guide.Element = AAZStrArg()
 
 
-def _response_plan_criteria(args):
-    """Filter properties for every criteria flag the user actually passed."""
+RESPONSE_PLAN_LIST_CRITERIA = (
+    ("priorities", "priorities"), ("titleNotContains", "title_not_contains"),
+    ("incidentTypes", "incident_types"), ("owningTeamIds", "owning_teams"))
+RESPONSE_PLAN_TEXT_CRITERIA = (
+    ("titleContains", "title_contains"), ("impactedService", "impacted_service"), ("alertId", "alert_id"))
+RESPONSE_PLAN_AZ_MONITOR_CRITERIA = (
+    ("targetResourceType", "target_resource_type"), ("targetResource", "target_resource"))
+RESPONSE_PLAN_AZ_MONITOR_KEYS = {key for key, _ in RESPONSE_PLAN_AZ_MONITOR_CRITERIA}
+# Flags added after these commands first shipped; argument namespaces built for the
+# earlier flags (as in the handler-level tests) may not define them.
+_RESPONSE_PLAN_LATER_ARGS = {"alert_id", "target_resource_type", "target_resource"}
+ICM_INCIDENT_TYPE_REQUIRED = (
+    "--incident-type is required with --platform Icm (for example --incident-type LiveSite).")
+
+
+def _response_plan_criteria(args, cleared=None):
+    """Filter properties for every criteria flag the user passed with a value.
+
+    A flag passed with an empty value (--title-contains "" or --priority "") sets nothing;
+    its property name is added to `cleared` when the caller passes a set.
+    """
     flt = {}
-    for key, arg in (
-            ("priorities", args.priorities), ("titleNotContains", args.title_not_contains),
-            ("incidentTypes", args.incident_types), ("owningTeamIds", args.owning_teams)):
-        values = _arg_value(arg)
-        if values:
-            flt[key] = list(values)
+    az_monitor = {}
+    for key, attr in RESPONSE_PLAN_LIST_CRITERIA + RESPONSE_PLAN_TEXT_CRITERIA + RESPONSE_PLAN_AZ_MONITOR_CRITERIA:
+        arg = getattr(args, attr, None) if attr in _RESPONSE_PLAN_LATER_ARGS else getattr(args, attr)
+        value = _arg_value(arg)
+        if isinstance(value, list):
+            value = [item for item in value if item != ""]  # --priority "" parses as [""]
+        if value is None:
+            continue
+        if not value:
+            if cleared is not None:
+                cleared.add(key)
+            continue
+        target = az_monitor if key in RESPONSE_PLAN_AZ_MONITOR_KEYS else flt
+        target[key] = value
     if flt.get("incidentTypes"):
         # The portal reads the legacy single field and treats the plan as invalid without it.
         flt["incidentType"] = flt["incidentTypes"][0]
-    for key, arg in (("titleContains", args.title_contains), ("impactedService", args.impacted_service),
-                     ("alertId", getattr(args, "alert_id", None))):
-        value = _arg_value(arg)
-        if value:
-            flt[key] = value
-    az_monitor = {}
-    for key, arg in (("targetResourceType", getattr(args, "target_resource_type", None)),
-                     ("targetResource", getattr(args, "target_resource", None))):
-        value = _arg_value(arg)
-        if value:
-            az_monitor[key] = value
     if az_monitor:
         flt["azMonitorFilterSettings"] = az_monitor
     merge_enabled = _arg_value(args.merge_enabled)
@@ -6614,25 +6718,62 @@ def _response_plan_criteria(args):
     return flt
 
 
-def _response_plan_handler_fields(args):
+def _response_plan_handler_fields(args, keep_empty=False):
+    """Instruction fields the user passed. Update keeps empty values (keep_empty) to clear them."""
     handler = {}
     instructions = _arg_value(args.instructions)
     guide = _arg_value(args.processing_guide)
-    if instructions:
+    if isinstance(guide, list):
+        guide = [step for step in guide if step != ""]
+    if instructions or (keep_empty and instructions is not None):
         handler["customInstructions"] = instructions
-    if guide:
-        handler["incidentProcessingGuide"] = list(guide)
+    if guide or (keep_empty and guide is not None):
+        handler["incidentProcessingGuide"] = guide
     return handler
+
+
+def _http_error_detail(error):
+    """(code, message) from an Azure-style JSON error body, or (None, None)."""
+    try:
+        body = error.response.json()
+    except Exception:  # pylint: disable=broad-except
+        return None, None
+    detail = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(detail, dict):
+        return None, None
+    code, message = detail.get("code"), detail.get("message")
+    return (code if isinstance(code, str) else None), (message if isinstance(message, str) else None)
+
+
+def _is_incident_rejection(error):
+    """True when the service rejected the plan's settings (HTTP 400, possibly behind the
+    data-plane replay's error). Sign-in, permission, throttling and server errors aren't."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        status = getattr(getattr(error, "response", None), "status_code", None)
+        if status is not None:
+            return status == 400
+        error = error.__cause__
+    return False
+
+
+def _rejection_explained(explanation, error):
+    """The CLI's explanation of a rejected plan followed by the service's own message."""
+    message = _http_error_detail(error)[1] or _http_error_text(error)
+    return CLIError(f"{explanation}\nThe service said: {message}")
 
 
 def _raise_if_subagent_missing(cli_ctx, agent_name, resource_group, subagent, error):
     """The service rejects a plan whose subagent doesn't exist with a generic error; explain it."""
+    if subagent == "meta_agent":
+        return  # the main agent, not a subagent extension
     try:
         _extension_resource_show(cli_ctx, agent_name, resource_group, "subagents", subagent)
     except ResourceNotFoundError:
-        raise CLIError(
+        raise _rejection_explained(
             f"Subagent '{subagent}' doesn't exist, so the response plan can't hand incidents to it. "
-            "Create it first with 'az sre subagent create'."
+            "Create it first with 'az sre subagent create'.", error
         ) from error
     except Exception as ex:  # pylint: disable=broad-except
         logger.debug("Could not check subagent '%s': %s", subagent, ex)
@@ -6689,7 +6830,9 @@ class ResponsePlanCreate(AAZCommand):
             options=["--disabled"], help="Create the plan turned off.",
         )
         schema.overwrite = AAZBoolArg(
-            options=["--overwrite"], help="Allow replacing an existing response plan.",
+            options=["--overwrite"],
+            help="Allow replacing an existing response plan, or taking over instructions with the "
+            "plan's name that aren't linked to a plan.",
         )
         cls._args_schema = schema
         return schema
@@ -6704,15 +6847,9 @@ class ResponsePlanCreate(AAZCommand):
         mode = _arg_value(args.mode)
         overwrite = bool(_arg_value(args.overwrite))
         if platform not in RESPONSE_PLAN_PLATFORMS:
-            visible = [p for p in RESPONSE_PLAN_PLATFORMS if p != "Icm" or _show_internal_features()]
-            raise CLIError(f"--platform must be one of: {', '.join(visible)}.")
+            raise _response_plan_platform_error()
         if mode not in RESPONSE_PLAN_MODES:
             raise CLIError(f"--mode must be one of: {', '.join(RESPONSE_PLAN_MODES)}.")
-        if platform == "Icm":
-            if not _arg_value(args.incident_types):
-                raise CLIError(
-                    "--incident-type is required with --platform Icm (for example --incident-type LiveSite).")
-            _require_first_party(self.cli_ctx, agent_name, resource_group, "--platform Icm")
         flt = {
             "incidentPlatform": platform,
             "handlingAgent": _arg_value(args.subagent),
@@ -6721,29 +6858,35 @@ class ResponsePlanCreate(AAZCommand):
         }
         flt.update(_response_plan_criteria(args))
         _validate_incident_filters_shape(flt)
+        if platform == "Icm":
+            if not flt.get("incidentTypes"):
+                raise CLIError(ICM_INCIDENT_TYPE_REQUIRED)
+            _require_first_party(self.cli_ctx, agent_name, resource_group, "--platform Icm")
+        handler_fields = _response_plan_handler_fields(args)
+        # The filter and the instructions are separate, non-atomic writes, so check the
+        # instructions before the filter is written.
+        handlers = _response_plan_handlers_to_write(
+            self.cli_ctx, agent_name, resource_group, name, handler_fields, overwrite,
+            creating=True) if handler_fields else []
         filter_body = {"name": name, "type": "IncidentFilter", "properties": flt}
         try:
             result = {"filter": _incident_resource_create(
                 self.cli_ctx, agent_name, resource_group, "incidentFilters", name,
                 flt, _incident_filter_path(name), filter_body, overwrite)}
-        except ResourceExistsError:
-            raise
         except Exception as ex:  # pylint: disable=broad-except
-            _raise_if_platform_not_connected(self.cli_ctx, agent_name, resource_group, platform, ex)
-            _raise_if_subagent_missing(self.cli_ctx, agent_name, resource_group, flt["handlingAgent"], ex)
+            if _is_incident_rejection(ex):
+                _raise_if_platform_not_connected(self.cli_ctx, agent_name, resource_group, platform, ex)
+                _raise_if_subagent_missing(self.cli_ctx, agent_name, resource_group, flt["handlingAgent"], ex)
             raise
-        handler_fields = _response_plan_handler_fields(args)
-        if handler_fields:
-            handler = {"id": name, "incidentFilterId": name, **handler_fields}
-            _validate_incident_handlers_shape(handler)
+        if handlers:
             try:
-                result["handler"] = _incident_resource_create(
-                    self.cli_ctx, agent_name, resource_group, "incidentHandlers", name,
-                    handler, _incident_handler_path(name), handler, overwrite)
+                _response_plan_save_handlers(self.cli_ctx, agent_name, resource_group, handlers, result)
             except Exception as ex:  # pylint: disable=broad-except
                 raise CLIError(
                     f"Response plan '{name}' was created, but its instructions were not saved: {ex}"
                 ) from ex
+        if not handler_fields:
+            _warn_if_plan_has_instructions(self.cli_ctx, agent_name, resource_group, name)
         try:
             existing = _incident_unwrap_list("filter", _extension_resource_list(
                 self.cli_ctx, agent_name, resource_group, "incidentFilters"))
@@ -6771,10 +6914,15 @@ def _raise_if_platform_not_connected(cli_ctx, agent_name, resource_group, platfo
                 "--incident-management-configuration '{type:AzMonitor,connection-name:azmonitor}'")
     else:
         hint = "  See 'az sre agent update -h' for --incident-management-configuration examples."
-    raise CLIError(
+    raise _rejection_explained(
         f"Agent '{agent_name}' {status}, so it can't route {platform} incidents. "
-        f"Connect {platform} first:\n{hint}"
+        f"Connect {platform} first:\n{hint}", error
     ) from error
+
+
+def _response_plan_platform_error():
+    visible = [p for p in RESPONSE_PLAN_PLATFORMS if p != "Icm" or _show_internal_features()]
+    return CLIError(f"--platform must be one of: {', '.join(visible)}.")
 
 
 def _response_plan_read_filter(cli_ctx, agent_name, resource_group, name):
@@ -6782,31 +6930,56 @@ def _response_plan_read_filter(cli_ctx, agent_name, resource_group, name):
         cli_ctx, agent_name, resource_group, "incidentFilters", name))
 
 
-def _response_plan_apply_filter_changes(cli_ctx, agent_name, resource_group, name, changes, existing=None):
-    """Apply changes to the plan's filter, read through ARM unless given, and write it back through ARM."""
-    if existing is None:
-        existing = _response_plan_read_filter(cli_ctx, agent_name, resource_group, name)
-    # ARM echoes unset fields as null, which the service rejects on write.
-    properties = {k: v for k, v in (existing.get("properties") or {}).items() if v is not None}
+def _response_plan_merged_filter(existing, changes, cleared=()):
+    """The stored filter with the user's changes applied, ready to write back.
+
+    Stored values go back as the service returned them, except nulls: ARM echoes unset
+    fields as null and the service rejects nulls on write, so they're dropped at every
+    level. `cleared` names criteria to remove.
+    """
+    properties = _drop_nulls(existing.get("properties") or {})
+    for key in cleared:
+        if key in RESPONSE_PLAN_AZ_MONITOR_KEYS:
+            settings = properties.get("azMonitorFilterSettings")
+            if isinstance(settings, dict):
+                settings.pop(key, None)
+        else:
+            properties.pop(key, None)
+            if key == "incidentTypes":
+                properties.pop("incidentType", None)
     if isinstance(changes.get("azMonitorFilterSettings"), dict):
         current = properties.get("azMonitorFilterSettings")
-        merged = {k: v for k, v in current.items() if v is not None} if isinstance(current, dict) else {}
-        merged.update(changes["azMonitorFilterSettings"])
-        changes = {**changes, "azMonitorFilterSettings": merged}
+        changes = {**changes, "azMonitorFilterSettings": {
+            **(current if isinstance(current, dict) else {}), **changes["azMonitorFilterSettings"]}}
     properties.update(changes)
+    if properties.get("azMonitorFilterSettings") == {}:
+        del properties["azMonitorFilterSettings"]
     _validate_incident_filters_shape(properties)
+    return properties
+
+
+def _response_plan_write_filter(cli_ctx, agent_name, resource_group, name, properties):
     return _incident_resource_create(
         cli_ctx, agent_name, resource_group, "incidentFilters", name, properties,
         _incident_filter_path(name),
         {"name": name, "type": "IncidentFilter", "properties": properties}, True)
 
 
+def _response_plan_apply_filter_changes(cli_ctx, agent_name, resource_group, name, changes, existing=None):
+    """Apply changes to the plan's filter, read through ARM unless given, and write it back through ARM."""
+    if existing is None:
+        existing = _response_plan_read_filter(cli_ctx, agent_name, resource_group, name)
+    return _response_plan_write_filter(
+        cli_ctx, agent_name, resource_group, name, _response_plan_merged_filter(existing, changes))
+
+
 @register_command("sre response-plan update")
 class ResponsePlanUpdate(AAZCommand):
     """Update a response plan. Only the flags you pass change.
 
-    Passing a list flag (for example --priority) replaces that whole list.
-    Use 'enable' or 'disable' to turn a plan on or off.
+    Passing a list flag (for example --priority) replaces that whole list. Pass an empty
+    value, such as --title-contains="" or --instructions="", to remove a criterion or the
+    instructions. Use 'enable' or 'disable' to turn a plan on or off.
 
     :example: Change the autonomy mode and the merge window
         az sre response-plan update -g myrg --agent-name myagent -n sev1-api \\
@@ -6815,6 +6988,10 @@ class ResponsePlanUpdate(AAZCommand):
     :example: Point a plan at a different subagent and replace its severities
         az sre response-plan update -g myrg --agent-name myagent -n sev1-api \\
             --subagent other-responder --priority Sev0 Sev1
+
+    :example: Match every severity again and drop the title filter
+        az sre response-plan update -g myrg --agent-name myagent -n sev1-api \\
+            --priority="" --title-contains=""
     """
 
     _args_schema = None
@@ -6847,45 +7024,48 @@ class ResponsePlanUpdate(AAZCommand):
         agent_name = _arg_value(args.agent_name)
         resource_group = _arg_value(args.resource_group)
         name = _arg_value(args.extension_name)
-        changes = _response_plan_criteria(args)
-        for key, arg, allowed in (
-                ("incidentPlatform", args.platform, RESPONSE_PLAN_PLATFORMS),
-                ("agentMode", args.mode, RESPONSE_PLAN_MODES)):
-            value = _arg_value(arg)
-            if value is not None:
-                if value not in allowed:
-                    flag = "--platform" if key == "incidentPlatform" else "--mode"
-                    raise CLIError(f"{flag} must be one of: {', '.join(allowed)}.")
-                changes[key] = value
-                if key == "incidentPlatform" and value == "Icm":
-                    _require_first_party(self.cli_ctx, agent_name, resource_group, "--platform Icm")
+        cleared = set()
+        changes = _response_plan_criteria(args, cleared)
+        platform = _arg_value(args.platform)
+        if platform is not None:
+            if platform not in RESPONSE_PLAN_PLATFORMS:
+                raise _response_plan_platform_error()
+            changes["incidentPlatform"] = platform
+        mode = _arg_value(args.mode)
+        if mode is not None:
+            if mode not in RESPONSE_PLAN_MODES:
+                raise CLIError(f"--mode must be one of: {', '.join(RESPONSE_PLAN_MODES)}.")
+            changes["agentMode"] = mode
         subagent = _arg_value(args.subagent)
         if subagent:
             changes["handlingAgent"] = subagent
-        handler_fields = _response_plan_handler_fields(args)
-        if not changes and not handler_fields:
+        handler_fields = _response_plan_handler_fields(args, keep_empty=True)
+        if not changes and not cleared and not handler_fields:
             raise CLIError("Nothing to update. Pass at least one option to change.")
+        if platform == "Icm":
+            _require_first_party(self.cli_ctx, agent_name, resource_group, "--platform Icm")
         # The filter (ARM) and the instructions (agent API) are separate, non-atomic
         # writes, so finish every read and check before the first one.
         existing = _response_plan_read_filter(self.cli_ctx, agent_name, resource_group, name)
-        handler = None
-        if handler_fields:
-            handlers = _response_plan_handlers_for(self.cli_ctx, agent_name, resource_group, name)
-            handler = dict(handlers[0]) if handlers else {"id": name, "incidentFilterId": name}
-            handler.update(handler_fields)
-            _validate_incident_handlers_shape(handler)
+        properties = None
+        if changes or cleared:
+            properties = _response_plan_merged_filter(existing, changes, cleared)
+            if (properties.get("incidentPlatform") == "Icm"
+                    and not (properties.get("incidentTypes") or properties.get("incidentType"))
+                    and ("incidentPlatform" in changes or "incidentTypes" in cleared)):
+                raise CLIError(ICM_INCIDENT_TYPE_REQUIRED)
+        handlers = _response_plan_handlers_to_write(
+            self.cli_ctx, agent_name, resource_group, name, handler_fields, True,
+            creating=False) if handler_fields else []
         result = {"filter": existing}
-        if changes:
-            result["filter"] = _response_plan_apply_filter_changes(
-                self.cli_ctx, agent_name, resource_group, name, changes, existing)
-        if handler is not None:
-            handler_id = handler.get("id") or name
+        if properties is not None:
+            result["filter"] = _response_plan_write_filter(
+                self.cli_ctx, agent_name, resource_group, name, properties)
+        if handlers:
             try:
-                result["handler"] = _incident_resource_create(
-                    self.cli_ctx, agent_name, resource_group, "incidentHandlers", handler_id, handler,
-                    _incident_handler_path(handler_id), handler, True)
+                _response_plan_save_handlers(self.cli_ctx, agent_name, resource_group, handlers, result)
             except Exception as ex:  # pylint: disable=broad-except
-                if not changes:
+                if properties is None:
                     raise
                 retry_flags = " and ".join(
                     flag for flag, key in (
@@ -6894,8 +7074,8 @@ class ResponsePlanUpdate(AAZCommand):
                     if key in handler_fields)
                 raise CLIError(
                     f"Response plan '{name}' was only partly updated: its filter changes "
-                    f"({', '.join(sorted(changes))}) were saved, but saving its instructions failed. "
-                    f"Re-run the update with only {retry_flags} to retry them. Error: {ex}"
+                    f"({', '.join(sorted(set(changes) | cleared))}) were saved, but saving its instructions "
+                    f"failed. Re-run the update with only {retry_flags} to retry them. Error: {ex}"
                 ) from ex
         return result
 
@@ -7016,23 +7196,55 @@ class ResponsePlanDelete(AAZCommand):
             has_filter = False
         if not has_filter and not handlers:
             raise ResourceNotFoundError(f"Response plan '{name}' not found on agent '{agent_name}'.")
+        # Delete the match rules first. If a later step fails, the plan no longer matches
+        # incidents and only its instructions are left, which running delete again removes.
+        if has_filter:
+            _response_plan_delete_filter(self.cli_ctx, agent_name, resource_group, name)
         for handler in handlers:
             handler_id = handler.get("id") or name
-            _data_plane_request(
-                self.cli_ctx, agent_name, resource_group, "DELETE",
-                _incident_handler_path(handler_id), missing_ok=True)
-        if not has_filter:
-            return
-        try:
-            _extension_resource_delete(
-                self.cli_ctx, agent_name, resource_group, "incidentFilters", name)
-        except Exception as ex:  # pylint: disable=broad-except
-            if getattr(getattr(ex, "response", None), "status_code", None) != 403:
-                raise
-            # SRE Agent Administrator has the agent's data-plane delete but not the ARM delete action.
-            logger.info("ARM refused the delete; using the agent's own API for '%s'.", name)
-            _direct_extension_delete(
-                self.cli_ctx, agent_name, resource_group, "incidentFilters", name)
+            try:
+                _data_plane_request(
+                    self.cli_ctx, agent_name, resource_group, "DELETE",
+                    _incident_handler_path(handler_id), missing_ok=True)
+            except Exception as ex:  # pylint: disable=broad-except
+                if not has_filter:
+                    raise
+                raise CLIError(
+                    f"Response plan '{name}' was deleted, but deleting its instructions '{handler_id}' "
+                    f"failed: {ex}\nRun the same delete command again to remove them."
+                ) from ex
+
+
+def _response_plan_delete_filter(cli_ctx, agent_name, resource_group, name):
+    """Delete a plan's filter through ARM, or through the agent's own API when ARM only lacks the role.
+
+    SRE Agent Administrator can delete through the agent's API but has no ARM delete action.
+    ARM's other refusals, such as Azure Policy or a deny assignment, are deliberate, so the
+    CLI doesn't work around them.
+    """
+    try:
+        _extension_resource_delete(cli_ctx, agent_name, resource_group, "incidentFilters", name)
+        return
+    except Exception as ex:  # pylint: disable=broad-except
+        status = getattr(getattr(ex, "response", None), "status_code", None)
+        code, message = _http_error_detail(ex)
+        if status != 403 or code != "AuthorizationFailed":
+            raise
+        arm_refusal = f"Azure Resource Manager refused the delete ({code}): {message or _http_error_text(ex)}"
+    logger.warning(
+        "Azure Resource Manager refused to delete response plan '%s' (AuthorizationFailed), so the CLI "
+        "is deleting it through the agent's own API.", name)
+    try:
+        _data_plane_request(cli_ctx, agent_name, resource_group, "DELETE", _incident_filter_path(name))
+    except Exception as ex:  # pylint: disable=broad-except
+        if getattr(getattr(ex, "response", None), "status_code", None) == 404:
+            reason = "it answered 404 Not Found, although Azure Resource Manager still lists the plan."
+        else:
+            reason = str(ex)
+        raise CLIError(
+            f"Response plan '{name}' was not deleted. {arm_refusal}\n"
+            f"The agent's own API didn't delete it either: {reason}"
+        ) from ex
 
 
 @register_command("sre response-plan enable")

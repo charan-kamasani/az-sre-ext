@@ -1506,6 +1506,8 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
         self.filter_error = None
         self.handler_error = None
         self.handler_path = "/api/v2/extendedAgent/incidentHandlers"
+        self.filter_path = "/api/v2/incidentManagement/incidentFilters"
+        self.agent_filter_deletes = []
         for replacement in (
             patch.object(AAZCommand, "_handler", lambda command, command_args: None),
             patch("azext_sre.custom._extension_resource_create", side_effect=self._arm_create),
@@ -1548,6 +1550,10 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
                        missing_ok=False, agent_url=None):
         if method == "GET" and path == self.handler_path:
             return copy.deepcopy(list(self.handlers.values()))
+        if method == "DELETE" and path.startswith(self.filter_path + "/"):
+            self.agent_filter_deletes.append(path.rsplit("/", 1)[-1])
+            self.filters.pop(path.rsplit("/", 1)[-1], None)
+            return {}
         if not path.startswith(self.handler_path + "/"):
             raise ResourceNotFoundError(path)
         name = path.rsplit("/", 1)[-1]
@@ -1580,10 +1586,11 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
             })
 
     @staticmethod
-    def _forbidden():
+    def _forbidden(code=None):
         response = Response()
         response.status_code = 403
-        response._content = b"Forbidden"
+        response._content = (json.dumps({"error": {"code": code, "message": "Denied"}}).encode()
+                             if code else b"Forbidden")
         return HTTPError("Forbidden", response=response)
 
     def test_azure_monitor_criteria_are_sent_and_merged_on_update(self):
@@ -1676,24 +1683,18 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
         self.assertEqual(shown["handlers"], [])
         self.assertIn("plan", self.filters)
 
-    def test_delete_falls_back_to_the_agent_api_when_arm_forbids_it(self):
-        from azext_sre.custom import ResponsePlanDelete
-        self._create(instructions=None)
-        with patch("azext_sre.custom._extension_resource_delete", side_effect=self._forbidden()), \
-             patch("azext_sre.custom._direct_extension_delete", return_value=None) as direct:
-            self._command(ResponsePlanDelete)
-        self.assertEqual(direct.call_args.args[1:], ("agent", "rg", "incidentFilters", "plan"))
-
     def test_delete_does_not_fall_back_on_other_arm_errors(self):
         from azext_sre.custom import ResponsePlanDelete
         self._create(instructions=None)
-        error = self._forbidden()
-        error.response.status_code = 500
-        with patch("azext_sre.custom._extension_resource_delete", side_effect=error), \
-             patch("azext_sre.custom._direct_extension_delete") as direct, \
-             self.assertRaises(HTTPError):
-            self._command(ResponsePlanDelete)
-        direct.assert_not_called()
+        server_error = self._forbidden()
+        server_error.response.status_code = 500
+        for error in (server_error, self._forbidden(), self._forbidden("RequestDisallowedByPolicy")):
+            with self.subTest(status=error.response.status_code, body=error.response.text), \
+                 patch("azext_sre.custom._extension_resource_delete", side_effect=error), \
+                 self.assertRaises(HTTPError):
+                self._command(ResponsePlanDelete)
+        self.assertEqual(self.agent_filter_deletes, [])
+        self.assertIn("plan", self.filters)
 
     def test_icm_plan_requires_an_incident_type_and_sends_the_portal_field(self):
         with patch("azext_sre.custom._require_first_party"):
@@ -1883,6 +1884,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
         command = _bare_command(ResponsePlanCreate, **base, max_investigation_attempts=2)
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._incident_resource_create", return_value={}) as create, \
+             patch("azext_sre.custom._data_plane_request", return_value=[]), \
              patch("azext_sre.custom._extension_resource_list", return_value={"value": []}):
             command._handler(None)
         flt = create.call_args.args[5]
@@ -1979,6 +1981,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._incident_resource_create", side_effect=fake_create), \
+             patch("azext_sre.custom._data_plane_request", return_value=[]), \
              patch("azext_sre.custom._extension_resource_list", return_value={"value": []}):
             result = command._handler(None)
         self.assertEqual(set(result), {"filter", "handler"})
@@ -1986,32 +1989,37 @@ class IncidentDataPlaneTests(unittest.TestCase):
         self.assertEqual((flt["handlingAgent"], flt["agentMode"], flt["isEnabled"]), ("responder", "review", True))
         self.assertEqual(created[1][1]["incidentFilterId"], "plan")
 
-    def _rejected_create(self, agent, subagent_exists):
+    def _rejected_create(self, agent, subagent_exists, subagent="responder"):
         from azext_sre.custom import ResponsePlanCreate
         command = _bare_command(
             ResponsePlanCreate, agent_name="a", resource_group="rg", extension_name="plan",
-            platform="AzMonitor", subagent="responder", priorities=None, title_contains=None,
+            platform="AzMonitor", subagent=subagent, priorities=None, title_contains=None,
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="review", disabled=None,
             instructions=None, processing_guide=None, overwrite=None)
         show = MagicMock() if subagent_exists else MagicMock(side_effect=ResourceNotFoundError("missing"))
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._incident_resource_create",
-                   side_effect=HttpResponseError("The extension configuration is invalid.")), \
+             patch("azext_sre.custom._incident_resource_create", side_effect=self.rejection), \
              patch("azext_sre.custom._cli_invoke", return_value=agent), \
              patch("azext_sre.custom._extension_resource_show", show):
             return command._handler(None)
+
+    @property
+    def rejection(self):
+        return self._http_error(400, '{"error":{"message":"The extension configuration is invalid."}}')
 
     def test_response_plan_rejection_names_missing_subagent(self):
         agent = {"properties": {"incidentManagementConfiguration": {"type": "AzMonitor"}}}
         with self.assertRaisesRegex(CLIError, "Subagent 'responder' doesn't exist") as ctx:
             self._rejected_create(agent, subagent_exists=False)
         self.assertNotIn("incident platform", str(ctx.exception))
+        self.assertIn("The extension configuration is invalid.", str(ctx.exception))
 
     def test_response_plan_rejection_keeps_service_error_when_cause_unknown(self):
         agent = {"properties": {"incidentManagementConfiguration": {"type": "AzMonitor"}}}
-        with self.assertRaisesRegex(HttpResponseError, "configuration is invalid"):
+        with self.assertRaises(HTTPError) as raised:
             self._rejected_create(agent, subagent_exists=True)
+        self.assertEqual(raised.exception.response.status_code, 400)
 
     def test_response_plan_rejects_bad_mode(self):
         from azext_sre.custom import ResponsePlanCreate
@@ -2033,13 +2041,13 @@ class IncidentDataPlaneTests(unittest.TestCase):
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="review", disabled=None,
             instructions=None, processing_guide=None, overwrite=None)
-        service_error = CLIError("Bad Request: The extension configuration is invalid.")
+        service_error = self.rejection
         for config, expect_hint in ((None, True), ({"type": "AzMonitor"}, False)):
             agent = {"properties": {"incidentManagementConfiguration": config}}
             with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
                  patch("azext_sre.custom._incident_resource_create", side_effect=service_error), \
                  patch("azext_sre.custom._cli_invoke", return_value=agent), \
-                 self.assertRaises(CLIError) as raised:
+                 self.assertRaises((CLIError, HTTPError)) as raised:
                 command._handler(None)
             message = str(raised.exception)
             if expect_hint:
@@ -2104,7 +2112,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
                  patch("azext_sre.custom.send_raw_request", side_effect=error):
                 if code == 404 and missing_ok:
                     self.assertIsNone(_data_plane_request(None, "agent", "rg", "GET", "/api/plan",
-                                                         missing_ok=True))
+                                                          missing_ok=True))
                 else:
                     with self.assertRaises(HTTPError):
                         _data_plane_request(None, "agent", "rg", "GET", "/api/plan", missing_ok=missing_ok)

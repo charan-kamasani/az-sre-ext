@@ -21,3 +21,4 @@ Release History
 * `az sre agent update` accepts `null` to clear a property, and also clears it on agents linked to Application Insights, where the update is sent as a PATCH.
 * `az sre usage list` returns a list of usage items from every page instead of the raw first page. Scripts that read `value` from the old output, such as `--query value`, need to drop it, as in `--query "[]"`.
 * `az sre network update` fails when a configuration sets nothing, since null fields can't clear a setting.
+* `az sre response-plan delete` deletes the match rules before the instructions, uses the agent's own API only when Azure refuses the delete with `AuthorizationFailed`, and fails when the plan wasn't deleted. `az sre response-plan update` removes a criterion or clears the instructions when given an empty value, such as `--title-contains=""`.

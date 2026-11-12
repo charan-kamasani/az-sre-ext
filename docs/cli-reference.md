@@ -1568,7 +1568,7 @@ Routes matching incidents to a subagent. Connect the incident platform and creat
 | `--processing-guide` | List | No |  |  | Quoted step-by-step guidance for the subagent, one value per step. |
 | `--mode` | String | No | autonomous |  | Agent autonomy: autonomous (portal default) or review (agent proposes, you approve). |
 | `--disabled` | Boolean | No |  | `false`, `true` | Create the plan turned off. |
-| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing response plan. |
+| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing response plan, or taking over instructions with the plan's name that aren't linked to a plan. |
 
 **Examples**
 
@@ -1709,7 +1709,7 @@ Show a response plan and its instructions.
 
 Update a response plan. Only the flags you pass change.
 
-Passing a list flag (for example --priority) replaces that whole list. Use 'enable' or 'disable' to turn a plan on or off.
+Passing a list flag (for example --priority) replaces that whole list. Pass an empty value, such as --title-contains="" or --instructions="", to remove a criterion or the instructions. Use 'enable' or 'disable' to turn a plan on or off.
 
 **Syntax**
 
@@ -1751,6 +1751,12 @@ Passing a list flag (for example --priority) replaces that whole list. Use 'enab
   ```bash
   az sre response-plan update -g myrg --agent-name myagent -n sev1-api \
   --subagent other-responder --priority Sev0 Sev1
+  ```
+- Match every severity again and drop the title filter
+
+  ```bash
+  az sre response-plan update -g myrg --agent-name myagent -n sev1-api \
+  --priority="" --title-contains=""
   ```
 
 ## `az sre skill`
