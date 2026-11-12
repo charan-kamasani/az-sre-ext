@@ -75,8 +75,10 @@ from azure.cli.core.aaz import (
     register_command_group,
 )
 from azure.cli.core.aaz._operation import AAZHttpOperation
+from azure.cli.core.aaz.exceptions import AAZUnknownFieldError
 from azure.cli.core.azclierror import CLIError, InvalidArgumentValueError, ResourceNotFoundError
 from azure.core.exceptions import ResourceExistsError
+from azure.core.polling.base_polling import OperationFailed
 from azure.cli.core.util import send_raw_request
 from azure.mgmt.core.tools import parse_resource_id
 from knack.log import get_logger
@@ -89,6 +91,7 @@ from .aaz.latest.sre.agent import Show as _GeneratedShow
 from .aaz.latest.sre.agent import Start as _GeneratedStart
 from .aaz.latest.sre.agent import Stop as _GeneratedStop
 from .aaz.latest.sre.agent import Update as _GeneratedUpdate
+from .aaz.latest.sre.agent import Wait as _GeneratedWait
 from .aaz.latest.sre.connector import Create as _GeneratedConnectorCreate
 from .aaz.latest.sre.connector import Update as _GeneratedConnectorUpdate
 from .aaz.latest.sre.connector import Show as _GeneratedConnectorShow
@@ -485,6 +488,14 @@ def _normalize_model_provider(value):
     return normalized
 
 
+def _arg_field(arg, name):
+    """One field of an AAZ object argument as a plain value, or None when the
+    argument or the field is unset or null (for example '--default-model null',
+    the AAZ way to clear a property)."""
+    value = _arg_value(arg) if arg is not None else None
+    return value.get(name) if isinstance(value, dict) else None
+
+
 class _ModelProviderArgMixin:
     """Shared --default-model.provider help/validation for create and update.
 
@@ -528,12 +539,10 @@ class _ModelProviderArgMixin:
         return schema
 
     def pre_operations(self):
-        args = self.ctx.args
-        default_model = getattr(args, "default_model", None)
-        if default_model is not None and has_value(default_model.provider):
-            default_model.provider = _normalize_model_provider(
-                default_model.provider.to_serialized_data()
-            )
+        default_model = getattr(self.ctx.args, "default_model", None)
+        provider = _arg_field(default_model, "provider")
+        if provider is not None:
+            default_model.provider = _normalize_model_provider(provider)
         super().pre_operations()
 
 
@@ -797,7 +806,7 @@ def _create_user_assigned_identity(cli_ctx, subscription_id, resource_group, loc
 
 
 class _CleanupOnFailurePolling:
-    """Wraps an LRO polling method so a failed run triggers a cleanup callback."""
+    """Wraps an LRO polling method so a failed run calls a cleanup callback with the error."""
 
     def __init__(self, polling, on_failure):
         self._polling = polling
@@ -806,12 +815,29 @@ class _CleanupOnFailurePolling:
     def run(self):
         try:
             self._polling.run()
-        except Exception:
-            self._on_failure()
+        except Exception as ex:
+            self._on_failure(ex)
             raise
 
     def __getattr__(self, name):
         return getattr(self._polling, name)
+
+
+def _service_reported_failure(error):
+    """True if a long-running operation failed because the service reported it
+    Failed or Canceled, not because a status poll or the final read failed.
+
+    AAZ re-raises polling errors through the command's on_error callback, so
+    azure-core's error is in the chain, caused by OperationFailed only when the
+    service reported the operation as failed.
+    """
+    seen = set()
+    while error is not None and id(error) not in seen:
+        if isinstance(error, OperationFailed):
+            return True
+        seen.add(id(error))
+        error = error.__cause__ or error.__context__
+    return False
 
 
 class _DefaultSystemIdentityMixin:
@@ -847,10 +873,46 @@ class _DefaultSystemIdentityMixin:
         # synchronous part (pre_operations and the initial PUT) is covered.
         try:
             for polling in super()._execute_operations():
-                yield _CleanupOnFailurePolling(polling, self._delete_auto_identity)
+                yield _CleanupOnFailurePolling(polling, self._on_wait_failure)
         except Exception:
             self._delete_auto_identity()
             raise
+
+    def _on_wait_failure(self, error):
+        # The service accepted the create. Unless it then reported the
+        # operation Failed or Canceled, the agent may exist and use the
+        # identity: a status poll can fail transiently, and a read right after
+        # success can still answer 404.
+        if _service_reported_failure(error):
+            self._delete_auto_identity()
+            return
+        identity_id = self._auto_identity_id
+        if not identity_id or self._agent_created:
+            return
+        try:
+            agent = _arm_request(self.cli_ctx, "GET", _ctx_agent_id(self.ctx), API_VERSION, missing_ok=True)
+        except Exception:  # pylint: disable=broad-except
+            agent = None
+        state = ((agent.get("properties") or {}).get("provisioningState")
+                 if isinstance(agent, dict) else None)
+        if str(state).lower() in ("failed", "canceled"):
+            self._delete_auto_identity()
+            return
+        self._auto_identity_id = None
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        identity_name = identity_id.rsplit("/", 1)[-1]
+        if agent:
+            logger.warning(
+                "Agent '%s' exists (provisioningState: %s), but waiting for it to finish failed. "
+                "Kept the identity '%s' made for it. Check the agent with: az sre agent show -g %s -n %s",
+                agent_name, state, identity_name, resource_group, agent_name)
+        else:
+            logger.warning(
+                "Couldn't confirm whether agent '%s' was created, so the identity '%s' made for it "
+                "was kept. If 'az sre agent show -g %s -n %s' doesn't find the agent, delete the "
+                "identity: az identity delete --ids %s",
+                agent_name, identity_name, resource_group, agent_name, identity_id)
 
     def _delete_auto_identity(self):
         identity_id = self._auto_identity_id
@@ -945,9 +1007,7 @@ class _IcmIncidentPlatformGateMixin:
     """Block type=Icm in --incident-management-configuration outside Microsoft tenants."""
 
     def pre_operations(self):
-        args = self.ctx.args
-        config = getattr(args, "incident_management_configuration", None)
-        platform = _arg_value(config.type) if config is not None else None
+        platform = _arg_field(getattr(self.ctx.args, "incident_management_configuration", None), "type")
         if platform and str(platform).lower() == "icm":
             tenant_id = (_resolve_signed_in_tenant_id(self.cli_ctx) or "").lower()
             if tenant_id not in ICM_MANAGED_IDENTITY_TENANT_IDS and not _is_microsoft_first_party_tenant(tenant_id):
@@ -1017,11 +1077,21 @@ class _ExperimentalSettingsOnCreateMixin:
         properties = _extra_agent_properties(self.ctx.args)
         if not properties:
             return
-        resource_id = (
-            f"/subscriptions/{self.ctx.subscription_id}/resourceGroups/{_arg_value(self.ctx.args.resource_group)}"
-            f"/providers/Microsoft.App/agents/{_arg_value(self.ctx.args.agent_name)}"
-        )
-        _arm_request(self.cli_ctx, "PATCH", resource_id, API_VERSION, body={"properties": properties})
+        try:
+            _arm_request(self.cli_ctx, "PATCH", _ctx_agent_id(self.ctx), API_VERSION,
+                         body={"properties": properties})
+        except Exception as ex:
+            agent_name = _arg_value(self.ctx.args.agent_name)
+            resource_group = _arg_value(self.ctx.args.resource_group)
+            flags = " and ".join(flag for key, flag in (
+                ("experimentalSettings", "--experimental-settings"),
+                ("monthlyAgentUnitLimit", "--monthly-unit-limit"),
+            ) if key in properties)
+            raise CLIError(
+                f"Agent '{agent_name}' was created, but applying {flags} failed: {ex}\n"
+                f"Retry with 'az sre agent update --name {agent_name} --resource-group {resource_group}' "
+                f"and the same {flags}."
+            ) from ex
 
 
 class _ActionModeEnum(AAZArgEnum):
@@ -1059,11 +1129,124 @@ class _ActionModeArgMixin:
         return schema
 
 
+class _SecretAgentWriteMixin:
+    """Keeps an agent PUT or PATCH out of HTTP trace logs (--debug and az.log).
+
+    The body can carry the incident platform's connection key and the App
+    Insights connection string. Same as _SecretHttpOperationMixin, which is
+    defined further down with the connector commands.
+    """
+
+    def __call__(self, *args, **kwargs):
+        kwargs["logging_enable"] = False
+        with _no_http_trace():
+            return super().__call__(*args, **kwargs)
+
+
+class _AgentSecretArgWarningMixin:
+    """Warns when the incident connection key or the App Insights connection
+    string was typed on the command line, where knack's --debug argument echo
+    and shell history keep it."""
+
+    def pre_operations(self):
+        args = self.ctx.args
+        if _arg_field(getattr(args, "incident_management_configuration", None), "connection_key"):
+            for flag in ("--incident-management-configuration", "--incident-config"):
+                _warn_if_secret_typed(flag, f"put the configuration in a JSON file and pass {flag} @file")
+        app_insights = _arg_field(getattr(args, "log_configuration", None), "application_insights_configuration")
+        if isinstance(app_insights, dict) and app_insights.get("connection_string"):
+            _warn_if_secret_typed(
+                "--log-configuration", "put the configuration in a JSON file and pass --log-configuration @file")
+        super().pre_operations()
+
+
+class _AgentExistenceGuardMixin:
+    """Refuses 'agent create' for an agent that already exists.
+
+    The create is a PUT, which replaces the agent: a PUT that leaves out
+    logConfiguration or monthlyAgentUnitLimit clears them (see Update), and the
+    default identity flow attaches a brand-new identity in place of the old one.
+    Use 'agent update' to change an existing agent. An agent left Failed by an
+    earlier create may reference an identity that rollback deleted, so 'agent
+    update' can't repair it, while a working agent whose last update failed is
+    Failed too. So a Failed agent still blocks the PUT, and the error offers
+    both 'agent update' and deleting the agent first.
+    """
+
+    def pre_operations(self):
+        existing = _arm_request(self.cli_ctx, "GET", _ctx_agent_id(self.ctx), API_VERSION, missing_ok=True)
+        if existing is not None:
+            agent_name = _arg_value(self.ctx.args.agent_name)
+            resource_group = _arg_value(self.ctx.args.resource_group)
+            state = ((existing.get("properties") or {}).get("provisioningState")
+                     if isinstance(existing, dict) else None)
+            if str(state).lower() in ("failed", "canceled"):
+                raise ResourceExistsError(
+                    f"An agent named '{agent_name}' already exists in resource group '{resource_group}' "
+                    f"(provisioningState: {state}). If it's in use, change it with 'az sre agent update'. "
+                    "If an earlier 'agent create' left it behind, delete it before creating it again: "
+                    f"az sre agent delete --name {agent_name} --resource-group {resource_group}"
+                )
+            raise ResourceExistsError(
+                f"An agent named '{agent_name}' already exists in resource group '{resource_group}'. "
+                "Use 'az sre agent update' to change it, or choose another --name."
+            )
+        super().pre_operations()
+
+
+class _RaiseOnWaitTimeoutMixin:
+    """Fails a 'wait' command when it times out.
+
+    azure-cli-core (2.92) returns the timeout error instead of raising it, so
+    the command printed {} and exited 0 while the resource still wasn't ready.
+    """
+
+    def __call__(self, *args, **kwargs):
+        result = super().__call__(*args, **kwargs)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+# Agent properties the CLI sets (--monthly-unit-limit, --experimental-settings)
+# that the generated 2026-01-01 schema doesn't model, so its output drops them.
+_UNMODELED_AGENT_PROPERTIES = ("monthlyAgentUnitLimit", "experimentalSettings")
+
+
+def _add_removals(after, before):
+    """Sets to null, in place, each key of `before` that `after` lacks or nulls,
+    recursing into objects present in both, so a JSON merge patch removes what
+    a PUT of `after` would."""
+    for key, old in before.items():
+        new = after.get(key)
+        if new is None:
+            after[key] = None
+        elif isinstance(old, dict) and isinstance(new, dict):
+            _add_removals(new, old)
+
+
+def _remember_unmodeled_properties(operation, session):
+    data = operation.deserialize_http_content(session)
+    properties = data.get("properties") if isinstance(data, dict) else None
+    if isinstance(properties, dict):
+        operation.ctx.sre_unmodeled_properties = {
+            key: properties[key] for key in _UNMODELED_AGENT_PROPERTIES if key in properties}
+
+
+def _with_unmodeled_properties(ctx, result):
+    extra = getattr(ctx, "sre_unmodeled_properties", None)
+    if extra and isinstance(result, dict):
+        if not isinstance(result.get("properties"), dict):
+            result["properties"] = {}
+        result["properties"].update(extra)
+    return result
+
+
 @register_command("sre agent create")
 class Create(  # pylint: disable=too-many-ancestors
-        _IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeArgMixin,
-        _GrantAccessToMeMixin, _ExperimentalSettingsOnCreateMixin, _DefaultSystemIdentityMixin,
-        _LogConfigurationWarningMixin, _GeneratedCreate):
+        _IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeArgMixin, _AgentSecretArgWarningMixin,
+        _GrantAccessToMeMixin, _ExperimentalSettingsOnCreateMixin, _AgentExistenceGuardMixin,
+        _DefaultSystemIdentityMixin, _LogConfigurationWarningMixin, _GeneratedCreate):
     """Create an SRE Agent.
 
     :example: Create an agent with an Anthropic default model
@@ -1107,9 +1290,13 @@ class Create(  # pylint: disable=too-many-ancestors
         cls._args_schema = schema
         return cls._args_schema
 
+    class AgentsCreateOrUpdate(_SecretAgentWriteMixin, _GeneratedCreate.AgentsCreateOrUpdate):
+        pass
+
 
 @register_command("sre agent update")
-class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeArgMixin, _GeneratedUpdate):
+class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeArgMixin, _AgentSecretArgWarningMixin,
+             _GeneratedUpdate):
     """Update an SRE Agent.
 
     PagerDuty and ServiceNow set the same agent property as the portal's
@@ -1123,6 +1310,12 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
     ServiceNow uses Basic Auth: set --connection-url to the instance URL
     and --connection-key to the credentials.
 
+    The connection key is a secret. Typed on the command line, it shows up in
+    --debug output and shell history, so put the configuration in a JSON file
+    and pass it with @file instead, for example a pagerduty.json holding
+    `{"type": "PagerDuty", "connectionName": "pagerduty", "connectionKey":
+    "<api-key>", "oboUser": "oncall@contoso.com"}`.
+
     Azure Monitor must also be connected before a response plan can use it.
     A new agent has no incident platform set.
 
@@ -1134,17 +1327,17 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
         az sre agent update --name myagent --resource-group myrg \\
             --incident-management-configuration "{type:AzMonitor,connection-name:azmonitor}"
 
-    :example: Connect PagerDuty as the incident platform
+    :example: Connect PagerDuty as the incident platform, reading the configuration and its key from a file
         az sre agent update --name myagent --resource-group myrg \\
-            --incident-management-configuration "{type:PagerDuty,connection-name:pagerduty,connection-key:<api-key>,obo-user:oncall@contoso.com}"
+            --incident-management-configuration "@pagerduty.json"
 
     :example: Connect ServiceNow as the incident platform with Basic Auth
         az sre agent update --name myagent --resource-group myrg \\
-            --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:https://contoso.service-now.com,connection-key:<credentials>}"
+            --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:'https://contoso.service-now.com',connection-key:<credentials>}"
 
     :example: Turn on preview feature flags from a file
         az sre agent update --name myagent --resource-group myrg \\
-            --experimental-settings @experimental.json
+            --experimental-settings "@experimental.json"
     """
 
     _args_schema = None
@@ -1157,6 +1350,12 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
         _add_experimental_settings_arg(schema)
         cls._args_schema = schema
         return cls._args_schema
+
+    def pre_instance_update(self, instance):
+        super().pre_instance_update(instance)
+        # The agent as a request body before the update, to find what a PATCH
+        # has to remove explicitly.
+        self.ctx.sre_body_before = _arg_value(instance) or {}
 
     def post_instance_update(self, instance):
         super().post_instance_update(instance)
@@ -1173,6 +1372,7 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
             else:
                 del instance.properties.log_configuration
             self.ctx.sre_use_patch = True
+            self.ctx.sre_kept_log_configuration = True
         # A PUT replaces the whole experimentalSettings map; PATCH merges it.
         if _extra_agent_properties(self.ctx.args):
             self.ctx.sre_use_patch = True
@@ -1188,7 +1388,7 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
                 self.ctx.sre_monthly_unit_limit = properties.get("monthlyAgentUnitLimit")
             super().on_200(session)
 
-    class AgentsCreateOrUpdate(_GeneratedUpdate.AgentsCreateOrUpdate):
+    class AgentsCreateOrUpdate(_SecretAgentWriteMixin, _GeneratedUpdate.AgentsCreateOrUpdate):
 
         @property
         def method(self):
@@ -1201,9 +1401,28 @@ class Update(_IcmIncidentPlatformGateMixin, _ModelProviderArgMixin, _ActionModeA
             current_limit = getattr(self.ctx, "sre_monthly_unit_limit", None)
             if current_limit is not None and self.method == "PUT":
                 extra.setdefault("monthlyAgentUnitLimit", current_limit)
+            if self.method == "PATCH":
+                # A PATCH merges, so what the update removed (a property set to
+                # null or --remove'd, a field of a replaced object) is sent as
+                # null, except the App Insights link left out on purpose above.
+                before = getattr(self.ctx, "sre_body_before", None) or {}
+                before_properties = dict(before.get("properties") or {})
+                if getattr(self.ctx, "sre_kept_log_configuration", False):
+                    before_properties.pop("logConfiguration", None)
+                _add_removals(body.setdefault("properties", {}), before_properties)
+                # A PATCH that leaves tags out keeps them; an empty map replaces them.
+                if before.get("tags") and "tags" not in body:
+                    body["tags"] = {}
             if extra:
                 body.setdefault("properties", {}).update(extra)
             return body
+
+        def on_200_201(self, session):
+            _remember_unmodeled_properties(self, session)
+            super().on_200_201(session)
+
+    def _output(self, *args, **kwargs):
+        return _with_unmodeled_properties(self.ctx, super()._output(*args, **kwargs))
 
 
 # Real wire values confirmed via the control-plane source
@@ -2314,7 +2533,7 @@ class ConnectorDelete(_ConnectorNameCheckMixin, _GeneratedConnectorDelete):
 
 
 @register_command("sre connector wait")
-class ConnectorWait(_ConnectorNameCheckMixin, _GeneratedConnectorWait):
+class ConnectorWait(_ConnectorNameCheckMixin, _RaiseOnWaitTimeoutMixin, _GeneratedConnectorWait):
     """Wait for a connector to reach a desired state.
 
     :example: Wait until a connector created with --no-wait exists
@@ -2390,8 +2609,113 @@ class _IdentityGroup(AAZCommandGroup):
     """
 
 
+def _requested_identities(args, remove):
+    """(system-assigned requested, user-assigned IDs or None) from the identity flags."""
+    system = _arg_value(args.mi_system_assigned)
+    system = system is not None and str(system).strip().lower() not in ("", "false")
+    user_assigned = _arg_value(args.mi_user_assigned)
+    if not system and user_assigned is None:
+        raise CLIError("Specify --system-assigned, --user-assigned, or both.")
+    if not remove and user_assigned == []:
+        raise CLIError("--user-assigned needs one or more identity resource IDs.")
+    return system, user_assigned
+
+
+def _identity_patch(current, system, user_assigned, remove, agent_name):
+    """The identity block of a PATCH that assigns or removes managed identities.
+
+    Removed user-assigned identities are sent as null, as an ARM PATCH expects.
+    When none remain, the type alone drops them (as 'az vm identity remove'
+    does). '--user-assigned' with no IDs on remove removes them all.
+    """
+    types = {part.strip().lower() for part in str(current.get("type") or "").split(",")}
+    has_system = "systemassigned" in types
+    kept = list(current.get("userAssignedIdentities") or {}) if "userassigned" in types else []
+    removed = []
+    if remove:
+        has_system = has_system and not system
+        if user_assigned is not None:
+            attached = {identity_id.lower() for identity_id in kept}
+            missing = [identity_id for identity_id in user_assigned if identity_id.lower() not in attached]
+            if missing:
+                raise CLIError(
+                    f"Agent '{agent_name}' doesn't have these user-assigned identities: {', '.join(missing)}")
+            targets = {identity_id.lower() for identity_id in user_assigned} or attached
+            removed = [identity_id for identity_id in kept if identity_id.lower() in targets]
+            kept = [identity_id for identity_id in kept if identity_id.lower() not in targets]
+    else:
+        has_system = has_system or system
+        attached = {identity_id.lower() for identity_id in kept}
+        for identity_id in user_assigned or []:
+            if identity_id.lower() not in attached:
+                kept.append(identity_id)
+                attached.add(identity_id.lower())
+    if has_system and kept:
+        identity_type = "SystemAssigned,UserAssigned"
+    elif has_system:
+        identity_type = "SystemAssigned"
+    else:
+        identity_type = "UserAssigned" if kept else "None"
+    patch = {"type": identity_type}
+    if kept:
+        patch["userAssignedIdentities"] = {
+            **{identity_id: {} for identity_id in kept}, **{identity_id: None for identity_id in removed}}
+    return patch
+
+
+class _IdentityPatchMixin:
+    """Sends 'identity assign' and 'identity remove' as a PATCH of only the
+    identity block.
+
+    The generated commands read the agent and PUT all of it back. The service
+    never returns the App Insights connection string or the incident
+    connection key, so on an agent linked to App Insights that PUT was rejected
+    (InvalidApplicationInsightsConfiguration), and on other agents it dropped
+    what the generated schema doesn't model, such as monthlyAgentUnitLimit,
+    which a PUT resets to the default. The identity block is computed here, not
+    by the generated merge: in azure-cli-core 2.92 that merge removes every
+    user-assigned identity when 'identity remove' names just one.
+    """
+
+    _removes_identities = False
+
+    def pre_operations(self):
+        self.ctx.sre_requested_identities = _requested_identities(self.ctx.args, self._removes_identities)
+        super().pre_operations()
+
+    def pre_instance_update(self, instance):
+        super().pre_instance_update(instance)
+        current = instance.to_serialized_data()
+        system, user_assigned = self.ctx.sre_requested_identities
+        self.ctx.sre_identity_patch = _identity_patch(
+            current if isinstance(current, dict) else {}, system, user_assigned,
+            self._removes_identities, _arg_value(self.ctx.args.agent_name))
+
+    def _output(self, *args, **kwargs):
+        # Runs after the poller has passed the final result to on_200_201; a
+        # result without a body never gets there, so read the agent back.
+        if not getattr(self.ctx, "sre_identity_written", False):
+            self.AgentsGet(ctx=self.ctx)()
+        return super()._output(*args, **kwargs)
+
+
+class _IdentityPatchOperationMixin:
+
+    @property
+    def method(self):
+        return "PATCH"
+
+    @property
+    def content(self):
+        return {"identity": self.ctx.sre_identity_patch}
+
+    def on_200_201(self, session):
+        super().on_200_201(session)
+        self.ctx.sre_identity_written = True
+
+
 @register_command("sre identity assign")
-class IdentityAssign(_GeneratedIdentityAssign):
+class IdentityAssign(_IdentityPatchMixin, _GeneratedIdentityAssign):
     """Assign a managed identity to an agent.
 
     :example: Turn on the agent's system-assigned identity
@@ -2404,16 +2728,27 @@ class IdentityAssign(_GeneratedIdentityAssign):
 
     _args_schema = None
 
+    class AgentsCreateOrUpdate(_IdentityPatchOperationMixin, _GeneratedIdentityAssign.AgentsCreateOrUpdate):
+        pass
+
 
 @register_command("sre identity remove")
-class IdentityRemove(_GeneratedIdentityRemove):
+class IdentityRemove(_IdentityPatchMixin, _GeneratedIdentityRemove):
     """Remove a managed identity from an agent.
 
     :example: Turn off the agent's system-assigned identity
         az sre identity remove --agent-name myagent --resource-group myrg --system-assigned
+
+    :example: Remove one user-assigned identity
+        az sre identity remove --agent-name myagent --resource-group myrg \\
+            --user-assigned "/subscriptions/.../resourceGroups/myrg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/myid"
     """
 
     _args_schema = None
+    _removes_identities = True
+
+    class AgentsCreateOrUpdate(_IdentityPatchOperationMixin, _GeneratedIdentityRemove.AgentsCreateOrUpdate):
+        pass
 
 
 @register_command("sre identity show")
@@ -2428,7 +2763,7 @@ class IdentityShow(_GeneratedIdentityShow):
 
 
 @register_command("sre identity wait")
-class IdentityWait(_GeneratedIdentityWait):
+class IdentityWait(_RaiseOnWaitTimeoutMixin, _GeneratedIdentityWait):
     """Wait for an agent's identity update to finish.
 
     :example: Wait for an identity assignment started with --no-wait
@@ -3374,6 +3709,15 @@ class Show(_GeneratedShow):
         az sre agent show --name myagent --resource-group myrg
     """
 
+    class AgentsGet(_GeneratedShow.AgentsGet):
+
+        def on_200(self, session):
+            _remember_unmodeled_properties(self, session)
+            super().on_200(session)
+
+    def _output(self, *args, **kwargs):
+        return _with_unmodeled_properties(self.ctx, super()._output(*args, **kwargs))
+
 
 @register_command("sre agent list")
 class List(_GeneratedList):
@@ -3406,8 +3750,21 @@ class Delete(_GeneratedDelete):
         super().pre_operations()
 
 
+class _EmptyOperationResultMixin:
+    """'agent start' and 'agent stop' print the operation's final result. When
+    that result has no body, the generated output step raised an unexpected
+    error although the agent did start or stop; print nothing instead."""
+
+    def _output(self, *args, **kwargs):
+        try:
+            _ = self.ctx.vars.instance
+        except AAZUnknownFieldError:
+            return None
+        return super()._output(*args, **kwargs)
+
+
 @register_command("sre agent start")
-class Start(_GeneratedStart):
+class Start(_EmptyOperationResultMixin, _GeneratedStart):
     """Start a stopped SRE Agent.
 
     :example: Start a stopped agent
@@ -3416,12 +3773,23 @@ class Start(_GeneratedStart):
 
 
 @register_command("sre agent stop")
-class Stop(_GeneratedStop):
+class Stop(_EmptyOperationResultMixin, _GeneratedStop):
     """Stop a running SRE Agent.
 
     :example: Stop a running agent
         az sre agent stop --name myagent --resource-group myrg
     """
+
+
+@register_command("sre agent wait")
+class Wait(_RaiseOnWaitTimeoutMixin, _GeneratedWait):
+    """Wait for an SRE Agent to reach a desired state.
+
+    :example: Wait until an agent created with --no-wait finishes provisioning
+        az sre agent wait -g myrg --agent-name myagent --created
+    """
+
+    _args_schema = None
 
 
 @register_command("sre endpoint show")
@@ -3561,22 +3929,24 @@ class ListUsage(AAZCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         daily = _arg_value(self.ctx.args.daily)
 
-        invoke = partial(_cli_invoke, self.cli_ctx)
-        agent = invoke(
-            "sre", "agent", "show", "--name", name, "--resource-group", resource_group,
+        agent_id = (
+            f"/subscriptions/{self.ctx.subscription_id}/resourceGroups/{resource_group}"
+            f"/providers/Microsoft.App/agents/{name}"
         )
-        if not isinstance(agent, dict):
-            raise ResourceNotFoundError(
-                f"Could not resolve SRE Agent '{name}' in resource group '{resource_group}'."
-            )
-        resource_id = agent.get("id")
-        if not resource_id:
-            raise CLIError(f"Could not resolve the resource ID of agent '{name}'.")
+        _require_arm_resource(
+            self.cli_ctx, agent_id, f"Agent '{name}' not found in resource group '{resource_group}'.")
 
+        # Return the items, not the raw page, so -o table can show them, and
+        # follow nextLink like 'agent list-models' does.
         suffix = "dailyusages" if daily else "usages"
-        return _arm_request(
-            self.cli_ctx, "GET", f"{resource_id}/{suffix}", API_VERSION,
-        )
+        items = []
+        page = _arm_request(self.cli_ctx, "GET", f"{agent_id}/{suffix}", API_VERSION)
+        while True:
+            items.extend((page or {}).get("value") or [])
+            next_link = (page or {}).get("nextLink")
+            if not next_link:
+                return items
+            page = _arm_request(self.cli_ctx, "GET", next_link, API_VERSION)
 
 
 @register_command_group("sre agent")
@@ -3941,28 +4311,51 @@ class UpdateNetwork(AAZCommand):
                 "Specify at least one of --vnet-configuration or --sandbox-configuration."
             )
 
-        resource_id = _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
-
         # PATCH only the networking properties. A GET-then-PUT of the whole
         # agent fails on agents with App Insights logging, because the GET
         # hides the connection string and the PUT then sends an appId alone.
         # `network show` prints unset fields as null; drop them so its output
         # can be passed back here unchanged.
         properties = {}
-        if vnet_configuration is not None:
-            properties["vnetConfiguration"] = _drop_nulls(_camelize_keys(vnet_configuration))
-        if sandbox_configuration is not None:
-            properties["sandboxConfiguration"] = _drop_nulls(_camelize_keys(sandbox_configuration))
+        for flag, key, value in (
+            ("--vnet-configuration", "vnetConfiguration", vnet_configuration),
+            ("--sandbox-configuration", "sandboxConfiguration", sandbox_configuration),
+        ):
+            if value is None:
+                continue
+            properties[key] = _drop_nulls(_camelize_keys(value))
+            if not _has_network_setting(properties[key]):
+                raise CLIError(
+                    f"{flag} has nothing to set. Fields set to null are ignored, so this command "
+                    "can't clear a setting.")
+        proxy = ((sandbox_configuration or {}).get("egress") or {}).get("http_proxy") or {}
+        if any("@" in urlparse(url).netloc for url in (proxy.get("http_url"), proxy.get("https_url"))
+               if isinstance(url, str)):
+            _warn_if_secret_typed(
+                "--sandbox-configuration",
+                "put the configuration in a JSON file and pass --sandbox-configuration @file")
 
-        updated = _arm_request(
-            self.cli_ctx, "PATCH", resource_id, NETWORK_API_VERSION, body={"properties": properties},
-        )
-        if not (isinstance(updated, dict) and updated.get("properties")):
-            updated = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION)
+        # Proxy URLs can carry credentials, in this request and in the agent the
+        # service sends back, so keep the bodies out of --debug and az.log.
+        with _no_http_trace():
+            resource_id = _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
+            updated = _arm_request(
+                self.cli_ctx, "PATCH", resource_id, NETWORK_API_VERSION, body={"properties": properties},
+            )
+            if not (isinstance(updated, dict) and updated.get("properties")):
+                updated = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION)
 
         # The PATCH targets the agent resource itself, so trim the response to
         # the networking fields like the other extension commands do.
         return _network_view(updated)
+
+
+def _has_network_setting(value):
+    """True if a null-free network configuration still sets something. A list
+    counts, even an empty one: it replaces the stored list."""
+    if isinstance(value, dict):
+        return any(_has_network_setting(item) for item in value.values())
+    return value is not None
 
 
 def _network_view(agent):
@@ -4208,7 +4601,9 @@ def _validate_plugin_installations_shape(parsed):
     """Confirmed via a real live create/show round-trip against a test
     agent (Agents.http's worked example payload), which the service
     accepted and echoed back enriched with defaults (autoUpdate,
-    mcpConnectorStatus, source.credentials/ref/sha/url)."""
+    mcpConnectorStatus, source.credentials/ref/sha/url). The PUT route
+    doesn't resolve a plugin from marketplaceName/pluginName alone, so the
+    source block is required."""
     if not isinstance(parsed, dict):
         raise CLIError("--value must be a JSON object that describes the plugin to install.")
     if "marketplaceName" in parsed and not isinstance(parsed["marketplaceName"], str):
@@ -4219,10 +4614,16 @@ def _validate_plugin_installations_shape(parsed):
         source = parsed["source"]
         if not isinstance(source, dict):
             raise CLIError("--value.source must be a JSON object (e.g. {\"type\": \"relative\", \"repo\": \"owner/repo\"}).")
-        if "type" in source and not isinstance(source["type"], str):
-            raise CLIError("--value.source.type must be a string.")
-        if "repo" in source and not isinstance(source["repo"], str):
-            raise CLIError("--value.source.repo must be a string.")
+        for key in ("type", "repo", "url"):
+            _require_str(source, key, "--value.source")
+    missing = [key for key in ("marketplaceName", "pluginName", "source") if not parsed.get(key)]
+    missing += [f"source.{key}" for key in ("type", "repo") if parsed.get("source") and not parsed["source"].get(key)]
+    if missing:
+        raise CLIError(
+            f"--value is missing {', '.join(missing)}. A plugin install needs marketplaceName, pluginName "
+            "and a source block naming the plugin's repo and its path in that repo, for example "
+            "{\"marketplaceName\": \"contoso-plugins\", \"pluginName\": \"datadog\", \"source\": "
+            "{\"type\": \"relative\", \"repo\": \"contoso/sre-plugins\", \"url\": \"plugins/datadog\"}}.")
 
 
 def _validate_incident_filters_shape(parsed):
@@ -4388,8 +4789,9 @@ def _validate_tools_shape(parsed):  # pylint: disable=too-many-branches
 # server-defaulted to null when omitted). An EARLIER conclusion recorded in
 # this file's EXTENSION_TYPES comment ("'subagents' is now CONFIRMED not
 # creatable this way") was WRONG -- it was based on a flawed experiment
-# (either the wrong extension-type path segment, e.g. "agents" instead of
-# "subagents", or the portal's YAML-apply shape sent to the wrong route).
+# (either the wrong extension-type path segment on the ARM route, e.g.
+# "agents" instead of "subagents" -- the agent's own API is the one that
+# uses "agents" -- or the portal's YAML-apply shape sent to the wrong route).
 # Embedding a per-agent hook (the portal's "Manage Hooks" button inside the
 # "Create a custom agent" dialog) is just the "hooks" field on this same
 # resource -- confirmed live with
@@ -4715,6 +5117,7 @@ def _normalize_extension_value(raw_value, extension_type=None):
     validator = EXTENSION_VALUE_VALIDATORS.get(extension_type)
     if validator is not None:
         validator(parsed)
+    _reject_masked_secrets(extension_type, parsed)
     if extension_type == "scheduledTasks" and _scheduled_task_enabled_to_status(parsed):
         raw_value = json.dumps(parsed)
     return raw_value
@@ -4810,6 +5213,8 @@ DIRECT_EXTENSION_ROUTES = {
     "hooks": ("/api/v2/extendedAgent/hooks", "GlobalHook"),
     "commonPrompts": ("/api/v2/extendedAgent/commonprompts", "CommonPrompt"),
     "scheduledTasks": ("/api/v2/extendedAgent/scheduledtasks", "ScheduledTask"),
+    # The agent API calls sub-agents "agents"; it answers .../extendedAgent/subagents with its web page.
+    "subagents": ("/api/v2/extendedAgent/agents", "ExtendedAgent"),
     "repositories": ("/api/v2/repos", "CodeRepo"),
     "httpTriggers": ("/api/v2/extendedAgent/httpTriggers", "HttpTrigger"),
     "pluginMarketplaces": ("/api/v2/extendedAgent/pluginMarketplaces", "Marketplace"),
@@ -4824,29 +5229,43 @@ DIRECT_NO_LIST_OR_DELETE = {"globalSettings"}
 
 
 class InternalTenantOnlyError(CLIError):
-    """The ARM extension route refused the agent's tenant."""
+    """ARM refused an agent extension request because of the tenant."""
 
 
 def _extension_arm_request(cli_ctx, extension_type, *args, **kwargs):
     """_arm_request for agent extensions, turning the service's tenant gate
-    into a plain message instead of a raw HTTP error."""
+    into InternalTenantOnlyError so the caller can use the agent's own API."""
     try:
         return _arm_request(cli_ctx, *args, **kwargs)
     except Exception as ex:
         response_text = getattr(getattr(ex, "response", None), "text", "") or ""
         if INTERNAL_TENANT_ONLY_MARKER in f"{ex} {response_text}".lower():
             raise InternalTenantOnlyError(
-                f"This tenant can't use '{extension_type}' yet. The service only "
-                "allows agent extensions in Microsoft internal tenants right now. "
-                "Nothing is wrong with your command or your agent. If you need "
-                "this in your tenant, please ask the SRE Agent team to open it up."
+                f"Azure Resource Manager refused this '{extension_type}' request. It accepts agent "
+                "extensions only in Microsoft internal tenants."
             ) from ex
         raise
 
 
+def _require_extension_name(name):
+    """Reject a name that would address something other than one item.
+
+    Both APIs put the name in the URL path. An empty name or '.' addresses
+    the whole collection, '..' its parent, and '/' or '\\' another path.
+    """
+    if (not isinstance(name, str) or not name.strip(" .") or "/" in name or "\\" in name
+            or any(ord(char) < 32 or ord(char) == 127 for char in name)):
+        raise InvalidArgumentValueError(
+            f"{name!r} isn't a valid name. A name can't be empty or only dots, "
+            "or contain '/', '\\' or control characters.")
+    return name
+
+
 def _direct_extension_path(extension_type, extension_name=None):
     base = DIRECT_EXTENSION_ROUTES[extension_type][0]
-    return f"{base}/{quote(extension_name, safe='')}" if extension_name else base
+    if extension_name is None:
+        return base
+    return f"{base}/{quote(_require_extension_name(extension_name), safe='')}"
 
 
 def _direct_extension_request(cli_ctx, agent_name, resource_group, method, path, **kwargs):
@@ -4896,8 +5315,10 @@ def _direct_extension_create(cli_ctx, agent_name, resource_group, extension_type
         _require_existing_http_client_tool(existing.get("properties") if isinstance(existing, dict) else None)
     envelope = {"name": name, "type": envelope_type, "properties": properties}
     result = _direct_extension_request(cli_ctx, agent_name, resource_group, "PUT", path, body=envelope)
-    return _direct_extension_to_arm_shape(
-        extension_type, result if isinstance(result, dict) and result.get("properties") else envelope)
+    if isinstance(result, dict) and isinstance(result.get("properties"), dict):
+        return _direct_extension_to_arm_shape(extension_type, {**result, "name": result.get("name") or name})
+    # The request can carry credentials, so don't print it back when the service answers without the item.
+    return {"name": name, "type": f"microsoft.app/agents/{extension_type}"}
 
 
 def _direct_auth_items(cli_ctx, agent_name, resource_group, extension_type):
@@ -4933,13 +5354,25 @@ def _direct_extension_list(cli_ctx, agent_name, resource_group, extension_type):
         return {"value": [_direct_auth_to_arm_shape(extension_type, i) for i in items]}
     result = _direct_extension_request(
         cli_ctx, agent_name, resource_group, "GET", _direct_extension_path(extension_type))
-    items = result.get("value") if isinstance(result, dict) else result
-    return {"value": [_direct_extension_to_arm_shape(extension_type, item) for item in items or []]}
+    return {"value": [_direct_extension_to_arm_shape(extension_type, item) for item in _direct_list_items(result)]}
+
+
+def _direct_list_items(result):
+    """The items of an agent API list, which answers with a bare array, 'value' or 'values'."""
+    if isinstance(result, list):
+        return result
+    if not result:
+        return []
+    if isinstance(result, dict):
+        for key in ("value", "values"):
+            if key in result and isinstance(result[key], (list, type(None))):
+                return result[key] or []
+    raise CLIError("The agent's API returned a list in a shape this command doesn't recognize.")
 
 
 def _direct_extension_delete(cli_ctx, agent_name, resource_group, extension_type, name):
     if extension_type == "azureDevOpsAuths":
-        path = f"{_direct_extension_path(extension_type)}?org={quote(name, safe='')}"
+        path = f"{_direct_extension_path(extension_type)}?org={quote(_require_extension_name(name), safe='')}"
     else:
         path = _direct_extension_path(extension_type, name)
     return _direct_extension_request(cli_ctx, agent_name, resource_group, "DELETE", path, missing_ok=True)
@@ -4951,10 +5384,8 @@ def _is_safe_extension_name(name):
 
 
 def _arm_extension_resource_id(agent_resource_id, extension_type, extension_name):
-    """Quote the name so '/' or '..' can't retarget the request to another resource."""
-    if not extension_name or extension_name in (".", ".."):
-        raise CLIError(f"'{extension_name}' isn't a valid extension name.")
-    return f"{agent_resource_id}/{extension_type}/{quote(extension_name, safe='')}"
+    """Quote the name so characters like '?' or '#' stay part of it."""
+    return f"{agent_resource_id}/{extension_type}/{quote(_require_extension_name(extension_name), safe='')}"
 
 
 def _arm_extension_create(
@@ -5010,9 +5441,30 @@ def _arm_extension_list(cli_ctx, agent_name, resource_group, extension_type):
     agent_resource_id = _resolve_agent_resource_id(cli_ctx, agent_name, resource_group)
     resource_id = f"{agent_resource_id}/{extension_type}"
     result = _extension_arm_request(cli_ctx, extension_type, "GET", resource_id, EXTENSION_API_VERSION)
-    if isinstance(result, dict) and isinstance(result.get("value"), list):
-        result["value"] = [_decode_extension_envelope(item) for item in result["value"]]
-    return result
+    if not (isinstance(result, dict) and isinstance(result.get("value"), list)):
+        return result
+    items = list(result["value"])
+    next_link, seen = result.get("nextLink"), set()
+    while next_link:
+        # The next page is fetched with an ARM token, so it must stay on ARM.
+        if next_link in seen or not _is_arm_url(cli_ctx, next_link):
+            raise CLIError(f"ARM returned an unexpected next page link for '{extension_type}': {next_link}")
+        seen.add(next_link)
+        page = _extension_arm_request(cli_ctx, extension_type, "GET", next_link, EXTENSION_API_VERSION)
+        if not (isinstance(page, dict) and isinstance(page.get("value"), list)):
+            raise CLIError(f"ARM returned an unexpected page while listing '{extension_type}'.")
+        items.extend(page["value"])
+        next_link = page.get("nextLink")
+    return {"value": [_decode_extension_envelope(item) for item in items]}
+
+
+def _is_arm_url(cli_ctx, url):
+    """True only for an https URL on the cloud's own Resource Manager host."""
+    if not isinstance(url, str) or "\\" in url or any(ord(char) < 33 for char in url):
+        return False
+    parsed = urlparse(url)
+    arm = urlparse(cli_ctx.cloud.endpoints.resource_manager)
+    return parsed.scheme == "https" and parsed.netloc.lower() == arm.netloc.lower()
 
 
 def _warn_no_extensions(extension_type, agent_name):
@@ -5146,38 +5598,125 @@ def _with_direct_fallback(arm_func, direct_func, cli_ctx, agent_name, resource_g
         return direct_func(cli_ctx, agent_name, resource_group, extension_type, *args, **direct_kwargs)
     try:
         return arm_func(cli_ctx, agent_name, resource_group, extension_type, *args, **kwargs)
-    except InternalTenantOnlyError:
+    except InternalTenantOnlyError as ex:
         if extension_type not in DIRECT_EXTENSION_ROUTES or (
                 extension_type in DIRECT_NO_LIST_OR_DELETE
                 and direct_func in (_direct_extension_list, _direct_extension_delete)):
-            raise
+            raise InternalTenantOnlyError(
+                f"{ex} The agent's own API has no route the CLI can use for it, so do this in the "
+                "Azure SRE Agent portal instead."
+            ) from ex
         logger.info("ARM route refused this tenant; using the agent's own API for '%s'.", extension_type)
         direct_kwargs = {k: v for k, v in kwargs.items() if k == "overwrite"} if direct_func is _direct_extension_create else {}
         return direct_func(cli_ctx, agent_name, resource_group, extension_type, *args, **direct_kwargs)
 
 
+REDACTED_SECRET = "******"
+# Values of these types can hold credentials: a plugin marketplace's
+# credentials.pat, an HttpClientTool's auth headers, a plugin install's
+# source.credentials.pat.
+SECRET_BEARING_EXTENSION_TYPES = frozenset({"tools", "pluginMarketplaces", "pluginInstallations"})
+_SECRET_KEYS = frozenset({
+    "pat", "password", "secret", "token", "apikey", "clientsecret", "accesstoken", "refreshtoken",
+    "privatekey", "connectionstring", "credential", "credentials",
+})
+_SECRET_HEADER_NAME = re.compile(r"auth|token|secret|key|password|cookie|signature|credential", re.IGNORECASE)
+
+
+def _map_extension_secrets(value, replace):
+    """Return value with replace(name, secret) applied to each credential in
+    it: values of secret-named keys and of secret-looking HTTP headers."""
+    if isinstance(value, list):
+        return [_map_extension_secrets(item, replace) for item in value]
+    if not isinstance(value, dict):
+        return value
+    mapped = {}
+    for key, item in value.items():
+        name = key.lower() if isinstance(key, str) else ""
+        if name in _SECRET_KEYS and isinstance(item, str) and item:
+            mapped[key] = replace(key, item)
+        elif name == "headers":
+            mapped[key] = _map_header_secrets(item, replace)
+        else:
+            mapped[key] = _map_extension_secrets(item, replace)
+    return mapped
+
+
+def _map_header_secrets(headers, replace):
+    def is_secret(header_name, header_value):
+        return bool(isinstance(header_value, str) and header_value
+                    and _SECRET_HEADER_NAME.search(str(header_name or "")))
+
+    if isinstance(headers, dict):
+        return {name: replace(name, value) if is_secret(name, value) else value for name, value in headers.items()}
+    if isinstance(headers, list):
+        return [dict(header, value=replace(header.get("key"), header["value"]))
+                if isinstance(header, dict) and is_secret(header.get("key"), header.get("value")) else header
+                for header in headers]
+    return headers
+
+
+def _mask_extension_secrets(extension_type, result):
+    if extension_type not in SECRET_BEARING_EXTENSION_TYPES:
+        return result
+    return _map_extension_secrets(result, lambda name, value: REDACTED_SECRET)
+
+
+def _reject_masked_secrets(extension_type, parsed):
+    """show and list mask credentials, so a value copied from their output
+    would overwrite the real credential with the mask."""
+    if extension_type not in SECRET_BEARING_EXTENSION_TYPES:
+        return
+    masked = []
+
+    def note(name, value):
+        if value == REDACTED_SECRET:
+            masked.append(name)
+        return value
+
+    _map_extension_secrets(parsed, note)
+    if masked:
+        raise CLIError(
+            f"--value has the masked text '{REDACTED_SECRET}' in '{masked[0]}', probably copied from "
+            "'show' or 'list' output. Put the real credential there, or the mask would replace it.")
+
+
+def _extension_read_trace_guard(extension_type):
+    """Reading a credential-bearing type returns the credential, so keep it out of the HTTP trace."""
+    return _no_http_trace() if extension_type in SECRET_BEARING_EXTENSION_TYPES else contextlib.nullcontext()
+
+
 def _extension_resource_create(cli_ctx, agent_name, resource_group, extension_type, extension_name, raw_value, overwrite=False):
+    _require_extension_name(extension_name)
     with _no_http_trace():
-        return _with_direct_fallback(
+        result = _with_direct_fallback(
             _arm_extension_create, _direct_extension_create, cli_ctx, agent_name, resource_group,
             extension_type, extension_name, raw_value, overwrite=overwrite)
+    return _mask_extension_secrets(extension_type, result)
 
 
 def _extension_resource_show(cli_ctx, agent_name, resource_group, extension_type, extension_name):
-    return _with_direct_fallback(
-        _arm_extension_show, _direct_extension_show, cli_ctx, agent_name, resource_group,
-        extension_type, extension_name)
+    _require_extension_name(extension_name)
+    with _extension_read_trace_guard(extension_type):
+        result = _with_direct_fallback(
+            _arm_extension_show, _direct_extension_show, cli_ctx, agent_name, resource_group,
+            extension_type, extension_name)
+    return _mask_extension_secrets(extension_type, result)
 
 
 def _extension_resource_list(cli_ctx, agent_name, resource_group, extension_type):
-    return _with_direct_fallback(
-        _arm_extension_list, _direct_extension_list, cli_ctx, agent_name, resource_group, extension_type)
+    with _extension_read_trace_guard(extension_type):
+        result = _with_direct_fallback(
+            _arm_extension_list, _direct_extension_list, cli_ctx, agent_name, resource_group, extension_type)
+    return _mask_extension_secrets(extension_type, result)
 
 
 def _extension_resource_delete(cli_ctx, agent_name, resource_group, extension_type, extension_name):
-    return _with_direct_fallback(
-        _arm_extension_delete, _direct_extension_delete, cli_ctx, agent_name, resource_group,
-        extension_type, extension_name)
+    _require_extension_name(extension_name)
+    with _extension_read_trace_guard(extension_type):
+        return _with_direct_fallback(
+            _arm_extension_delete, _direct_extension_delete, cli_ctx, agent_name, resource_group,
+            extension_type, extension_name)
 
 
 # --------------------------------------------------------------------------------------------
@@ -5381,38 +5920,52 @@ def _read_skill_md(file_path):
     """Parse a SKILL.md-style file into (frontmatter, skill_content).
 
     Matches the portal's "Skill builder" > "Create skill" dialog's own file
-    template: an optional '---'-delimited YAML frontmatter block containing
-    'name:'/'description:' lines, followed by the skill's markdown
-    instructions body. The service's skill shape has no 'name' field; a
-    skill's name is the resource name, so the frontmatter 'name:' can only
+    template: an optional '---'-delimited YAML frontmatter block (name,
+    description, tools), followed by the skill's markdown instructions body.
+    Only top-level keys count, so a nested 'name:' under another key can't
+    rename the skill. The service's skill shape has no 'name' field; a
+    skill's name is the resource name, so the frontmatter 'name' can only
     stand in for --name. The body becomes 'skillContent' verbatim. A plain
     file with no frontmatter is treated as the body only.
     """
+    import yaml
+
     if not os.path.isfile(file_path):
         raise CLIError(f"--file-path '{file_path}' does not exist.")
     with open(file_path, "r", encoding="utf-8-sig") as handle:
         text = handle.read()
 
-    frontmatter = {}
-    content = text
     lines = text.splitlines()
-    if lines and lines[0].strip() == "---":
-        end_idx = None
-        for idx in range(1, len(lines)):
-            if lines[idx].strip() == "---":
-                end_idx = idx
-                break
-        if end_idx is not None:
-            for line in lines[1:end_idx]:
-                if ":" not in line:
-                    continue
-                key, _, value = line.partition(":")
-                key = key.strip().lower()
-                value = value.strip().strip("'\"")
-                if key in ("name", "description") and value:
-                    frontmatter[key] = value
-            content = "\n".join(lines[end_idx + 1:]).strip("\n")
-    return frontmatter, content
+    if not lines or lines[0].strip() != "---":
+        return {}, text
+    end_idx = next((idx for idx in range(1, len(lines)) if lines[idx].strip() == "---"), None)
+    if end_idx is None:
+        return {}, text
+    try:
+        frontmatter = yaml.safe_load("\n".join(lines[1:end_idx]))
+    except yaml.YAMLError as ex:
+        mark = getattr(ex, "problem_mark", None)
+        where = f" on line {mark.line + 2}" if mark is not None else ""
+        raise CLIError(
+            f"The SKILL.md frontmatter isn't valid YAML{where}: {getattr(ex, 'problem', None) or ex}. "
+            "Put a value that contains ': ' or starts with a special character in quotes.") from ex
+    if frontmatter is None:
+        frontmatter = {}
+    if not isinstance(frontmatter, dict):
+        raise CLIError("The SKILL.md frontmatter must be 'key: value' lines, such as 'description: ...'.")
+    frontmatter = {str(key).lower(): value for key, value in frontmatter.items()}
+    return frontmatter, "\n".join(lines[end_idx + 1:]).strip("\n")
+
+
+def _skill_md_tools(tools):
+    """Tool names from the SKILL.md frontmatter: a YAML list, or names separated by commas or spaces."""
+    if tools is None:
+        return []
+    if isinstance(tools, str):
+        return [tool for tool in re.split(r"[\s,]+", tools) if tool]
+    if isinstance(tools, list) and all(isinstance(tool, str) for tool in tools):
+        return tools
+    raise CLIError("The SKILL.md frontmatter 'tools' must be a list of tool names, or pass --tools.")
 
 
 # ---- sre tool (portal: Extensions > Tools > Custom tools) ----
@@ -5642,11 +6195,65 @@ class AutomationHttpTriggerShow(_PinnedExtensionShow):
     _args_schema = None
 
 
+def _https_origin(url):
+    """(host, port) that requests connects to for an https URL, or None."""
+    try:
+        parsed = urlparse(url)
+        port = parsed.port or 443
+    except (TypeError, ValueError):
+        return None
+    if parsed.scheme != "https" or not parsed.hostname:
+        return None
+    return parsed.hostname, port
+
+
+def _post_to_agent_endpoint(cli_ctx, agent_endpoint, url, body):
+    """POST body to url with a data-plane token, only on the agent's own endpoint.
+
+    Every agent the caller can reach accepts the same token, so it isn't sent
+    to another host. A redirect fails the call instead of being followed:
+    send_raw_request always follows redirects, and a 307 or 308 resends the
+    body to the new location.
+    """
+    from azure.cli.core._profile import Profile
+    from azure.cli.core.azclierror import HTTPError
+    from azure.cli.core.util import get_az_rest_user_agent, should_disable_connection_verify
+
+    with requests.Session() as session:
+        prepared = session.prepare_request(requests.Request("POST", url, data=body, headers={
+            "Content-Type": "application/json", "User-Agent": get_az_rest_user_agent()}))
+        # Compare the URL as requests will send it, not as it was written.
+        origin = _https_origin(prepared.url)
+        if origin is None or origin != _https_origin(agent_endpoint):
+            raise CLIError(
+                f"Refusing to send your Azure CLI token to '{url}' because it isn't on the agent's "
+                f"own endpoint, {agent_endpoint}.")
+        (token_type, token, _), _, _ = Profile(cli_ctx=cli_ctx).get_raw_token(resource=DATA_PLANE_AUDIENCE)
+        prepared.headers["Authorization"] = f"{token_type} {token}"
+        settings = session.merge_environment_settings(
+            prepared.url, {}, None, not should_disable_connection_verify(), None)
+        response = session.send(prepared, allow_redirects=False, **settings)
+    logger.debug("POST %s returned %s.", prepared.url, response.status_code)
+    if 300 <= response.status_code < 400:
+        location = response.headers.get("Location")
+        target = f" to '{location}'" if location else ""
+        raise CLIError(
+            f"The trigger answered with a redirect ({response.status_code}){target}. Redirects aren't "
+            "followed here, so your token and payload weren't sent anywhere else.")
+    if not response.ok:
+        reason = response.reason or f"HTTP {response.status_code}"
+        if response.text:
+            reason += f"({response.text})"
+        raise HTTPError(reason, response)
+    return response
+
+
 @register_command("sre automation http-trigger invoke")
 class AutomationHttpTriggerInvoke(_PinnedExtensionShow):
     """Call an HTTP trigger now, the same way an external webhook would.
 
     Uses your Azure CLI sign-in for the call, so you need data-plane access to the agent.
+    The call goes only to the agent's own endpoint, and redirects aren't followed.
 
     :example: Fire a trigger with no payload
         az sre automation http-trigger invoke -g myrg --agent-name myagent --name alert-webhook
@@ -5683,18 +6290,24 @@ class AutomationHttpTriggerInvoke(_PinnedExtensionShow):
         if value.get("triggerEnabled") is False:
             raise CLIError("This HTTP trigger is disabled.")
         payload = _arg_value(getattr(self.ctx.args, "payload", None))
+        body = None
         if payload:
             try:
-                json.loads(payload)
+                # Re-serialized as ASCII JSON, as send_raw_request did, since http.client
+                # sends a str body as latin-1.
+                body = json.dumps(json.loads(payload))
             except ValueError as ex:
                 raise CLIError(f"--payload must be a JSON document: {ex}") from ex
-        response = send_raw_request(
-            self.cli_ctx, "POST", trigger_url,
-            headers=["Content-Type=application/json"],
-            body=payload or None,
-            resource=DATA_PLANE_AUDIENCE,
-        )
-        return response.json() if response.content else {}
+        endpoint = _resolve_agent_endpoint(
+            self.cli_ctx, _arg_value(self.ctx.args.agent_name), _arg_value(self.ctx.args.resource_group))
+        response = _post_to_agent_endpoint(self.cli_ctx, endpoint, trigger_url, body)
+        if not response.content:
+            return {}
+        try:
+            return response.json()
+        except ValueError:
+            # The trigger already ran, so report its reply instead of failing and inviting a retry.
+            return {"statusCode": response.status_code, "body": response.text}
 
 
 @register_command("sre automation http-trigger list")
@@ -6724,8 +7337,8 @@ class SkillCreate(_PinnedExtensionCreate):
         schema.file_path = AAZStrArg(
             options=["--file-path"],
             arg_group="Skill builder",
-            help="Path to a SKILL.md-style file: an optional frontmatter "
-            "block between '---' lines with 'name:' and 'description:' lines, followed "
+            help="Path to a SKILL.md-style file: an optional YAML frontmatter "
+            "block between '---' lines with name, description and tools, followed "
             "by the skill's Markdown instructions. The frontmatter name is used when "
             "--name is omitted. Alternative to --value.",
         )
@@ -6733,7 +7346,8 @@ class SkillCreate(_PinnedExtensionCreate):
             options=["--tools"],
             arg_group="Skill builder",
             help="Space-separated tool names this skill can use when "
-            "active. Only used with --file-path; defaults to none.",
+            "active. Only used with --file-path; overrides the SKILL.md "
+            "frontmatter's 'tools'. Defaults to none.",
         )
         schema.tools.Element = AAZStrArg()
         schema.description = AAZStrArg(
@@ -6761,16 +7375,16 @@ class SkillCreate(_PinnedExtensionCreate):
 
         frontmatter, content = _read_skill_md(file_path)
         md_name = frontmatter.get("name")
-        if md_name is not None and not _is_safe_extension_name(md_name):
-            raise CLIError(
-                f"SKILL.md frontmatter name '{md_name}' isn't a valid skill name. Use letters, "
-                "digits, '.', '_' or '-', or pass --name."
-            )
         if not name:
-            if not md_name:
+            if md_name is None or md_name == "":
                 raise CLIError("Pass --name, or add a 'name:' line to the SKILL.md frontmatter.")
+            if not _is_safe_extension_name(md_name):
+                raise CLIError(
+                    f"SKILL.md frontmatter name '{md_name}' isn't a valid skill name. Use letters, "
+                    "digits, '.', '_' or '-', or pass --name."
+                )
             args.extension_name = md_name
-        elif md_name and md_name != name:
+        elif md_name not in (None, "") and md_name != name:
             logger.warning(
                 "Creating skill '%s'; the SKILL.md frontmatter name '%s' is ignored because --name was given.",
                 name, md_name)
@@ -6780,9 +7394,11 @@ class SkillCreate(_PinnedExtensionCreate):
                 "No description found. Add a 'description:' line to the "
                 "SKILL.md frontmatter, or pass --description."
             )
-        tools = _arg_value(getattr(args, "tools", None)) or []
+        if not isinstance(description, str):
+            raise CLIError("The SKILL.md frontmatter description must be text. Quote it, or pass --description.")
+        tools = _arg_value(getattr(args, "tools", None)) or _skill_md_tools(frontmatter.get("tools"))
         args.value = json.dumps(
-            {"description": description, "tools": list(tools), "skillContent": content}
+            {"description": description.strip(), "tools": list(tools), "skillContent": content}
         )
 
 
@@ -6890,16 +7506,25 @@ class SubagentCreate(_PinnedExtensionCreate):
             raise CLIError("--value must be a JSON object that describes the sub-agent.")
         with open(script_file, "r", encoding="utf-8-sig") as handle:
             script = handle.read()
-        hooks = parsed.setdefault("hooks", {})
-        hooks["PreToolUse"] = [
-            {
-                "type": "command",
-                "matcher": "(?s:.*)",
-                "timeout": 30,
-                "failMode": "block",
-                "script": script,
-            }
-        ]
+        hooks = parsed.get("hooks")
+        if hooks is None:
+            hooks = parsed["hooks"] = {}
+        if not isinstance(hooks, dict):
+            raise CLIError("--value.hooks must be a JSON object.")
+        pre_tool_use = hooks.get("PreToolUse")
+        if pre_tool_use is None:
+            pre_tool_use = []
+        if not isinstance(pre_tool_use, list):
+            raise CLIError("--value.hooks.PreToolUse must be a JSON array.")
+        script_hook = {
+            "type": "command",
+            "matcher": "(?s:.*)",
+            "timeout": 30,
+            "failMode": "block",
+            "script": script,
+        }
+        # Keep the hooks already in --value; re-running with the same script doesn't add it twice.
+        hooks["PreToolUse"] = pre_tool_use + ([] if script_hook in pre_tool_use else [script_hook])
         args.value = json.dumps(parsed)
 
     def _handler(self, command_args):
@@ -7094,7 +7719,7 @@ class InstructionsShow(_PinnedExtensionShow):
     'az sre instructions create -h'). To see that box's text, run
     'az sre agent settings show' and read its 'customInstructions' field.
 
-    :example: Show an agent's current custom instructions
+    :example: Show a reusable prompt snippet
         az sre instructions show -g myrg --agent-name myagent --name default
     """
 
@@ -7109,7 +7734,7 @@ class InstructionsList(_PinnedExtensionList):
     Important: these aren't the portal's "Custom instructions" box (see
     'az sre instructions create -h').
 
-    :example: List an agent's custom instructions entries
+    :example: List an agent's reusable prompt snippets
         az sre instructions list -g myrg --agent-name myagent
     """
 
@@ -7128,7 +7753,7 @@ class InstructionsDelete(_PinnedExtensionDelete):
     'az sre instructions create -h'). To clear that box, run
     'az sre agent settings update --value \\'{"customInstructions": ""}\\''.
 
-    :example: Delete an agent's custom instructions
+    :example: Delete a reusable prompt snippet
         az sre instructions delete -g myrg --agent-name myagent --name default
     """
 
@@ -7240,8 +7865,7 @@ class PluginInstallCreate(_PinnedExtensionCreate):
 
     :example: Install a plugin from a connected marketplace
         az sre plugin install create -g myrg --agent-name myagent --name datadog \\
-            --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", \\
-            "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}'
+            --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}'
     """
 
     _EXTENSION_TYPE = "pluginInstallations"
