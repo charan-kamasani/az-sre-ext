@@ -48,6 +48,7 @@ from azext_sre.custom import (
     ConnectorUpdate,
     ConnectorList,
     _ConnectorPartnerTypeMixin,
+    _ConnectorUpdateMcpArgsMixin,
     GrantAccess,
     RevokeAccess,
     ManagedResourceGrant,
@@ -6144,6 +6145,97 @@ class McpEndpointSafetyTests(unittest.TestCase):
         _, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", managed_identity_auth=True,
                            mi_token_scope="api://contoso-mcp/.default")
         log.warning.assert_not_called()
+
+    def test_malformed_endpoint_is_rejected(self):
+        for endpoint in ("https://exa mple/mcp", "https://example.com/%%", "https://example.com/a%zz",
+                         "https://", "https:///mcp", "https://exa_mple.com/mcp", "https://example.com:99999/"):
+            with self.subTest(endpoint=endpoint), self.assertRaises(InvalidArgumentValueError):
+                self._run(mcp_endpoint=endpoint)
+
+    def test_well_formed_endpoints_are_accepted(self):
+        for endpoint in ("https://mcp.contoso.com:8443/v1/mcp?x=1", "https://10.0.0.4/mcp",
+                         "https://example.com/a%20b"):
+            with self.subTest(endpoint=endpoint):
+                self.assertEqual(self._run(mcp_endpoint=endpoint)[0].data_source, endpoint)
+
+    def test_bearer_token_from_a_missing_file_is_rejected(self):
+        # Azure CLI leaves '@path' as typed when it can't read the file.
+        with self.assertRaisesRegex(InvalidArgumentValueError, "nope.txt"):
+            self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="@C:\\nope.txt")
+
+
+class ConnectorUpdateMcpArgsTests(unittest.TestCase):
+    """'connector update' takes create's Mcp endpoint and auth flags."""
+
+    class _Base:
+        def pre_operations(self):
+            pass
+
+        def post_instance_update(self, instance):
+            pass
+
+    class _Command(_ConnectorUpdateMcpArgsMixin, _Base):
+        pass
+
+    def _run(self, **extra_args):
+        args = {"data_connector_type": None, "mcp_endpoint": None, "data_source": None,
+                "extended_properties": None}
+        args.update(extra_args)
+        command = _bare_command(self._Command, **args)
+        with patch("azext_sre.custom.logger") as fake_logger:
+            command.pre_operations()
+        return command, fake_logger
+
+    @staticmethod
+    def _instance(connector_type):
+        return SimpleNamespace(properties=SimpleNamespace(
+            data_connector_type=SimpleNamespace(to_serialized_data=lambda: connector_type)))
+
+    def test_bearer_token_rotation_sends_endpoint_and_token(self):
+        command, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="new-token")
+        self.assertEqual(command.ctx.args.data_source, "https://mcp.contoso.com/mcp")
+        self.assertEqual(command.ctx.args.extended_properties, {
+            "transport": "Http", "endpoint": "https://mcp.contoso.com/mcp",
+            "authType": "BearerToken", "bearerToken": "new-token"})
+        log.warning.assert_not_called()
+        command.post_instance_update(self._instance("Mcp"))
+
+    def test_auth_flag_without_an_endpoint_is_rejected(self):
+        with self.assertRaisesRegex(CLIError, "--mcp-endpoint"):
+            self._run(bearer_token="new-token")
+
+    def test_endpoint_from_extended_properties_is_enough(self):
+        command, _ = self._run(bearer_token="new-token",
+                               extended_properties={"transport": "Http", "endpoint": "https://x.contoso.com"})
+        self.assertEqual(command.ctx.args.extended_properties["bearerToken"], "new-token")
+
+    def test_endpoint_without_auth_warns_that_auth_is_dropped(self):
+        _, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp")
+        log.warning.assert_called_once()
+
+    def test_missing_token_file_and_malformed_endpoint_are_rejected(self):
+        with self.assertRaises(InvalidArgumentValueError):
+            self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="@nope.txt")
+        with self.assertRaises(InvalidArgumentValueError):
+            self._run(mcp_endpoint="https://exa mple/mcp", bearer_token="t")
+
+    def test_non_mcp_connector_is_rejected(self):
+        with self.assertRaisesRegex(CLIError, "Mcp"):
+            self._run(data_connector_type="Kusto", mcp_endpoint="https://mcp.contoso.com/mcp")
+        command, _ = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="t")
+        with self.assertRaisesRegex(CLIError, "Mcp"):
+            command.post_instance_update(self._instance("KustoClient"))
+
+    def test_without_mcp_flags_nothing_changes(self):
+        command, _ = self._run(data_source="https://cluster.kusto.windows.net/db")
+        self.assertIsNone(command.ctx.args.extended_properties)
+        command.post_instance_update(self._instance("KustoClient"))
+
+    def test_update_schema_has_the_flags(self):
+        schema = ConnectorUpdate._build_arguments_schema()
+        for name in ("mcp_endpoint", "bearer_token", "managed_identity_auth", "mi_token_scope",
+                     "oauth_dcr", "oauth_scopes", "oauth_client_name"):
+            self.assertTrue(hasattr(schema, name), name)
 
 
 class Utf8BomFileTests(unittest.TestCase):

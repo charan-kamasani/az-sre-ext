@@ -1647,6 +1647,129 @@ class _DataConnectorTypeArgMixin:
 GITHUB_COPILOT_MCP_ENDPOINT = "https://api.githubcopilot.com/mcp/"
 
 
+def _validate_mcp_endpoint(endpoint):
+    """The service stores whatever endpoint it's given, so catch a malformed
+    one here: https only, a real host name, no spaces and no bare '%'."""
+    message = "--mcp-endpoint must be a valid https:// URL, for example https://myserver.contoso.com/mcp."
+    if any(char.isspace() for char in endpoint) or re.search(r"%(?![0-9A-Fa-f]{2})", endpoint):
+        raise InvalidArgumentValueError(message)
+    try:
+        parsed = urlparse(endpoint)
+        parsed.port  # pylint: disable=pointless-statement
+    except ValueError:
+        raise InvalidArgumentValueError(message) from None
+    if (parsed.scheme.lower() != "https" or not parsed.hostname
+            or not re.fullmatch(r"[A-Za-z0-9.:-]+", parsed.hostname)):
+        raise InvalidArgumentValueError(message)
+
+
+def _add_mcp_auth_args(schema):
+    # --bearer-token / --managed-identity-auth / --mi-token-scope /
+    # --oauth-dcr / --oauth-scopes / --oauth-client-name: convenience
+    # flags for the Mcp connector's 'extendedProperties.authType',
+    # matching the real portal wizard's 4 "Authentication method"
+    # choices (No authentication / Bearer token / Managed identity /
+    # OAuth (dynamic client registration)). Wire shapes confirmed by
+    # reading sreagent-runtime's McpDataConnector.cs
+    # BuildAuthenticationConfig (authType values: "BearerToken",
+    # "AzureARM", "SpecOAuth" -- dictionary keys are matched
+    # case-insensitively there, so lowerCamelCase here is fine, same
+    # as the "transport"/"endpoint" keys).
+    schema.bearer_token = AAZStrArg(
+        options=["--bearer-token"],
+        arg_group="MCP",
+        help="For Mcp: static bearer token, PAT or API key sent with every request. "
+             "Use @file to read it from a file.",
+    )
+    schema.managed_identity_auth = AAZBoolArg(
+        options=["--managed-identity-auth"],
+        arg_group="MCP",
+        help="For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one.",
+    )
+    schema.mi_token_scope = AAZStrArg(
+        options=["--mi-token-scope"],
+        arg_group="MCP",
+        help="For Mcp with --managed-identity-auth: token scope to request. "
+             "Default: `https://management.azure.com/.default`.",
+    )
+    schema.oauth_dcr = AAZBoolArg(
+        options=["--oauth-dcr"],
+        arg_group="MCP",
+        help="For Mcp: use OAuth with dynamic client registration. Finish consent in the portal.",
+    )
+    schema.oauth_scopes = AAZStrArg(
+        options=["--oauth-scopes"],
+        arg_group="MCP",
+        help="For Mcp with --oauth-dcr: comma-separated OAuth scopes to request.",
+    )
+    schema.oauth_client_name = AAZStrArg(
+        options=["--oauth-client-name"],
+        arg_group="MCP",
+        help="For Mcp with --oauth-dcr: client name to register. Optional.",
+    )
+
+
+def _mcp_auth_properties(args, existing):
+    """Merge the Mcp auth flags into the extended properties `existing`.
+
+    Returns None when no auth flag was passed. The caller checks that the
+    connector is an Mcp one."""
+    bearer_token = _arg_value(getattr(args, "bearer_token", None))
+    if bearer_token:
+        if bearer_token.startswith("@"):
+            # Azure CLI replaces @path with the file's contents, but leaves the
+            # text alone when it can't read the file. Sending it would store the
+            # path as the token and the connector would never authenticate.
+            raise InvalidArgumentValueError(
+                f"--bearer-token: can't read the file '{bearer_token[1:]}'. Check the path. "
+                "Nothing was sent.")
+        _warn_if_secret_typed("--bearer-token", "read it from a file with --bearer-token @token.txt")
+    managed_identity_auth = _arg_value(getattr(args, "managed_identity_auth", None))
+    mi_token_scope = _arg_value(getattr(args, "mi_token_scope", None))
+    oauth_dcr = _arg_value(getattr(args, "oauth_dcr", None))
+    oauth_scopes = _arg_value(getattr(args, "oauth_scopes", None))
+    oauth_client_name = _arg_value(getattr(args, "oauth_client_name", None))
+
+    auth_flags_used = [
+        bool(bearer_token),
+        bool(managed_identity_auth or mi_token_scope),
+        bool(oauth_dcr),
+    ]
+    if sum(auth_flags_used) > 1:
+        raise CLIError(
+            "Only one of --bearer-token, --managed-identity-auth/"
+            "--mi-token-scope, or --oauth-dcr can be used at a time -- "
+            "each sets a different extended-properties.authType."
+        )
+    if (oauth_scopes or oauth_client_name) and not oauth_dcr:
+        raise CLIError("--oauth-scopes/--oauth-client-name require --oauth-dcr true.")
+    if not any(auth_flags_used):
+        return None
+
+    if bearer_token:
+        return {**existing, "authType": "BearerToken", "bearerToken": bearer_token}
+    if managed_identity_auth or mi_token_scope:
+        if not mi_token_scope:
+            target = existing.get("endpoint") or _arg_value(getattr(args, "data_source", None)) or ""
+            logger.warning(
+                "--managed-identity-auth without --mi-token-scope sends the agent's managed "
+                "identity ARM token (https://management.azure.com/.default) to '%s'. Only use "
+                "this with an MCP server you trust, or pass --mi-token-scope for its own audience.",
+                urlparse(target).hostname or target or "the MCP endpoint",
+            )
+        return {
+            **existing,
+            "authType": "AzureARM",
+            "armScope": mi_token_scope or "https://management.azure.com/.default",
+        }
+    properties = {**existing, "authType": "SpecOAuth"}
+    if oauth_scopes:
+        properties["scopes"] = oauth_scopes
+    if oauth_client_name:
+        properties["dcrClientName"] = oauth_client_name
+    return properties
+
+
 class _ConnectorConvenienceArgsMixin:
     """Adds --file-path/--mcp-endpoint/--github to 'connector create', so
     KnowledgeFile/KnowledgeText/Mcp connectors don't require a hand-built
@@ -1685,47 +1808,7 @@ class _ConnectorConvenienceArgsMixin:
             arg_group="Properties",
             help="For KustoClient: let the agent use query tools from this connector (portal 'Allow agent to use query tools').",
         )
-        # --bearer-token / --managed-identity-auth / --mi-token-scope /
-        # --oauth-dcr / --oauth-scopes / --oauth-client-name: convenience
-        # flags for the Mcp connector's 'extendedProperties.authType',
-        # matching the real portal wizard's 4 "Authentication method"
-        # choices (No authentication / Bearer token / Managed identity /
-        # OAuth (dynamic client registration)). Wire shapes confirmed by
-        # reading sreagent-runtime's McpDataConnector.cs
-        # BuildAuthenticationConfig (authType values: "BearerToken",
-        # "AzureARM", "SpecOAuth" -- dictionary keys are matched
-        # case-insensitively there, so lowerCamelCase here is fine, same
-        # as the pre-existing "transport"/"endpoint" keys above).
-        schema.bearer_token = AAZStrArg(
-            options=["--bearer-token"],
-            arg_group="MCP",
-            help="For Mcp: static bearer token, PAT or API key sent with every request.",
-        )
-        schema.managed_identity_auth = AAZBoolArg(
-            options=["--managed-identity-auth"],
-            arg_group="MCP",
-            help="For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one.",
-        )
-        schema.mi_token_scope = AAZStrArg(
-            options=["--mi-token-scope"],
-            arg_group="MCP",
-            help="For Mcp with --managed-identity-auth: token scope to request. Default: `https://management.azure.com/.default`.",
-        )
-        schema.oauth_dcr = AAZBoolArg(
-            options=["--oauth-dcr"],
-            arg_group="MCP",
-            help="For Mcp: use OAuth with dynamic client registration. Finish consent in the portal.",
-        )
-        schema.oauth_scopes = AAZStrArg(
-            options=["--oauth-scopes"],
-            arg_group="MCP",
-            help="For Mcp with --oauth-dcr: comma-separated OAuth scopes to request.",
-        )
-        schema.oauth_client_name = AAZStrArg(
-            options=["--oauth-client-name"],
-            arg_group="MCP",
-            help="For Mcp with --oauth-dcr: client name to register. Optional.",
-        )
+        _add_mcp_auth_args(schema)
         return schema
 
     # Set by pre_operations() when --file-path was used, so _output() (see
@@ -1767,8 +1850,7 @@ class _ConnectorConvenienceArgsMixin:
             if connector_type != "Mcp":
                 raise CLIError("--github/--mcp-endpoint require --data-connector-type Mcp.")
             endpoint = GITHUB_COPILOT_MCP_ENDPOINT if github else mcp_endpoint
-            if urlparse(endpoint).scheme.lower() != "https":
-                raise InvalidArgumentValueError("--mcp-endpoint must be an https:// URL.")
+            _validate_mcp_endpoint(endpoint)
             args.data_source = endpoint
             existing = _arg_value(getattr(args, "extended_properties", None)) or {}
             if not isinstance(existing, dict):
@@ -1803,66 +1885,17 @@ class _ConnectorConvenienceArgsMixin:
                 args.extended_properties = {"content": text}
             self._file_path_used = True
 
-        bearer_token = _arg_value(getattr(args, "bearer_token", None))
-        if bearer_token:
-            _warn_if_secret_typed("--bearer-token", "read it from a file with --bearer-token @token.txt")
-        managed_identity_auth = _arg_value(getattr(args, "managed_identity_auth", None))
-        mi_token_scope = _arg_value(getattr(args, "mi_token_scope", None))
-        oauth_dcr = _arg_value(getattr(args, "oauth_dcr", None))
-        oauth_scopes = _arg_value(getattr(args, "oauth_scopes", None))
-        oauth_client_name = _arg_value(getattr(args, "oauth_client_name", None))
-
-        auth_flags_used = [
-            bool(bearer_token),
-            bool(managed_identity_auth or mi_token_scope),
-            bool(oauth_dcr),
-        ]
-        if sum(auth_flags_used) > 1:
-            raise CLIError(
-                "Only one of --bearer-token, --managed-identity-auth/"
-                "--mi-token-scope, or --oauth-dcr can be used at a time -- "
-                "each sets a different extended-properties.authType."
-            )
-        if oauth_scopes or oauth_client_name:
-            if not oauth_dcr:
-                raise CLIError("--oauth-scopes/--oauth-client-name require --oauth-dcr true.")
-
-        if any(auth_flags_used):
+        existing = _arg_value(getattr(args, "extended_properties", None)) or {}
+        if not isinstance(existing, dict):
+            existing = {}
+        auth_properties = _mcp_auth_properties(args, existing)
+        if auth_properties is not None:
             if connector_type != "Mcp":
                 raise CLIError(
                     "--bearer-token/--managed-identity-auth/--mi-token-scope/"
                     "--oauth-dcr require --data-connector-type Mcp."
                 )
-            existing = _arg_value(getattr(args, "extended_properties", None)) or {}
-            if not isinstance(existing, dict):
-                existing = {}
-            if bearer_token:
-                existing = {
-                    **existing,
-                    "authType": "BearerToken",
-                    "bearerToken": bearer_token,
-                }
-            elif managed_identity_auth or mi_token_scope:
-                if not mi_token_scope:
-                    target = existing.get("endpoint") or _arg_value(getattr(args, "data_source", None)) or ""
-                    logger.warning(
-                        "--managed-identity-auth without --mi-token-scope sends the agent's managed "
-                        "identity ARM token (https://management.azure.com/.default) to '%s'. Only use "
-                        "this with an MCP server you trust, or pass --mi-token-scope for its own audience.",
-                        urlparse(target).hostname or target or "the MCP endpoint",
-                    )
-                existing = {
-                    **existing,
-                    "authType": "AzureARM",
-                    "armScope": mi_token_scope or "https://management.azure.com/.default",
-                }
-            elif oauth_dcr:
-                existing = {**existing, "authType": "SpecOAuth"}
-                if oauth_scopes:
-                    existing["scopes"] = oauth_scopes
-                if oauth_client_name:
-                    existing["dcrClientName"] = oauth_client_name
-            args.extended_properties = existing
+            args.extended_properties = auth_properties
 
         super().pre_operations()
 
@@ -1984,6 +2017,66 @@ class _SecretHttpOperationMixin:
             return super().__call__(*args, **kwargs)
 
 
+class _ConnectorUpdateMcpArgsMixin:
+    """Gives 'connector update' create's --mcp-endpoint and Mcp auth flags, so
+    a token can be rotated without hand-building --extended-properties.
+    Without --bearer-token here, Azure CLI rejected it as an unrecognized
+    argument and printed the token in the error, which it also writes to
+    ~/.azure/commands."""
+
+    _mcp_flags_used = False
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        if hasattr(schema, "mcp_endpoint"):
+            return schema
+        schema.mcp_endpoint = AAZStrArg(
+            options=["--mcp-endpoint"],
+            arg_group="MCP",
+            help="For Mcp: the MCP server's HTTP endpoint URL. Required with the auth flags, "
+                 "because the service never returns it.",
+        )
+        _add_mcp_auth_args(schema)
+        return schema
+
+    def pre_operations(self):
+        args = self.ctx.args
+        mcp_endpoint = _arg_value(getattr(args, "mcp_endpoint", None))
+        existing = _arg_value(getattr(args, "extended_properties", None)) or {}
+        if not isinstance(existing, dict):
+            existing = {}
+        if mcp_endpoint:
+            _validate_mcp_endpoint(mcp_endpoint)
+            args.data_source = mcp_endpoint
+            existing = {**existing, "transport": "Http", "endpoint": mcp_endpoint}
+        auth_properties = _mcp_auth_properties(args, existing)
+        if mcp_endpoint or auth_properties is not None:
+            connector_type = _arg_value(getattr(args, "data_connector_type", None))
+            if connector_type is not None and connector_type != "Mcp":
+                raise CLIError("--mcp-endpoint and the MCP auth flags only apply to Mcp connectors.")
+            properties = existing if auth_properties is None else auth_properties
+            if not properties.get("endpoint"):
+                raise CLIError(
+                    "Pass --mcp-endpoint too. The service never returns an MCP connector's "
+                    "endpoint, so the update has to send it again.")
+            if not properties.get("authType") and not properties.get("headers"):
+                logger.warning(
+                    "No auth flag was passed, so the connector is saved without authentication. "
+                    "Pass --bearer-token, --managed-identity-auth or --oauth-dcr to keep one.")
+            args.extended_properties = properties
+            self._mcp_flags_used = True
+        super().pre_operations()
+
+    def post_instance_update(self, instance):
+        super().post_instance_update(instance)
+        if not self._mcp_flags_used:
+            return
+        connector_type = instance.properties.data_connector_type.to_serialized_data()
+        if not isinstance(connector_type, str) or connector_type.lower() != "mcp":
+            raise CLIError("--mcp-endpoint and the MCP auth flags only apply to Mcp connectors.")
+
+
 @register_command("sre connector create")
 class ConnectorCreate(
     _DataConnectorTypeArgMixin,
@@ -2090,6 +2183,7 @@ def _require_write_only_settings(args, instance):
 class ConnectorUpdate(
     _ConnectorNameCheckMixin,
     _DataConnectorTypeArgMixin,
+    _ConnectorUpdateMcpArgsMixin,
     _ConnectorPartnerTypeMixin,
     _GeneratedConnectorUpdate,
 ):
@@ -2099,12 +2193,16 @@ class ConnectorUpdate(
     connector's data source or identity, or an MCP connector's endpoint and
     credentials. So pass --data-source and --identity on every update (null for
     one the connector doesn't have), and pass all of an MCP connector's
-    --extended-properties. To change a knowledge source, run
-    'az sre knowledge create' with --overwrite.
+    --extended-properties, or --mcp-endpoint plus its auth flag. To change a
+    knowledge source, run 'az sre knowledge create' with --overwrite.
 
     :example: Point a Kusto connector that has no identity at a different database
         az sre connector update -g myrg --agent-name myagent -n conn-kusto \\
             --data-source "https://mycluster.westus.kusto.windows.net/otherdb" --identity null
+
+    :example: Rotate an MCP connector's bearer token, read from a file
+        az sre connector update -g myrg --agent-name myagent -n mcp --identity null \\
+            --mcp-endpoint "https://myserver.contoso.com/mcp" --bearer-token @token.txt
 
     :example: Mark an MCP connector as a Dynatrace integration
         az sre connector update -g myrg --agent-name myagent -n dynatrace --partner-type DynatraceMcp \\

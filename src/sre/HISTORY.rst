@@ -14,3 +14,6 @@ Release History
 * `az sre connector list-secret` prints `dataSource`, which Azure CLI hid before.
 * Errors from nested `az` commands no longer repeat their arguments, and `az sre knowledge create` keeps its `--data-source` value out of debug logs.
 * `az sre connector create --oauth-dcr true` prints the portal link where the sign-in is finished.
+* `az sre connector update` takes `--mcp-endpoint` and the MCP auth flags (`--bearer-token`, `--managed-identity-auth`, `--oauth-dcr` and their options), so an MCP connector's token can be rotated. Before, `--bearer-token` was an unknown argument and Azure CLI echoed the token in its error and command log.
+* `--bearer-token @file` refuses to continue when the file can't be read, instead of saving the literal `@path` as the token.
+* `--mcp-endpoint` must be a well-formed `https://` URL; values with spaces, bad `%` escapes, a missing host or an invalid port are refused before anything is sent.

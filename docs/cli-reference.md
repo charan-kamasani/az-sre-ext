@@ -499,7 +499,7 @@ Connect an SRE Agent to an external data source it can query or act on.
 | `list` | `az sre connector list [--next-token <value>] [--max-items <value>] --agent-name <value> --resource-group <value>` |
 | `list-secret` | `az sre connector list-secret --agent-name <value> --name <value> --resource-group <value>` |
 | `show` | `az sre connector show --agent-name <value> --name <value> --resource-group <value>` |
-| `update` | `az sre connector update [--no-wait] [--add <value>] [--set <value>] [--remove <value>] [--force-string {true,t,yes,y,1,false,f,no,n,0}] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--partner-type <value>]` |
+| `update` | `az sre connector update [--no-wait] [--add <value>] [--set <value>] [--remove <value>] [--force-string {true,t,yes,y,1,false,f,no,n,0}] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--partner-type <value>] [--mcp-endpoint <value>] [--bearer-token <value>] [--managed-identity-auth {false,true}] [--mi-token-scope <value>] [--oauth-dcr {false,true}] [--oauth-scopes <value>] [--oauth-client-name <value>]` |
 | `wait` | `az sre connector wait --agent-name <value> --name <value> --resource-group <value>` |
 
 ### `az sre connector create`
@@ -526,7 +526,7 @@ Create an Agent Connector.
 | `--mcp-endpoint` | String | No |  |  | For Mcp: the MCP server's HTTP endpoint URL. |
 | `--github` | Boolean | No |  | `false`, `true` | For Mcp: connect the public GitHub Copilot MCP server (`https://api.githubcopilot.com/mcp/`). |
 | `--tool-access` | Boolean | No |  | `false`, `true` | For KustoClient: let the agent use query tools from this connector (portal 'Allow agent to use query tools'). |
-| `--bearer-token` | String | No |  |  | For Mcp: static bearer token, PAT or API key sent with every request. |
+| `--bearer-token` | String | No |  |  | For Mcp: static bearer token, PAT or API key sent with every request. Use @file to read it from a file. |
 | `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one. |
 | `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth: token scope to request. Default: `https://management.azure.com/.default`. |
 | `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
@@ -681,11 +681,11 @@ consentStatus is shown for EntraOAuth-backed Mcp connectors.
 
 Update an Agent Connector.
 
-An update sends the whole connector back, and the service never returns a connector's data source or identity, or an MCP connector's endpoint and credentials. So pass --data-source and --identity on every update (null for one the connector doesn't have), and pass all of an MCP connector's --extended-properties. To change a knowledge source, run 'az sre knowledge create' with --overwrite.
+An update sends the whole connector back, and the service never returns a connector's data source or identity, or an MCP connector's endpoint and credentials. So pass --data-source and --identity on every update (null for one the connector doesn't have), and pass all of an MCP connector's --extended-properties, or --mcp-endpoint plus its auth flag. To change a knowledge source, run 'az sre knowledge create' with --overwrite.
 
 **Syntax**
 
-`az sre connector update [--no-wait] [--add <value>] [--set <value>] [--remove <value>] [--force-string {true,t,yes,y,1,false,f,no,n,0}] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--partner-type <value>]`
+`az sre connector update [--no-wait] [--add <value>] [--set <value>] [--remove <value>] [--force-string {true,t,yes,y,1,false,f,no,n,0}] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--partner-type <value>] [--mcp-endpoint <value>] [--bearer-token <value>] [--managed-identity-auth {false,true}] [--mi-token-scope <value>] [--oauth-dcr {false,true}] [--oauth-scopes <value>] [--oauth-client-name <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -703,6 +703,13 @@ An update sends the whole connector back, and the service never returns a connec
 | `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. On update, this replaces all of them. |
 | `--identity` | String | No |  |  | 'system' for the agent's system-assigned identity, or a user-assigned identity resource ID. On create, leave it out for no identity; on update, pass it again, or null for none. |
 | `--partner-type` | String | No |  |  | For Mcp: the partner integration this server belongs to, for example DynatraceMcp. |
+| `--mcp-endpoint` | String | No |  |  | For Mcp: the MCP server's HTTP endpoint URL. Required with the auth flags, because the service never returns it. |
+| `--bearer-token` | String | No |  |  | For Mcp: static bearer token, PAT or API key sent with every request. Use @file to read it from a file. |
+| `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one. |
+| `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth: token scope to request. Default: `https://management.azure.com/.default`. |
+| `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
+| `--oauth-scopes` | String | No |  |  | For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. |
+| `--oauth-client-name` | String | No |  |  | For Mcp with --oauth-dcr: client name to register. Optional. |
 
 **Examples**
 
@@ -711,6 +718,12 @@ An update sends the whole connector back, and the service never returns a connec
   ```bash
   az sre connector update -g myrg --agent-name myagent -n conn-kusto \
   --data-source "https://mycluster.westus.kusto.windows.net/otherdb" --identity null
+  ```
+- Rotate an MCP connector's bearer token, read from a file
+
+  ```bash
+  az sre connector update -g myrg --agent-name myagent -n mcp --identity null \
+  --mcp-endpoint "https://myserver.contoso.com/mcp" --bearer-token @token.txt
   ```
 - Mark an MCP connector as a Dynatrace integration
 
