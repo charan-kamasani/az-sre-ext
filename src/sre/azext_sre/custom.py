@@ -8599,25 +8599,31 @@ def _detect_repo_provider(repo_url):
 def _validate_repo_url(repo_url, provider=None):
     """Check --repo-url before any credential is fetched and return its provider.
 
-    The agent uses its credential for the URL's host, so the host must be one
-    the provider owns, whichever way the provider was chosen. Backslashes and
-    control characters are rejected because urlparse and requests/urllib3
-    read such URLs as different hosts, and a user name or password in the URL
-    would be stored on the agent and printed.
+    The URL gets the same check as --agent-url and --mcp-endpoint, and the
+    agent uses its credential for the URL's host, so the host must also be
+    one the provider owns, whichever way the provider was chosen. That check
+    reads the URL after normalize_url, but the URL is stored as typed, so
+    backslashes, whitespace and control characters, which normalize_url and
+    other parsers read differently from urlparse, are refused first:
+    'https://github.com\\@evil.example/' normalizes to host github.com, while
+    urlparse reads evil.example. A user name or password in the URL would be
+    stored on the agent and printed.
     """
-    if not isinstance(repo_url, str) or "\\" in repo_url or any(ord(c) < 33 or ord(c) == 127 for c in repo_url):
+    if not isinstance(repo_url, str) or "\\" in repo_url or any(
+            char.isspace() or ord(char) < 32 or ord(char) == 127 for char in repo_url):
         raise InvalidArgumentValueError(
             "--repo-url must be a plain https clone URL, without spaces, backslashes or control characters.")
-    parsed = urlparse(repo_url)
-    host = (parsed.hostname or "").lower()
+    url_error = InvalidArgumentValueError(
+        "--repo-url must be an https clone URL, for example https://github.com/contoso/my-service.")
     try:
-        port = parsed.port
+        parsed = urlparse(repo_url)
     except ValueError:
-        port = -1
-    if parsed.scheme.lower() != "https" or not host or port == -1 or (
-            parsed.netloc.rpartition("@")[2].lower() != (f"{host}:{port}" if port else host)):
-        raise InvalidArgumentValueError(
-            "--repo-url must be an https clone URL, for example https://github.com/contoso/my-service.")
+        raise url_error from None
+    # _parse_https_url refuses any user name; the one allowed is checked below.
+    checked = _parse_https_url(parsed._replace(netloc=parsed.netloc.rpartition("@")[2]).geturl())
+    if checked is None:
+        raise url_error
+    checked_url, host = checked[0], checked[1].hostname
     if "@" in parsed.netloc and not (
             # The Azure DevOps portal's clone URLs start with '<organization>@'.
             _repo_provider_for_host(host) == "AzureDevOps" and parsed.password is None
@@ -8626,7 +8632,7 @@ def _validate_repo_url(repo_url, provider=None):
             "--repo-url must not contain a user name or token (the part before '@'): the URL is stored "
             "on the agent and shown in output. Use the plain clone URL. For GitHub, pass the token with "
             "GITHUB_TOKEN or --github-token \"@token.txt\".")
-    detected = _detect_repo_provider(repo_url)
+    detected = _detect_repo_provider(checked_url)
     if provider and provider != detected:
         raise InvalidArgumentValueError(
             f"--provider {provider} doesn't match the host of --repo-url ({host}). "

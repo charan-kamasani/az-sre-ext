@@ -517,6 +517,27 @@ class RepoConnectCliTests(_CliTestCase):
         self.assertEqual(self.services.value("azureDevOpsAuths", "contoso")["authType"], "Pat")
         self.assertEqual(self.repo_url("repo"), "https://contoso@dev.azure.com/contoso/proj/_git/repo")
 
+    def test_repo_url_must_pass_the_shared_url_check_as_typed(self):
+        for url in (
+            # A '%' in the host; the organization would be 'con%74oso'.
+            "https://con%74oso.visualstudio.com/proj/_git/repo",
+            # The URL is saved as typed, so it's refused when normalize_url would change it.
+            "https://github.com/contoso/api\u00a0",
+            # normalize_url reads the host as github.com, urlsplit as evil.example.
+            "https://github.com\\@evil.example/contoso/api",
+            # urlsplit reads dev.azure.com with the organization as user; normalize_url and urllib3 read evil.example.
+            "https://evil.example\\@dev.azure.com/evil.example\\/proj/_git/repo",
+            # An error, not a crash.
+            "https://[github.com/contoso/api",
+        ):
+            with self.subTest(url=url):
+                self.services.calls.clear()
+                code, _, stderr = self.connect(url)
+                self.assertNotEqual(code, 0)
+                self.assertIn("--repo-url must", stderr)
+                self.assertEqual(self.services.calls, [])
+        self.assertEqual(self.services.extensions, {})
+
     def test_pat_token_error_reason_is_shown(self):
         self.services.pat_reply = {"patToken": None, "patTokenError": "patLifespanPolicyViolation"}
 

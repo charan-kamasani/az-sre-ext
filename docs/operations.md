@@ -1188,13 +1188,15 @@ host or organization:
 
 - `--repo-url` must be a plain `https://` clone URL on `github.com`,
   `dev.azure.com` or `<organization>.visualstudio.com`, whether or not
-  `--provider` is given; `--provider` must match the host. URLs with a
-  backslash, spaces or control characters, or with a user name or token before
-  `@`, are rejected, so a credential is never minted for a lookalike host or
-  stored in the URL. The Azure DevOps portal's
-  `https://<organization>@dev.azure.com/...` clone URLs still work. Put a
-  GitHub token in `GITHUB_TOKEN` or `--github-token "@token.txt"`, not in the
-  URL.
+  `--provider` is given; `--provider` must match the host. It gets the same
+  check as `--agent-url` and `--mcp-endpoint`. Because it is saved as typed,
+  URLs with a backslash, whitespace or control characters, which URL parsers
+  read differently, are rejected first; so are URLs with a `%` in the host
+  name, a bad `%` escape, or a user name or token before `@`. A credential is
+  never minted for a lookalike host or stored in the URL. The Azure DevOps
+  portal's `https://<organization>@dev.azure.com/...` clone URLs still work.
+  Put a GitHub token in `GITHUB_TOKEN` or `--github-token "@token.txt"`, not
+  in the URL.
 - If the agent already has a repository with the same display name that
   points to a different URL, the command stops and names that URL. Pass
   `--display-name` to add the new repository under another name, or
