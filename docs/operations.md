@@ -756,9 +756,9 @@ the whole collection.
 
 ### Credentials in tool and plugin values
 
-A plugin marketplace's `feedCredentials[].pat`, an HttpClientTool's auth
-headers (such as `Authorization` or an API key) and a plugin install's source
-credentials are secrets. `show`, `list` and `create` for `tool`,
+A plugin marketplace's `credentials.pat`, an HttpClientTool's auth headers
+(such as `Authorization` or an API key) and a plugin install's
+`source.credentials.pat` are secrets. `show`, `list` and `create` for `tool`,
 `plugin marketplace` and `plugin install` print them as `******` and keep the
 service's replies out of `--debug` and the Azure CLI log file. Don't paste
 that output back as `--value`: `create` refuses a value that still has

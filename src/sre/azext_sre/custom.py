@@ -5039,9 +5039,9 @@ def _with_direct_fallback(arm_func, direct_func, cli_ctx, agent_name, resource_g
 
 
 REDACTED_SECRET = "******"
-# Values of these types can hold credentials: a marketplace's
-# feedCredentials[].pat, an HttpClientTool's auth headers, an install's
-# source credentials.
+# Values of these types can hold credentials: a plugin marketplace's
+# credentials.pat, an HttpClientTool's auth headers, a plugin install's
+# source.credentials.pat.
 SECRET_BEARING_EXTENSION_TYPES = frozenset({"tools", "pluginMarketplaces", "pluginInstallations"})
 _SECRET_KEYS = frozenset({
     "pat", "password", "secret", "token", "apikey", "clientsecret", "accesstoken", "refreshtoken",

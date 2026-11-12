@@ -39,7 +39,6 @@ DATA_PLANE_AUDIENCE = "https://azuresre.dev"
 EXTENSION_API_VERSION = "2026-11-01-preview"
 PAT = "PATSECRETzq81mx0vY7"
 HEADER_TOKEN = "HDRSECRETk4Lw2pQ9rT"
-FEED_URL = "https://pkgs.dev.azure.com/contoso/_packaging/feed/nuget/v3/index.json"
 
 Noun = namedtuple("Noun", "words extension_type direct_route envelope_type value")
 
@@ -68,6 +67,7 @@ NOUNS = {
 }
 DIRECT_ROUTES = {noun.direct_route: noun for noun in NOUNS.values() if noun.direct_route}
 ARM_TYPES = {noun.extension_type for noun in NOUNS.values()}
+PLUGIN_NOUNS = ("plugin marketplace", "plugin install")
 
 Request = namedtuple("Request", "method host path query body auth")
 
@@ -382,65 +382,81 @@ class ExtensionCommandCliTests(unittest.TestCase):
                     self.assertEqual(self.service.requests, [])
                     self.assertIn((noun.extension_type, "x1"), self.service.store)
 
-    def _private_marketplace(self, pat=PAT):
-        return {"sourceType": "github", "sourceUrl": "contoso/private-plugins", "feedCredentials": [
-            {"orgName": "contoso", "feedUrl": FEED_URL, "feedType": "NuGet", "pat": pat}]}
+    @staticmethod
+    def _private_plugin(noun, pat=PAT):
+        """A plugin marketplace or install value for a private repo. Both keep
+        the repo's PAT in the same credential type (PluginRepoCredential)."""
+        credentials = {"authMethod": "pat", "pat": pat}
+        if noun == "plugin marketplace":
+            return {"sourceType": "github", "sourceUrl": "contoso/private-plugins", "credentials": credentials}
+        value = copy.deepcopy(NOUNS[noun].value)
+        value["source"]["credentials"] = credentials
+        return value
 
     def test_create_output_never_carries_the_credential(self):
-        value_file = self._write("marketplace.json", json.dumps(self._private_marketplace()))
         answers = [("arm", None), ("direct", None), ("direct", (204,)), ("direct", (200, {})),
                    ("direct", (200, {"success": True}))]
-        for route, answer in answers:
-            with self.subTest(route=route, answer=answer):
-                self._reset()
-                self.service.direct_put_answer = answer
-                code, out, err = self._az(*self._command(
-                    "plugin marketplace", "create", "--name", "privmp", "--value", "@" + value_file, "--overwrite"),
-                    route=route)
-                self.assertEqual(code, 0, err)
-                self.assertNotIn(PAT, out)
-                shown = json.loads(out)
-                self.assertEqual(shown["name"], "privmp")
-                if answer is not None:
-                    # The reply had no item, so the request isn't shown in its place.
-                    self.assertNotIn("properties", shown)
-                saved = self.service.store[("pluginMarketplaces", "privmp")]
-                self.assertEqual(saved["feedCredentials"][0]["pat"], PAT)
+        for noun in PLUGIN_NOUNS:
+            value_file = self._write("plugin.json", json.dumps(self._private_plugin(noun)))
+            for route, answer in answers:
+                with self.subTest(noun=noun, route=route, answer=answer):
+                    self._reset()
+                    self.service.direct_put_answer = answer
+                    code, out, err = self._az(*self._command(
+                        noun, "create", "--name", "private", "--value", "@" + value_file, "--overwrite"),
+                        route=route)
+                    self.assertEqual(code, 0, err)
+                    self.assertNotIn(PAT, out)
+                    shown = json.loads(out)
+                    self.assertEqual(shown["name"], "private")
+                    if answer is None:
+                        self.assertEqual(shown["properties"]["value"], self._private_plugin(noun, pat="******"))
+                    else:
+                        # The reply had no item, so the request isn't shown in its place.
+                        self.assertNotIn("properties", shown)
+                    self.assertEqual(self.service.store[(NOUNS[noun].extension_type, "private")],
+                                     self._private_plugin(noun))
 
     def test_reads_do_not_reveal_stored_credentials_in_output_or_debug_logs(self):
         http_tool = {"type": "HttpClientTool", "url": "https://api.contoso.com/status", "headers": [
             {"key": "Authorization", "value": f"Bearer {HEADER_TOKEN}"},
             {"key": "Accept", "value": "application/json"}]}
+        commands = [("tool", "show", "--name", "legacy-http"), ("tool", "list")]
+        commands += [(noun, *rest) for noun in PLUGIN_NOUNS
+                     for rest in (("show", "--name", "private"), ("list",), ("delete", "--name", "private", "--yes"))]
         for route in ("arm", "direct"):
-            for args in (self._command("plugin marketplace", "show", "--name", "privmp"),
-                         self._command("plugin marketplace", "list"),
-                         self._command("tool", "show", "--name", "legacy-http"),
-                         self._command("tool", "list"),
-                         self._command("plugin marketplace", "delete", "--name", "privmp", "--yes")):
-                with self.subTest(route=route, command=" ".join(args[:3])):
+            for noun, verb, *rest in commands:
+                with self.subTest(route=route, command=f"{noun} {verb}"):
                     self._reset()
-                    self.service.store[("pluginMarketplaces", "privmp")] = self._private_marketplace()
+                    for plugin in PLUGIN_NOUNS:
+                        self.service.store[(NOUNS[plugin].extension_type, "private")] = self._private_plugin(plugin)
                     self.service.store[("tools", "legacy-http")] = copy.deepcopy(http_tool)
-                    code, out, err = self._az(*args, route=route, debug=True)
+                    code, out, err = self._az(*self._command(noun, verb, *rest), route=route, debug=True)
                     self.assertEqual(code, 0, err)
                     for secret in (PAT, HEADER_TOKEN):
                         for form in (secret, *_base64_forms(secret)):
                             self.assertNotIn(form, out + err)
-                    if args[0] == "tool":
+                    if noun == "tool":
                         self.assertIn("application/json", out)
+                    elif verb != "delete":
+                        shown = json.loads(out)
+                        item = shown[0] if verb == "list" else shown
+                        self.assertEqual(item["properties"]["value"], self._private_plugin(noun, pat="******"))
 
     def test_a_masked_credential_is_not_written_back(self):
-        masked = json.dumps(self._private_marketplace(pat="******"))
-        for route in ("arm", "direct"):
-            with self.subTest(route=route):
-                self._reset()
-                self.service.store[("pluginMarketplaces", "privmp")] = self._private_marketplace()
-                code, _, err = self._az(*self._command(
-                    "plugin marketplace", "create", "--name", "privmp", "--value", masked, "--overwrite"), route=route)
-                self.assertNotEqual(code, 0)
-                self.assertIn("pat", err)
-                self.assertEqual(self._puts(), [])
-                self.assertEqual(self.service.store[("pluginMarketplaces", "privmp")], self._private_marketplace())
+        for noun in PLUGIN_NOUNS:
+            key = (NOUNS[noun].extension_type, "private")
+            masked = json.dumps(self._private_plugin(noun, pat="******"))
+            for route in ("arm", "direct"):
+                with self.subTest(noun=noun, route=route):
+                    self._reset()
+                    self.service.store[key] = self._private_plugin(noun)
+                    code, _, err = self._az(*self._command(
+                        noun, "create", "--name", "private", "--value", masked, "--overwrite"), route=route)
+                    self.assertNotEqual(code, 0)
+                    self.assertIn("'pat'", err)
+                    self.assertEqual(self._puts(), [])
+                    self.assertEqual(self.service.store[key], self._private_plugin(noun))
 
     def test_skill_md_frontmatter_is_read_as_yaml(self):
         nested_name = self._write("SKILL.md", (
