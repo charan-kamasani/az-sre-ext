@@ -199,11 +199,27 @@ az sre connector create -g myrg --agent-name myagent \
 
 az sre connector show -g myrg --agent-name myagent --name my-kusto-connector
 az sre connector update -g myrg --agent-name myagent \
-  --name my-kusto-connector --data-source "https://help.kusto.windows.net/Samples2"
+  --name my-kusto-connector --data-source "https://help.kusto.windows.net/Samples2" \
+  --identity null
 az sre connector list-secret -g myrg --agent-name myagent \
   --connector-name my-kusto-connector
 az sre connector delete -g myrg --agent-name myagent --name my-kusto-connector -y
 ```
+
+`connector update` reads the connector, applies your changes and sends the
+whole connector back. The service never returns a connector's data source or
+identity, or an MCP connector's endpoint and credentials, so an update that
+left them out would clear them. The CLI refuses such an update and names the
+flags to pass again: `--data-source` and `--identity` on every update (`null`
+for one the connector doesn't have), and for an MCP connector all of
+`--extended-properties`. It refuses to update a knowledge source; run
+`az sre knowledge create` with `--overwrite` instead. The `sre knowledge`
+commands only show, replace or delete connectors that are knowledge sources.
+
+Connector names must be 2 to 32 letters, digits and hyphens, starting with a
+letter and ending with a letter or digit. The CLI checks this before it sends
+anything, and refuses `.`, `..` and names with `/` or `\` on every connector
+command, because they would change which resource the request reaches.
 
 `list-secret` prints secrets in plain text. It disables HTTP tracing for its
 own request, so `--debug` doesn't log them, but anything you pipe or save is
@@ -229,10 +245,11 @@ from a real server error, not documented in the generated help). Note:
 calls it) resolves to `KustoClient`, not `Kusto` — the portal's own picker
 has no entry for plain `Kusto` at all; use `"Azure Data Explorer Cluster"`
 or the raw `Kusto` value directly for the legacy pinned-cluster type.
-`dataSource`
-and `identity` are write-only on the wire — they never come back on `show`/
-`list`/`list-secret`, even for the connector that owns them; this is
-confirmed server behavior, not a CLI omission.
+`connector show` and `connector list` never print `dataSource`: Azure CLI
+hides fields the API marks secret, and reads don't return it. Reads don't
+return `identity` either. `list-secret` prints every field the service
+returns, including `dataSource`; whether the service returns `dataSource` and
+`identity` from `listSecrets` hasn't been checked against a live agent yet.
 
 `connector list`/`show -o table` resolve `properties.dataConnectorType`'s
 raw wire value (e.g. `KustoClient`) to the real portal display name (e.g.
@@ -294,6 +311,10 @@ connector's `consentStatus` is `PendingConsent`, the CLI now also emits a
 warning with a direct Azure Portal deep link to finish the OAuth consent —
 there is no public ARM action to initiate or complete consent from the CLI
 itself (confirmed by inspecting the control-plane's ARM-facing surface).
+Connectors created with `--oauth-dcr true` (`SpecOAuth`) get no
+`consentStatus`, because the CLI doesn't know which field records their
+sign-in. `connector create --oauth-dcr true` prints the portal link instead;
+check the sign-in there.
 
 For MCP connectors (including the built-in GitHub MCP server) and for
 knowledge sources, use the convenience flags instead of hand-built JSON:
@@ -547,10 +568,11 @@ plus source-level confirmation against `sreagent-runtime`
 treat it as "ARM link created", not "agent can read data". For
 `Kusto`/`KustoClient` (and likely `Icm`/`Dgrep`), the CLI now warns you
 to grant RBAC (see `_connector_access_reminder()` in `custom.py`). For
-`Mcp` with `OAuth`/`EntraOAuth`/`SpecOAuth`, use the existing
-`_annotate_connector_consent_status()` output and the portal consent link
-(for `SpecOAuth`, use the new `--oauth-dcr true` flag to create the
-connector, then complete the browser consent in the portal).
+`Mcp` with `EntraOAuth`, use the existing
+`_annotate_connector_consent_status()` output and the portal consent link.
+For `OAuth` and `SpecOAuth` (created with `--oauth-dcr true`, which prints the
+portal link), complete and check the browser consent in the portal: the CLI
+shows no `consentStatus` for them.
 For `Outlook`/`Teams`, set the connector up in the portal, which shows
 whether its connection is signed in.
 

@@ -338,7 +338,7 @@ def render_reference(reference=None) -> str:
         "- `connector list-secret` is the only command that can return "
         "connector secret material in plain text; everything else "
         "(`connector show`, `connector list`, `connector create`/`update` "
-        "responses) redacts secret fields server-side.",
+        "responses) leaves secret fields out.",
         "",
         "## Global options",
         "",

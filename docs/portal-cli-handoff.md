@@ -986,7 +986,7 @@ tools for the main agent are in the portal.
 | Step | Label | How |
 | --- | --- | --- |
 | Add an MCP server with no authentication, an API key or bearer token, or a managed identity | CLI | `az sre connector create -g "$RG" --agent-name "$AGENT" --name my-mcp --data-connector-type Mcp --mcp-endpoint "https://<server>/mcp"`, plus `--bearer-token "@token.txt"` (a file that holds the token) or `--managed-identity-auth true` if needed. |
-| Add an MCP server that signs in with OAuth | CLI, then portal | Add `--oauth-dcr true`, then finish the consent in the portal. `az sre connector show` reports `consentStatus`. |
+| Add an MCP server that signs in with OAuth | CLI, then portal | Add `--oauth-dcr true`, then finish the consent in the portal at the link the command prints. Check the sign-in there too: `az sre connector show` reports `consentStatus` only for EntraOAuth connectors. |
 | Connect the GitHub MCP server | CLI | `az sre connector create -g "$RG" --agent-name "$AGENT" --name github --data-connector-type Mcp --github true` |
 | Use the SSE connection type | Portal | Connectors > Add connector > MCP server. The CLI's `--mcp-endpoint` uses the HTTP transport. |
 | Select the connector's tools for the main agent | Portal | Connectors, the connector > Edit > MCP Tools. For a custom agent, list the tools in `mcpTools` with `az sre subagent create`. |

@@ -45,8 +45,9 @@ class CliArgumentEnforcementTests(unittest.TestCase):
         stack.enter_context(patch("azure.cli.core.MainCommandsLoader._load_modules", return_value=[]))
         stack.enter_context(patch("azure.cli.core.util.handle_version_update"))
         stack.enter_context(patch("azure.cli.core.util.show_updates_available"))
+        # Below both azure-core's Session.request and send_raw_request's Session.send.
         self.http = stack.enter_context(patch(
-            "requests.sessions.Session.request",
+            "requests.adapters.HTTPAdapter.send",
             side_effect=AssertionError("CLI argument tests must not use the network."),
         ))
         stack.enter_context(patch("azext_sre.custom._cli_invoke", self._nested_command))
@@ -177,11 +178,14 @@ class CliArgumentEnforcementTests(unittest.TestCase):
         from azure.cli.core.aaz import AAZCommand
         from azext_sre.custom import ConnectorCreate
 
-        command, options = self._accepted_call([
-            "sre", "knowledge", "create", "--agent-name", "myagent", "--resource-group", "myrg",
-            "--name", "docs", "--url", "https://learn.microsoft.com/azure/", "--type", "webpage",
-            "--overwrite",
-        ])
+        # --overwrite first checks that the existing connector is a knowledge source.
+        with patch("azext_sre.custom._get_connector",
+                   return_value={"properties": {"dataConnectorType": "KnowledgeWebPage"}}):
+            command, options = self._accepted_call([
+                "sre", "knowledge", "create", "--agent-name", "myagent", "--resource-group", "myrg",
+                "--name", "docs", "--url", "https://learn.microsoft.com/azure/", "--type", "webpage",
+                "--overwrite",
+            ])
         self.assertEqual(command, ("sre", "connector", "create"))
         nested = list(self.nested_calls[-1])
         self.assertIn("--overwrite", nested)
