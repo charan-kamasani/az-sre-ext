@@ -28,7 +28,9 @@ from requests import HTTPError, Response
 
 from azure.cli.core import get_default_cli
 from azure.cli.core.aaz import AAZCommand, AAZUndefined
-from azure.cli.core.azclierror import CLIError, InvalidArgumentValueError, ResourceNotFoundError
+from azure.cli.core.aaz.exceptions import AAZInvalidArgValueError
+from azure.cli.core.azclierror import (
+    CLIError, InvalidArgumentValueError, MutuallyExclusiveArgumentError, ResourceNotFoundError)
 from azure.cli.core.extension import DevExtension
 from azure.cli.core.mock import DummyCli
 from azure.core.exceptions import HttpResponseError, ResourceExistsError
@@ -47,6 +49,7 @@ from azext_sre.custom import (
     ConnectorCreate,
     ConnectorUpdate,
     ConnectorList,
+    _BearerTokenFileFormat,
     _ConnectorPartnerTypeMixin,
     _ConnectorUpdateMcpArgsMixin,
     GrantAccess,
@@ -6158,31 +6161,48 @@ class McpEndpointSafetyTests(unittest.TestCase):
             with self.subTest(endpoint=endpoint):
                 self.assertEqual(self._run(mcp_endpoint=endpoint)[0].data_source, endpoint)
 
-    def test_bearer_token_from_a_missing_file_is_rejected(self):
+    def test_bearer_token_starting_with_at_is_rejected_without_echo(self):
         # Azure CLI leaves '@path' as typed when it can't read the file.
-        with patch("sys.argv", ["az", "--bearer-token", "@C:\\nope.txt"]), \
-                self.assertRaisesRegex(InvalidArgumentValueError, "nope.txt"):
-            self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="@C:\\nope.txt")
+        for token in ("@C:\\nope.txt", "@secret-value"):
+            with self.subTest(token=token), self.assertRaises(InvalidArgumentValueError) as raised:
+                self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token=token)
+            self.assertIn("--bearer-token-file", str(raised.exception))
+            self.assertNotIn(token[1:], str(raised.exception))
 
-    def test_unread_token_error_does_not_echo_the_value(self):
-        with patch("sys.argv", ["az"]), self.assertRaises(InvalidArgumentValueError) as raised:
-            self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="@secret-value")
-        self.assertNotIn("secret-value", str(raised.exception))
-
-    def test_token_file_that_starts_with_at_is_accepted(self):
-        handle = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
-        self.addCleanup(lambda: os.remove(handle.name))
-        handle.write("@secret")
-        handle.close()
-        with patch("sys.argv", ["az", f"--bearer-token=@{handle.name}"]):
-            args, _ = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="@secret")
+    def test_bearer_token_file_contents_starting_with_at_are_accepted(self):
+        args, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token_file="@secret")
         self.assertEqual(args.extended_properties["bearerToken"], "@secret")
+        log.warning.assert_not_called()
+
+    def test_literal_bearer_token_warns_to_use_the_file_flag(self):
+        args, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="secret")
+        self.assertEqual(args.extended_properties["bearerToken"], "secret")
+        self.assertIn("--bearer-token-file", log.warning.call_args[0][0])
 
     def test_empty_bearer_token_is_rejected(self):
-        for token in ("", "  "):
-            with self.subTest(token=token), patch("sys.argv", ["az"]), \
-                    self.assertRaisesRegex(InvalidArgumentValueError, "empty"):
-                self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token=token)
+        for name in ("bearer_token", "bearer_token_file"):
+            for token in ("", "  "):
+                with self.subTest(name=name, token=token), \
+                        self.assertRaisesRegex(InvalidArgumentValueError, "empty"):
+                    self._run(mcp_endpoint="https://mcp.contoso.com/mcp", **{name: token})
+
+    def test_bearer_token_and_file_together_are_rejected(self):
+        with self.assertRaisesRegex(MutuallyExclusiveArgumentError, "not both"):
+            self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="a", bearer_token_file="b")
+
+    def test_bearer_token_file_format_strips_bom_and_newline_and_hides_contents(self):
+        fmt = _BearerTokenFileFormat()
+        handle = tempfile.NamedTemporaryFile(mode="wb", suffix=".txt", delete=False)
+        self.addCleanup(lambda: os.remove(handle.name))
+        handle.write("\ufefftoken-123\r\n".encode("utf-8"))
+        handle.close()
+        self.assertEqual(fmt.read_file(handle.name), "token-123")
+        with open(handle.name, "wb") as raw:
+            raw.write(b"\xffsecret\xfe")
+        with self.assertRaises(AAZInvalidArgValueError) as raised:
+            fmt.read_file(handle.name)
+        self.assertIn(handle.name, str(raised.exception))
+        self.assertNotIn("secret", str(raised.exception).replace(handle.name, ""))
 
 
 class ConnectorUpdateMcpArgsTests(unittest.TestCase):
@@ -6231,7 +6251,7 @@ class ConnectorUpdateMcpArgsTests(unittest.TestCase):
         return instance.properties.extended_properties, fake_logger
 
     def test_bearer_token_rotation_keeps_other_settings(self):
-        command, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="new-token")
+        command, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token_file="new-token")
         self.assertEqual(command.ctx.args.data_source, "https://mcp.contoso.com/mcp")
         self.assertIsNone(command.ctx.args.extended_properties)
         log.warning.assert_not_called()
@@ -6279,7 +6299,7 @@ class ConnectorUpdateMcpArgsTests(unittest.TestCase):
 
     def test_update_schema_has_the_flags(self):
         schema = ConnectorUpdate._build_arguments_schema()
-        for name in ("mcp_endpoint", "bearer_token", "managed_identity_auth", "mi_token_scope",
+        for name in ("mcp_endpoint", "bearer_token", "bearer_token_file", "managed_identity_auth", "mi_token_scope",
                      "oauth_dcr", "oauth_scopes", "oauth_client_name"):
             self.assertTrue(hasattr(schema, name), name)
 

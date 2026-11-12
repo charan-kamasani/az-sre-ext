@@ -347,49 +347,56 @@ class ConnectorCliTests(unittest.TestCase):
         return self._run("sre", "connector", "update", "-g", "rg", "--agent-name", "myagent", "-n", name,
                          "--identity", UAMI_ID, "--mcp-endpoint", "https://mcp.contoso.com/mcp", *arguments)
 
-    def test_bearer_token_from_a_file_stays_out_of_output_and_logs(self):
-        token_file = self._file("token.txt", "fake-secret-123")
-        code, output, logs = self._run(
-            "sre", "connector", "create", "-g", "rg", "--agent-name", "myagent", "-n", "mcp-bt",
-            "--data-connector-type", "Mcp", "--mcp-endpoint", "https://mcp.contoso.com/mcp",
-            "--bearer-token", "@" + token_file, "--debug")
-        self.assertEqual(code, 0, logs.errors)
-        self.assertEqual(self.arm.connector("mcp-bt")["properties"]["extendedProperties"]["bearerToken"],
-                         "fake-secret-123")
-        self.assertNotIn("fake-secret-123", output + logs.everything)
+    def _create_mcp(self, name, *arguments):
+        return self._run("sre", "connector", "create", "-g", "rg", "--agent-name", "myagent", "-n", name,
+                         "--data-connector-type", "Mcp", "--mcp-endpoint", "https://mcp.contoso.com/mcp", *arguments)
 
-    def test_token_file_that_starts_with_at_is_stored_and_not_shown(self):
-        # Looks like an unread @path. knack tries to read it as a file name again
-        # and logs that at debug level, which this extension can't prevent.
-        token_file = self._file("token.txt", "@fake_secret_123")
-        code, output, logs = self._run(
-            "sre", "connector", "create", "-g", "rg", "--agent-name", "myagent", "-n", "mcp-at",
-            "--data-connector-type", "Mcp", "--mcp-endpoint", "https://mcp.contoso.com/mcp",
-            "--bearer-token", "@" + token_file)
+    def test_bearer_token_file_stays_out_of_output_and_logs(self):
+        # Contents starting with '@' would be read again as a path, and logged, if they went through @file.
+        for name, contents in (("mcp-bt", "fake-secret-123\n"), ("mcp-at", "@fake_secret_123")):
+            with self.subTest(contents=contents):
+                token_file = self._file("token.txt", contents)
+                code, output, logs = self._create_mcp(name, "--bearer-token-file", token_file, "--debug")
+                self.assertEqual(code, 0, logs.errors)
+                self.assertEqual(self.arm.connector(name)["properties"]["extendedProperties"]["bearerToken"],
+                                 contents.strip())
+                self.assertNotIn("fake", output + logs.everything)
+                self.assertNotIn("--bearer-token puts", logs.warnings)
+
+    def test_literal_bearer_token_warns_and_rejects_at(self):
+        code, _, logs = self._create_mcp("mcp-lit", "--bearer-token", "literal-token")
         self.assertEqual(code, 0, logs.errors)
-        self.assertEqual(self.arm.connector("mcp-at")["properties"]["extendedProperties"]["bearerToken"],
-                         "@fake_secret_123")
-        self.assertNotIn("fake_secret_123", output + logs.errors + logs.warnings)
+        self.assertIn("--bearer-token-file", logs.warnings)
+
+        for token in ("@" + os.path.join(self.files, "nope.txt"), "@fake-secret-value"):
+            with self.subTest(token=token):
+                self.arm.requests.clear()
+                code, _, logs = self._create_mcp("mcp-bad", "--bearer-token", token)
+                self.assertNotEqual(code, 0)
+                self.assertIn("--bearer-token-file", logs.errors)
+                self.assertNotIn("fake-secret-value", logs.errors)
+                self.assertEqual(self.arm.sent("PUT"), [])
 
     def test_bearer_token_errors_never_show_the_value(self):
         missing = os.path.join(self.files, "nope.txt")
         empty = self._file("empty.txt", "\n")
-        for token, expected in (("@" + missing, "nope.txt"), ("@" + empty, "empty")):
-            with self.subTest(token=token):
+        both = ["--bearer-token-file", self._file("t.txt", "fake-secret"), "--bearer-token", "fake-secret"]
+        for arguments, expected in ((["--bearer-token-file", missing], "nope.txt"),
+                                    (["--bearer-token-file", empty], "empty"),
+                                    (both, "not both")):
+            with self.subTest(arguments=arguments):
                 self.arm.requests.clear()
-                code, _, logs = self._run(
-                    "sre", "connector", "create", "-g", "rg", "--agent-name", "myagent", "-n", "mcp-bad",
-                    "--data-connector-type", "Mcp", "--mcp-endpoint", "https://mcp.contoso.com/mcp",
-                    "--bearer-token", token)
+                code, _, logs = self._create_mcp("mcp-bad", *arguments)
                 self.assertNotEqual(code, 0)
                 self.assertIn(expected, logs.errors)
+                self.assertNotIn("fake-secret", logs.errors)
                 self.assertEqual(self.arm.sent("PUT"), [])
         self.assertIsNone(self.arm.connector("mcp-bad"))
 
         self._add_mcp_bearer_connector()
         stored = copy.deepcopy(self.arm.connector("mcp1"))
         self.arm.requests.clear()
-        code, _, logs = self._update_mcp("mcp1", "--bearer-token", "@" + empty)
+        code, _, logs = self._update_mcp("mcp1", "--bearer-token-file", empty)
         self.assertNotEqual(code, 0)
         self.assertIn("empty", logs.errors)
         self.assertEqual(self.arm.sent("PUT"), [])
@@ -399,7 +406,7 @@ class ConnectorCliTests(unittest.TestCase):
         self._add_mcp_bearer_connector()
         token_file = self._file("token.txt", "new-token")
         code, _, logs = self._update_mcp(
-            "mcp1", "--bearer-token", "@" + token_file,
+            "mcp1", "--bearer-token-file", token_file,
             "--extended-properties", '{"headers": {"X-Team": "sre"}}', "--debug")
         self.assertEqual(code, 0, logs.errors)
         self.assertNotIn("new-token", logs.everything)
@@ -430,7 +437,7 @@ class ConnectorCliTests(unittest.TestCase):
         self.arm.requests.clear()
         code, _, logs = self._update_mcp("mcp1")
         self.assertNotEqual(code, 0)
-        self.assertIn("--bearer-token", logs.errors)
+        self.assertIn("--bearer-token-file", logs.errors)
         self.assertEqual(self.arm.sent("PUT"), [])
         self.assertEqual(self.arm.connector("mcp1"), stored)
 
@@ -440,7 +447,7 @@ class ConnectorCliTests(unittest.TestCase):
         for arguments in ([], ["--data-connector-type", "Mcp"]):
             with self.subTest(arguments=arguments):
                 self.arm.requests.clear()
-                code, _, logs = self._update_mcp("kusto-prod", "--bearer-token", "@" + token_file, *arguments)
+                code, _, logs = self._update_mcp("kusto-prod", "--bearer-token-file", token_file, *arguments)
                 self.assertNotEqual(code, 0)
                 self.assertIn("only apply to Mcp connectors", logs.errors)
                 self.assertEqual(self.arm.sent("PUT"), [])

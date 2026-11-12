@@ -62,6 +62,8 @@ from azure.cli.core.aaz import (
     AAZBoolArg,
     AAZCommand,
     AAZCommandGroup,
+    AAZFileArg,
+    AAZFileArgTextFormat,
     AAZFreeFormDictArg,
     AAZIntArg,
     AAZListArg,
@@ -75,7 +77,9 @@ from azure.cli.core.aaz import (
     register_command_group,
 )
 from azure.cli.core.aaz._operation import AAZHttpOperation
-from azure.cli.core.azclierror import CLIError, InvalidArgumentValueError, ResourceNotFoundError
+from azure.cli.core.aaz.exceptions import AAZInvalidArgValueError
+from azure.cli.core.azclierror import (
+    CLIError, InvalidArgumentValueError, MutuallyExclusiveArgumentError, ResourceNotFoundError)
 from azure.core.exceptions import ResourceExistsError
 from azure.cli.core.util import send_raw_request
 from azure.mgmt.core.tools import parse_resource_id
@@ -1667,6 +1671,23 @@ def _validate_mcp_endpoint(endpoint):
         raise InvalidArgumentValueError(message)
 
 
+class _BearerTokenFileFormat(AAZFileArgTextFormat):
+    """Reads --bearer-token-file as UTF-8 text, so the path is all Azure CLI
+    sees and logs. Surrounding whitespace, such as a trailing newline, is
+    dropped. Errors name the path, never the contents."""
+
+    def __init__(self):
+        super().__init__(encoding="utf-8-sig")
+
+    def read_file(self, file_path):
+        try:
+            return super().read_file(file_path).strip()
+        except UnicodeDecodeError:
+            raise AAZInvalidArgValueError(f"File '{file_path}' isn't UTF-8 text.") from None
+        except OSError:
+            raise AAZInvalidArgValueError(f"Can't read file '{file_path}'.") from None
+
+
 def _add_mcp_auth_args(schema):
     # --bearer-token / --managed-identity-auth / --mi-token-scope /
     # --oauth-dcr / --oauth-scopes / --oauth-client-name: convenience
@@ -1683,7 +1704,14 @@ def _add_mcp_auth_args(schema):
         options=["--bearer-token"],
         arg_group="MCP",
         help="For Mcp: static bearer token, PAT or API key sent with every request. "
-             "Use @file to read it from a file.",
+             "It shows up in shell history, so prefer --bearer-token-file.",
+    )
+    schema.bearer_token_file = AAZFileArg(
+        options=["--bearer-token-file"],
+        arg_group="MCP",
+        help="For Mcp: path to a file that holds the bearer token, PAT or API key. "
+             "Surrounding whitespace, such as a trailing newline, is removed.",
+        fmt=_BearerTokenFileFormat(),
     )
     schema.managed_identity_auth = AAZBoolArg(
         options=["--managed-identity-auth"],
@@ -1713,33 +1741,19 @@ def _add_mcp_auth_args(schema):
     )
 
 
-def _check_bearer_token(bearer_token):
-    """Refuse a token Azure CLI couldn't read from its file, or an empty one.
+def _check_bearer_token(bearer_token, flag):
+    """Refuse an empty token, or a --bearer-token value that starts with '@'.
 
-    Azure CLI replaces @path with the file's contents, but leaves the text
-    alone when it can't read the file, so the value alone can't tell the two
-    apart: the file itself may start with '@'. Check the path typed in argv
-    instead, and never put the value in an error, because it may be the token.
+    Azure CLI leaves '@path' as typed when it can't read the file, so a value
+    starting with '@' is usually an unread path. Never put the value in an
+    error, because it may be the token.
     """
-    raw = _raw_flag_value("--bearer-token")
-    if raw is not None:
-        path = raw[1:]
-        if raw.startswith("@") and path and path != "-":
-            try:
-                with open(os.path.expanduser(path), "rb"):
-                    pass
-            except OSError:
-                raise InvalidArgumentValueError(
-                    f"--bearer-token: can't read the file '{path}'. Check the path. "
-                    "Nothing was sent.") from None
-    elif bearer_token.startswith("@"):
+    if flag == "--bearer-token" and bearer_token.startswith("@"):
         raise InvalidArgumentValueError(
-            "--bearer-token starts with '@', which usually means Azure CLI couldn't read "
-            "the token file. Check the path. Nothing was sent.")
+            "--bearer-token takes the token itself and can't start with '@'. To read it "
+            "from a file, use --bearer-token-file <path>. Nothing was sent.")
     if not bearer_token.strip():
-        raise InvalidArgumentValueError(
-            "--bearer-token is empty. If you read it from a file, check that the file "
-            "has the token. Nothing was sent.")
+        raise InvalidArgumentValueError(f"{flag} is empty. Nothing was sent.")
 
 
 _MCP_AUTH_KEYS = ("authType", "bearerToken", "armScope", "scopes", "dcrClientName", "entraOAuth")
@@ -1751,9 +1765,17 @@ def _mcp_auth_properties(args, existing):
     Returns None when no auth flag was passed. The caller checks that the
     connector is an Mcp one."""
     bearer_token = _arg_value(getattr(args, "bearer_token", None))
+    bearer_token_file = _arg_value(getattr(args, "bearer_token_file", None))
+    if bearer_token is not None and bearer_token_file is not None:
+        raise MutuallyExclusiveArgumentError("Use either --bearer-token or --bearer-token-file, not both.")
     if bearer_token is not None:
-        _check_bearer_token(bearer_token)
-        _warn_if_secret_typed("--bearer-token", "read it from a file with --bearer-token @token.txt")
+        _check_bearer_token(bearer_token, "--bearer-token")
+        logger.warning(
+            "--bearer-token puts the token on the command line, where it shows up in shell "
+            "history and --debug output. Next time, use --bearer-token-file.")
+    elif bearer_token_file is not None:
+        _check_bearer_token(bearer_token_file, "--bearer-token-file")
+        bearer_token = bearer_token_file
     managed_identity_auth = _arg_value(getattr(args, "managed_identity_auth", None))
     mi_token_scope = _arg_value(getattr(args, "mi_token_scope", None))
     oauth_dcr = _arg_value(getattr(args, "oauth_dcr", None))
@@ -1767,7 +1789,7 @@ def _mcp_auth_properties(args, existing):
     ]
     if sum(auth_flags_used) > 1:
         raise CLIError(
-            "Only one of --bearer-token, --managed-identity-auth/"
+            "Only one of --bearer-token/--bearer-token-file, --managed-identity-auth/"
             "--mi-token-scope, or --oauth-dcr can be used at a time -- "
             "each sets a different extended-properties.authType."
         )
@@ -1922,7 +1944,7 @@ class _ConnectorConvenienceArgsMixin:
         if auth_properties is not None:
             if connector_type != "Mcp":
                 raise CLIError(
-                    "--bearer-token/--managed-identity-auth/--mi-token-scope/"
+                    "--bearer-token/--bearer-token-file/--managed-identity-auth/--mi-token-scope/"
                     "--oauth-dcr require --data-connector-type Mcp."
                 )
             args.extended_properties = auth_properties
@@ -2137,11 +2159,11 @@ class _ConnectorUpdateMcpArgsMixin:
             if merged.get("authType") == "BearerToken" and not merged.get("bearerToken"):
                 raise CLIError(
                     "This connector uses a bearer token, which the service never returns. "
-                    "Pass --bearer-token @token.txt again. Nothing was sent.")
+                    "Pass --bearer-token-file again. Nothing was sent.")
             if not merged.get("authType") and not merged.get("headers"):
                 logger.warning(
                     "No auth flag was passed, so the connector is saved without authentication. "
-                    "Pass --bearer-token, --managed-identity-auth or --oauth-dcr to keep one.")
+                    "Pass --bearer-token-file, --managed-identity-auth or --oauth-dcr to keep one.")
         properties.extended_properties = merged
 
 
@@ -2167,7 +2189,7 @@ class ConnectorCreate(
         az sre connector create --agent-name myagent --resource-group myrg \\
             --name mcp --data-connector-type Mcp \\
             --mcp-endpoint "https://myserver.contoso.com/mcp" \\
-            --bearer-token @token.txt
+            --bearer-token-file token.txt
 
     :example: Connect a Dynatrace MCP server
         az sre connector create --agent-name myagent --resource-group myrg \\
@@ -2276,7 +2298,7 @@ class ConnectorUpdate(
 
     :example: Rotate an MCP connector's bearer token, read from a file
         az sre connector update -g myrg --agent-name myagent -n mcp --identity null \\
-            --mcp-endpoint "https://myserver.contoso.com/mcp" --bearer-token @token.txt
+            --mcp-endpoint "https://myserver.contoso.com/mcp" --bearer-token-file token.txt
 
     :example: Mark an MCP connector as a Dynatrace integration
         az sre connector update -g myrg --agent-name myagent -n dynatrace --partner-type DynatraceMcp \\

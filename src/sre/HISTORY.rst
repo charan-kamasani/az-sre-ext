@@ -15,5 +15,5 @@ Release History
 * Errors from nested `az` commands no longer repeat their arguments, and `az sre knowledge create` keeps its `--data-source` value out of debug logs.
 * `az sre connector create --oauth-dcr true` prints the portal link where the sign-in is finished.
 * `az sre connector update` takes `--mcp-endpoint` and the MCP auth flags (`--bearer-token`, `--managed-identity-auth`, `--oauth-dcr` and their options), so an MCP connector's token can be rotated. Before, `--bearer-token` was an unknown argument and Azure CLI echoed the token in its error and command log.
-* `--bearer-token @file` refuses to continue when the file can't be read, instead of saving the literal `@path` as the token.
+* `az sre connector create` and `update` take `--bearer-token-file <path>`, which reads the token directly so only the path reaches Azure CLI's logs. `--bearer-token` now takes only the token itself and refuses values that start with `@`; the two flags can't be used together.
 * `--mcp-endpoint` must be a well-formed `https://` URL; values with spaces, bad `%` escapes, a missing host or an invalid port are refused before anything is sent.
