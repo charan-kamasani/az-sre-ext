@@ -162,7 +162,6 @@ class ConnectorCliTests(unittest.TestCase):
         root.setLevel(logging.DEBUG)
         cli.setLevel(logging.DEBUG)
         try:
-            # The extension reads the raw flags from sys.argv, which invoke() doesn't set.
             with redirect_stdout(output), redirect_stderr(errors), patch("sys.argv", ["az", *arguments]), \
                     patch.object(root, "handlers", [capture]), patch.object(cli, "handlers", [capture]):
                 code = get_default_cli().invoke(list(arguments), out_file=output)
@@ -430,6 +429,45 @@ class ConnectorCliTests(unittest.TestCase):
                 self.assertEqual(self.arm.connector("mcp1")["properties"]["extendedProperties"], {
                     "transport": "Http", "endpoint": "https://mcp.contoso.com/mcp",
                     "partnerType": "DynatraceMcp", "team": "sre", **auth})
+
+    def test_managed_identity_update_keeps_the_stored_scope(self):
+        self._add_mcp_bearer_connector()
+        code, _, logs = self._update_mcp("mcp1", "--managed-identity-auth", "true",
+                                         "--mi-token-scope", "api://mcp/.default")
+        self.assertEqual(code, 0, logs.errors)
+        code, _, logs = self._update_mcp("mcp1", "--managed-identity-auth", "true")
+        self.assertEqual(code, 0, logs.errors)
+        self.assertEqual(self.arm.connector("mcp1")["properties"]["extendedProperties"]["armScope"],
+                         "api://mcp/.default")
+        self.assertNotIn("management.azure.com", logs.warnings)
+
+        self._add_mcp_bearer_connector("mcp2")
+        code, _, logs = self._update_mcp("mcp2", "--managed-identity-auth", "true")
+        self.assertEqual(code, 0, logs.errors)
+        self.assertEqual(self.arm.connector("mcp2")["properties"]["extendedProperties"]["armScope"],
+                         "https://management.azure.com/.default")
+        self.assertIn("mcp.contoso.com", logs.warnings)
+
+    def test_mi_token_scope_alone_is_refused(self):
+        self._add_mcp_bearer_connector()
+        stored = copy.deepcopy(self.arm.connector("mcp1"))
+        for arguments in (["--mi-token-scope", "api://mcp/.default"],
+                          ["--mi-token-scope", "api://mcp/.default", "--managed-identity-auth", "false"]):
+            with self.subTest(arguments=arguments):
+                self.arm.requests.clear()
+                code, _, logs = self._update_mcp("mcp1", *arguments)
+                self.assertNotEqual(code, 0)
+                self.assertIn("--managed-identity-auth true", logs.errors)
+                self.assertEqual(self.arm.sent("PUT"), [])
+                self.assertEqual(self.arm.connector("mcp1"), stored)
+
+    def test_bearer_token_file_expands_home(self):
+        self._file("token.txt", "home-token")
+        with patch.dict(os.environ, {"HOME": self.files, "USERPROFILE": self.files}):
+            code, _, logs = self._create_mcp("mcp-home", "--bearer-token-file", os.path.join("~", "token.txt"))
+        self.assertEqual(code, 0, logs.errors)
+        self.assertEqual(self.arm.connector("mcp-home")["properties"]["extendedProperties"]["bearerToken"],
+                         "home-token")
 
     def test_endpoint_change_without_the_token_is_refused(self):
         self._add_mcp_bearer_connector()

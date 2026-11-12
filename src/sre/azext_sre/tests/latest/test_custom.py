@@ -30,7 +30,8 @@ from azure.cli.core import get_default_cli
 from azure.cli.core.aaz import AAZCommand, AAZUndefined
 from azure.cli.core.aaz.exceptions import AAZInvalidArgValueError
 from azure.cli.core.azclierror import (
-    CLIError, InvalidArgumentValueError, MutuallyExclusiveArgumentError, ResourceNotFoundError)
+    CLIError, InvalidArgumentValueError, MutuallyExclusiveArgumentError, RequiredArgumentMissingError,
+    ResourceNotFoundError)
 from azure.cli.core.extension import DevExtension
 from azure.cli.core.mock import DummyCli
 from azure.core.exceptions import HttpResponseError, ResourceExistsError
@@ -5009,18 +5010,12 @@ class ConnectorConvenienceArgsTests(unittest.TestCase):
             {"authType": "AzureARM", "armScope": "https://management.azure.com/.default"},
         )
 
-    def test_mi_token_scope_implies_managed_identity_auth(self):
-        # --mi-token-scope alone (without --managed-identity-auth true) still
-        # triggers the AzureARM auth type, matching the help text's "implied
-        # by --mi-token-scope if that is passed alone".
-        args = self._run(
-            data_connector_type="Mcp",
-            mi_token_scope="api://myserver/.default",
-        )
-        self.assertEqual(
-            args.extended_properties,
-            {"authType": "AzureARM", "armScope": "api://myserver/.default"},
-        )
+    def test_mi_token_scope_requires_managed_identity_auth(self):
+        for managed_identity_auth in (None, False):
+            with self.subTest(managed_identity_auth=managed_identity_auth), \
+                    self.assertRaisesRegex(RequiredArgumentMissingError, "--managed-identity-auth true"):
+                self._run(data_connector_type="Mcp", mi_token_scope="api://myserver/.default",
+                          managed_identity_auth=managed_identity_auth)
 
     def test_oauth_dcr_builds_spec_oauth_with_scopes_and_client_name(self):
         args = self._run(

@@ -519,7 +519,7 @@ Create an Agent Connector.
 | `--data-connector-type` | String | No |  |  | Connector type, by portal name (case-insensitive): Azure Data Explorer, Database query connector (user), Log Analytics Workspace, Application Insights, MonitorClient, MCP server, EV2, Azure DevOps AI Search, IcM connector, DGrep, Geneva Metrics, S360 connector. For knowledge sources use 'az sre knowledge create'. Set up Outlook, Teams and other managed connectors in the portal. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: `https://cluster.kusto.windows.net/database`. On update, pass it again, or null for none. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
-| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. On update, this replaces all of them. |
+| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. On update, this replaces all of them, unless an MCP flag is used; then it's merged with the settings the service returns. |
 | `--identity` | String | No |  |  | 'system' for the agent's system-assigned identity, or a user-assigned identity resource ID. On create, leave it out for no identity; on update, pass it again, or null for none. |
 | `--overwrite` | Boolean | No | false | `false`, `true` | Replace an existing connector with the same name instead of failing. |
 | `--file-path` | String | No |  |  | Local file to ingest. For knowledge sources use 'az sre knowledge create'. |
@@ -529,7 +529,7 @@ Create an Agent Connector.
 | `--bearer-token` | String | No |  |  | For Mcp: static bearer token, PAT or API key sent with every request. It shows up in shell history, so prefer --bearer-token-file. |
 | `--bearer-token-file` | String | No |  |  | For Mcp: path to a file that holds the bearer token, PAT or API key. Surrounding whitespace, such as a trailing newline, is removed. |
 | `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one. |
-| `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth: token scope to request. Default: `https://management.azure.com/.default`. |
+| `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth true: token scope to request. Default on create: `https://management.azure.com/.default`. On update, the stored scope is kept unless this is passed. |
 | `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
 | `--oauth-scopes` | String | No |  |  | For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. |
 | `--oauth-client-name` | String | No |  |  | For Mcp with --oauth-dcr: client name to register. Optional. |
@@ -701,14 +701,14 @@ An update sends the whole connector back, and the service never returns a connec
 | `--data-connector-type` | String | No |  |  | Connector type, by portal name (case-insensitive): Azure Data Explorer, Database query connector (user), Log Analytics Workspace, Application Insights, MonitorClient, MCP server, EV2, Azure DevOps AI Search, IcM connector, DGrep, Geneva Metrics, S360 connector. For knowledge sources use 'az sre knowledge create'. Set up Outlook, Teams and other managed connectors in the portal. |
 | `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: `https://cluster.kusto.windows.net/database`. On update, pass it again, or null for none. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
-| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. On update, this replaces all of them. |
+| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. On update, this replaces all of them, unless an MCP flag is used; then it's merged with the settings the service returns. |
 | `--identity` | String | No |  |  | 'system' for the agent's system-assigned identity, or a user-assigned identity resource ID. On create, leave it out for no identity; on update, pass it again, or null for none. |
 | `--partner-type` | String | No |  |  | For Mcp: the partner integration this server belongs to, for example DynatraceMcp. |
-| `--mcp-endpoint` | String | No |  |  | For Mcp: the MCP server's HTTP endpoint URL. Required with the auth flags, because the service never returns it. |
+| `--mcp-endpoint` | String | No |  |  | For Mcp: the MCP server's HTTP endpoint URL. With the auth flags, pass the endpoint here or in --extended-properties; the service never returns it. |
 | `--bearer-token` | String | No |  |  | For Mcp: static bearer token, PAT or API key sent with every request. It shows up in shell history, so prefer --bearer-token-file. |
 | `--bearer-token-file` | String | No |  |  | For Mcp: path to a file that holds the bearer token, PAT or API key. Surrounding whitespace, such as a trailing newline, is removed. |
 | `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one. |
-| `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth: token scope to request. Default: `https://management.azure.com/.default`. |
+| `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth true: token scope to request. Default on create: `https://management.azure.com/.default`. On update, the stored scope is kept unless this is passed. |
 | `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
 | `--oauth-scopes` | String | No |  |  | For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. |
 | `--oauth-client-name` | String | No |  |  | For Mcp with --oauth-dcr: client name to register. Optional. |
