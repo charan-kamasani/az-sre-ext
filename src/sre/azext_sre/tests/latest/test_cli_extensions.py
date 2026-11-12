@@ -43,7 +43,7 @@ FEED_URL = "https://pkgs.dev.azure.com/contoso/_packaging/feed/nuget/v3/index.js
 
 Noun = namedtuple("Noun", "words extension_type direct_route envelope_type value")
 
-# The agent API's route and envelope type for each noun, as the portal uses them.
+# The agent API's route and envelope type for each noun.
 NOUNS = {
     "tool": Noun(("tool",), "tools", "tools", "ExtendedAgentTool",
                  {"type": "LinkTool", "description": "Docs", "template": "https://learn.microsoft.com/"}),
@@ -53,7 +53,7 @@ NOUNS = {
                  {"eventType": "Stop", "activationMode": "always", "hook": {"type": "prompt", "prompt": "Sum up"}}),
     "instructions": Noun(("instructions",), "commonPrompts", "commonprompts", "CommonPrompt",
                          {"prompt": "Cite the runbook."}),
-    "subagent": Noun(("subagent",), "subagents", None, None,
+    "subagent": Noun(("subagent",), "subagents", "agents", "ExtendedAgent",
                      {"instructions": "Gather read-only evidence from the supplied files and report it. " * 2,
                       "handoffDescription": "Use for read-only evidence."}),
     "plugin marketplace": Noun(("plugin", "marketplace"), "pluginMarketplaces", "pluginMarketplaces", "Marketplace",
@@ -107,6 +107,8 @@ class FakeAgentService:
         self.direct_list_key = "value"
         self.direct_put_answer = None
         self.trigger_answer = (200, {"success": True}, "application/json", {})
+        # ARM's answer to agent extension requests from a tenant outside Microsoft.
+        self.arm_tenant_gate = False
 
     def send(self, request, **kwargs):
         del kwargs
@@ -130,6 +132,10 @@ class FakeAgentService:
                 "id": AGENT_ID, "name": "myagent", "properties": {"agentEndpoint": f"https://{AGENT_HOST}"}})
         if not path.startswith(AGENT_ID + "/"):
             return _response(request, 404, {"error": {"message": "fake ARM: no route"}})
+        if self.arm_tenant_gate:
+            return _response(request, 400, {"error": {"code": "BadRequest", "message": (
+                "Agent Extensions are not available for this tenant. "
+                "This feature is restricted to internal tenants only.")}})
         if query.get("api-version") != [EXTENSION_API_VERSION]:
             return _response(request, 400, {"error": {"message": "fake ARM: wrong api-version"}})
         segments = path[len(AGENT_ID) + 1:].split("/")
@@ -151,9 +157,15 @@ class FakeAgentService:
         if path.startswith("/api/v1/httptriggers/trigger/") and request.method == "POST":
             status, content, content_type, headers = self.trigger_answer
             return _response(request, status, content, content_type, headers)
+        if path == "/api/v1/feature/status":
+            # The agent doesn't say whether it's first-party, so the CLI tries ARM first.
+            return _response(request, 404, {"error": "fake agent API: no feature status"})
         prefix = "/api/v2/extendedAgent/"
         segments = path[len(prefix):].split("/") if path.startswith(prefix) else []
         if not segments or segments[0] not in DIRECT_ROUTES or len(segments) > 2:
+            if request.method == "GET":
+                # Like the agent's web app, which serves its page for routes it doesn't know.
+                return _response(request, 200, "<!DOCTYPE html><html><body>SRE Agent</body></html>", "text/html")
             return _response(request, 404, {"error": "fake agent API: no route"})
         noun = DIRECT_ROUTES[segments[0]]
         if len(segments) == 1:
@@ -251,6 +263,8 @@ class ExtensionCommandCliTests(unittest.TestCase):
         stack.enter_context(patch("azext_sre._help.apply_group_examples"))
         stack.enter_context(patch("azure.cli.core._profile.Profile.get_raw_token", _fake_raw_token))
         stack.enter_context(patch("azext_sre.custom._cli_invoke", self._nested_command))
+        # Feature flags read on the automatic route are remembered per process.
+        stack.enter_context(patch.dict("azext_sre.custom._FEATURES_MEMORY", clear=True))
         self.service = FakeAgentService()
         stack.enter_context(patch.object(
             requests.adapters.HTTPAdapter, "send",
@@ -498,6 +512,62 @@ class ExtensionCommandCliTests(unittest.TestCase):
         self.assertIn("--value.hooks must be a JSON object", err)
         self.assertNotIn("unexpected error", err)
         self.assertEqual(self._puts(), [])
+
+    def test_subagents_use_the_agent_api_when_arm_refuses_the_tenant(self):
+        self.service.arm_tenant_gate = True
+        script = self._write("readonly.py", "print('deny writes')\n")
+        script_hook = {"type": "command", "matcher": "(?s:.*)", "timeout": 30, "failMode": "block",
+                       "script": "print('deny writes')\n"}
+        guard = {"type": "command", "matcher": "Bash.*", "timeout": 10, "failMode": "block", "script": "echo guard"}
+        value = json.dumps({**NOUNS["subagent"].value, "hooks": {"PreToolUse": [guard]}})
+        arm_item, own = f"{AGENT_ID}/subagents/sa1", "/api/v2/extendedAgent/agents/sa1"
+
+        def run(verb, *rest):
+            self.service.requests.clear()
+            code, out, err = self._az(*self._command("subagent", verb, *rest), route="")
+            requests_made = [(method, path) for (method, path) in self._extension_requests()
+                             if path != "/api/v1/feature/status"]
+            return code, out, err, requests_made
+
+        code, out, err, made = run("create", "--name", "sa1", "--value", value, "--pre-tool-use-script-file", script)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(made, [("GET", arm_item), ("GET", own), ("PUT", own)])
+        put = self._puts()[0]
+        self.assertEqual(json.loads(put.body)["type"], "ExtendedAgent")
+        self.assertEqual(put.auth, f"Bearer FAKE-TOKEN[{DATA_PLANE_AUDIENCE}]")
+        saved = self.service.store[("subagents", "sa1")]
+        self.assertEqual(saved["hooks"], {"PreToolUse": [guard, script_hook]})
+        self.assertEqual(json.loads(out)["name"], "sa1")
+
+        code, out, err, made = run("show", "--name", "sa1")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(made, [("GET", arm_item), ("GET", own)])
+        self.assertEqual(json.loads(out)["properties"]["value"], saved)
+
+        code, out, err, made = run("list")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(made, [("GET", f"{AGENT_ID}/subagents"), ("GET", "/api/v2/extendedAgent/agents")])
+        self.assertEqual([item["name"] for item in json.loads(out)], ["sa1"])
+
+        code, _, err, made = run("create", "--name", "sa1", "--value", value)
+        self.assertNotEqual(code, 0)
+        self.assertIn("already exists", err)
+        self.assertEqual(made, [("GET", arm_item), ("GET", own)])
+
+        short = json.dumps({**NOUNS["subagent"].value, "instructions": "Too short."})
+        code, _, err, made = run("create", "--name", "sa2", "--value", short)
+        self.assertNotEqual(code, 0)
+        self.assertIn("--value.instructions", err)
+        self.assertEqual(made, [("GET", f"{AGENT_ID}/subagents/sa2")])
+
+        code, _, err, made = run("delete", "--name", "sa1", "--yes")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(made, [("GET", arm_item), ("GET", own), ("DELETE", arm_item), ("DELETE", own)])
+        self.assertEqual(self.service.store, {})
+
+        code, _, err, _ = run("show", "--name", "sa1")
+        self.assertEqual(code, 3)
+        self.assertIn("sa1", err)
 
     def _store_trigger(self, origin=AGENT_HOST):
         self.service.store[("httpTriggers", "alert")] = {

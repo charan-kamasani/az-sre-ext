@@ -3193,8 +3193,8 @@ class ExtensionTypeEnumTests(unittest.TestCase):
 
 
 class ExtensionTenantGateTests(unittest.TestCase):
-    """The service rejects every agent extension call from a non-internal
-    tenant. The CLI should say that plainly."""
+    """ARM rejects every agent extension call from a non-internal tenant. The
+    CLI then uses the agent's own API, or says plainly that it has no route."""
 
     _AGENT = {"id": "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"}
 
@@ -3262,19 +3262,27 @@ class ExtensionTenantGateTests(unittest.TestCase):
         )
         return HTTPError("400 Client Error", response=response)
 
-    def test_each_extension_operation_explains_the_tenant_gate(self):
+    def test_tenant_gate_is_explained_when_the_agent_api_has_no_route(self):
+        from azext_sre.custom import InternalTenantOnlyError
+
         calls = (
-            (_extension_resource_create, ("subagents", "t", '{"url": "https://github.com/a/b"}'), {"overwrite": True}),
-            (_extension_resource_show, ("subagents", "t"), {}),
-            (_extension_resource_list, ("subagents",), {}),
-            (_extension_resource_delete, ("subagents", "t"), {}),
+            (_extension_resource_create, ("incidentHandlers", "t", "{}")),
+            (_extension_resource_show, ("incidentHandlers", "t")),
+            (_extension_resource_list, ("incidentHandlers",)),
+            (_extension_resource_delete, ("incidentHandlers", "t")),
+            (_extension_resource_list, ("globalSettings",)),
+            (_extension_resource_delete, ("globalSettings", "t")),
         )
-        for func, args, kwargs in calls:
-            with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
-                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()):
-                with self.assertRaises(CLIError) as ctx:
-                    func(None, "myagent", "rg", *args, **kwargs)
-            self.assertIn("This tenant can't use 'subagents' yet", str(ctx.exception))
+        for func, args in calls:
+            with self.subTest(operation=func.__name__, extension_type=args[0]), \
+                 patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": "arm"}), \
+                 patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+                 patch("azext_sre.custom._data_plane_request") as dp:
+                with self.assertRaises(InternalTenantOnlyError) as ctx:
+                    func(None, "myagent", "rg", *args)
+                self.assertIn(f"'{args[0]}'", str(ctx.exception))
+                dp.assert_not_called()
 
     def test_tools_fall_back_to_the_agent_api(self):
         envelope = {"name": "t", "type": "ExtendedAgentTool", "properties": {"type": "LinkTool"}}

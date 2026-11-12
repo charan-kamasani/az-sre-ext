@@ -28,7 +28,8 @@
    both routes (ARM and the agent's own API). Azure is faked at requests'
    `HTTPAdapter.send`, which both hand-written requests and the AAZ pipeline
    reach, by a stateful fake of both APIs. The tests check what each command
-   wrote or deleted, that each noun touches only its own extension type, and
+   wrote or deleted, that each noun touches only its own extension type, that
+   commands fall back to the agent's API when ARM refuses the tenant, and
    that credentials stay out of output and `--debug` logs.
    The documented test dependencies include `msrest` and `azure-common`
    because Azure CLI's real error formatter imports them even for local

@@ -4216,8 +4216,9 @@ def _validate_tools_shape(parsed):  # pylint: disable=too-many-branches
 # server-defaulted to null when omitted). An EARLIER conclusion recorded in
 # this file's EXTENSION_TYPES comment ("'subagents' is now CONFIRMED not
 # creatable this way") was WRONG -- it was based on a flawed experiment
-# (either the wrong extension-type path segment, e.g. "agents" instead of
-# "subagents", or the portal's YAML-apply shape sent to the wrong route).
+# (either the wrong extension-type path segment on the ARM route, e.g.
+# "agents" instead of "subagents" -- the agent's own API is the one that
+# uses "agents" -- or the portal's YAML-apply shape sent to the wrong route).
 # Embedding a per-agent hook (the portal's "Manage Hooks" button inside the
 # "Create a custom agent" dialog) is just the "hooks" field on this same
 # resource -- confirmed live with
@@ -4639,6 +4640,8 @@ DIRECT_EXTENSION_ROUTES = {
     "hooks": ("/api/v2/extendedAgent/hooks", "GlobalHook"),
     "commonPrompts": ("/api/v2/extendedAgent/commonprompts", "CommonPrompt"),
     "scheduledTasks": ("/api/v2/extendedAgent/scheduledtasks", "ScheduledTask"),
+    # The agent API calls sub-agents "agents"; it answers .../extendedAgent/subagents with its web page.
+    "subagents": ("/api/v2/extendedAgent/agents", "ExtendedAgent"),
     "repositories": ("/api/v2/repos", "CodeRepo"),
     "httpTriggers": ("/api/v2/extendedAgent/httpTriggers", "HttpTrigger"),
     "pluginMarketplaces": ("/api/v2/extendedAgent/pluginMarketplaces", "Marketplace"),
@@ -4653,22 +4656,20 @@ DIRECT_NO_LIST_OR_DELETE = {"globalSettings"}
 
 
 class InternalTenantOnlyError(CLIError):
-    """The ARM extension route refused the agent's tenant."""
+    """ARM refused an agent extension request because of the tenant."""
 
 
 def _extension_arm_request(cli_ctx, extension_type, *args, **kwargs):
     """_arm_request for agent extensions, turning the service's tenant gate
-    into a plain message instead of a raw HTTP error."""
+    into InternalTenantOnlyError so the caller can use the agent's own API."""
     try:
         return _arm_request(cli_ctx, *args, **kwargs)
     except Exception as ex:
         response_text = getattr(getattr(ex, "response", None), "text", "") or ""
         if INTERNAL_TENANT_ONLY_MARKER in f"{ex} {response_text}".lower():
             raise InternalTenantOnlyError(
-                f"This tenant can't use '{extension_type}' yet. The service only "
-                "allows agent extensions in Microsoft internal tenants right now. "
-                "Nothing is wrong with your command or your agent. If you need "
-                "this in your tenant, please ask the SRE Agent team to open it up."
+                f"Azure Resource Manager refused this '{extension_type}' request. It accepts agent "
+                "extensions only in Microsoft internal tenants."
             ) from ex
         raise
 
@@ -5024,11 +5025,14 @@ def _with_direct_fallback(arm_func, direct_func, cli_ctx, agent_name, resource_g
         return direct_func(cli_ctx, agent_name, resource_group, extension_type, *args, **direct_kwargs)
     try:
         return arm_func(cli_ctx, agent_name, resource_group, extension_type, *args, **kwargs)
-    except InternalTenantOnlyError:
+    except InternalTenantOnlyError as ex:
         if extension_type not in DIRECT_EXTENSION_ROUTES or (
                 extension_type in DIRECT_NO_LIST_OR_DELETE
                 and direct_func in (_direct_extension_list, _direct_extension_delete)):
-            raise
+            raise InternalTenantOnlyError(
+                f"{ex} The agent's own API has no route the CLI can use for it, so do this in the "
+                "Azure SRE Agent portal instead."
+            ) from ex
         logger.info("ARM route refused this tenant; using the agent's own API for '%s'.", extension_type)
         direct_kwargs = {k: v for k, v in kwargs.items() if k == "overwrite"} if direct_func is _direct_extension_create else {}
         return direct_func(cli_ctx, agent_name, resource_group, extension_type, *args, **direct_kwargs)
