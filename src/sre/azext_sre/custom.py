@@ -5752,8 +5752,9 @@ def _response_plan_handlers_to_write(cli_ctx, agent_name, resource_group, name, 
     """The instructions (incident handlers) to save for a plan, worked out before anything is written.
 
     The plan's linked handlers get the new fields and keep the rest, such as tools set in the
-    portal. A plan without instructions gets a new handler named after it, unless another
-    handler already has that ID: saving it would take over that handler's instructions.
+    portal. A plan without instructions gets a new handler named after it. If a handler already
+    has that ID, overwrite takes it over when it isn't linked to any plan, for example one left
+    with an empty incidentFilterId. A handler linked to another plan is never taken over.
     """
     _validate_incident_handlers_shape(handler_fields)
     try:
@@ -5775,12 +5776,20 @@ def _response_plan_handlers_to_write(cli_ctx, agent_name, resource_group, name, 
     taken = next((handler for handler in handlers if handler.get("id") == name), None)
     if taken is not None:
         owner = taken.get("incidentFilterId")
-        owner_text = (f"belong to response plan '{owner}'" if owner
-                      else "exist and aren't linked to a response plan")
-        raise CLIError(
-            f"Instructions with ID '{name}' already {owner_text}. Saving instructions for "
-            f"plan '{name}' would take them over, so nothing was saved."
-            + (" Choose another name for the new plan." if creating else ""))
+        if owner:
+            raise CLIError(
+                f"Instructions with ID '{name}' already belong to response plan '{owner}'. Saving "
+                f"instructions for plan '{name}' would take them over, so nothing was saved."
+                + (" Choose another name for the new plan." if creating else ""))
+        if not overwrite:
+            raise ResourceExistsError(
+                f"Instructions with ID '{name}' already exist and aren't linked to a response plan, "
+                "so nothing was saved. Pass --overwrite to take them over, or choose another name "
+                "for the new plan.")
+        logger.warning(
+            "Instructions '%s', which weren't linked to a response plan, are being taken over "
+            "for plan '%s'.", name, name)
+        return [{**_drop_nulls(taken), **handler_fields, "incidentFilterId": name}]
     return [{"id": name, "incidentFilterId": name, **handler_fields}]
 
 
@@ -6034,7 +6043,9 @@ class ResponsePlanCreate(AAZCommand):
             options=["--disabled"], help="Create the plan turned off.",
         )
         schema.overwrite = AAZBoolArg(
-            options=["--overwrite"], help="Allow replacing an existing response plan.",
+            options=["--overwrite"],
+            help="Allow replacing an existing response plan, or taking over instructions with the "
+            "plan's name that aren't linked to a plan.",
         )
         cls._args_schema = schema
         return schema

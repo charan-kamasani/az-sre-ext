@@ -1560,7 +1560,7 @@ Routes matching incidents to a subagent. Connect the incident platform and creat
 | `--processing-guide` | List | No |  |  | Quoted step-by-step guidance for the subagent, one value per step. |
 | `--mode` | String | No | autonomous |  | Agent autonomy: autonomous (portal default) or review (agent proposes, you approve). |
 | `--disabled` | Boolean | No |  | `false`, `true` | Create the plan turned off. |
-| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing response plan. |
+| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing response plan, or taking over instructions with the plan's name that aren't linked to a plan. |
 
 **Examples**
 

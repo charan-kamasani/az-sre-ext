@@ -295,6 +295,50 @@ class _ResponsePlanCliTests:
         self.assertNotIn("b", self.azure.filters)
         self.assertEqual(self.azure.handlers["b"], {"incidentFilterId": "a", **other})
 
+    def test_update_refuses_another_plans_instructions_id(self):
+        other = {"id": "b", "customInstructions": "Instructions of plan a"}
+        self._plan("a", handlers=[other])
+        self._plan("b")
+        code, _, errors = self._az("update", "-n", "b", "--mode", "autonomous", "--instructions", "Plan b")
+        self.assertNotEqual(code, 0)
+        self.assertIn("already belong to response plan 'a'", errors)
+        self.assertEqual(self.azure.writes(), [])
+        self.assertEqual(self.azure.filters["b"]["agentMode"], "review")
+        self.assertEqual(self.azure.handlers["b"], {"incidentFilterId": "a", **other})
+
+    def test_create_takes_over_unlinked_instructions_only_with_overwrite(self):
+        create = ("create", "-n", "p", "--platform", "AzMonitor", "--subagent", "responder", "--instructions", "New")
+        for link in ({}, {"incidentFilterId": None}, {"incidentFilterId": ""}):
+            with self.subTest(link=link):
+                self.azure.filters.clear()
+                self.azure.requests.clear()
+                self.azure.handlers = {"p": {"id": "p", **link, "customInstructions": "Old", "tools": ["T1"]}}
+                code, _, errors = self._az(*create)
+                self.assertNotEqual(code, 0)
+                self.assertIn("aren't linked to a response plan", errors)
+                self.assertIn("Pass --overwrite to take them over", errors)
+                self.assertEqual(self.azure.writes(), [])
+
+                code, _, errors = self._az(*create, "--overwrite")
+                self.assertEqual(code, 0, errors)
+                self.assertIn("weren't linked to a response plan, are being taken over", errors)
+                self.assertIn("p", self.azure.filters)
+                self.assertEqual(self.azure.handlers, {"p": {
+                    "id": "p", "incidentFilterId": "p", "customInstructions": "New", "tools": ["T1"]}})
+
+    def test_update_takes_over_unlinked_instructions_that_delete_then_removes(self):
+        self._plan("p")
+        self.azure.handlers["p"] = {"id": "p", "incidentFilterId": "", "customInstructions": "Old", "tools": ["T1"]}
+        code, _, errors = self._az("update", "-n", "p", "--instructions", "New")
+        self.assertEqual(code, 0, errors)
+        self.assertIn("weren't linked to a response plan, are being taken over", errors)
+        self.assertEqual(self.azure.handlers, {"p": {
+            "id": "p", "incidentFilterId": "p", "customInstructions": "New", "tools": ["T1"]}})
+
+        code, _, errors = self._az("delete", "-n", "p", "--yes")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual((self.azure.filters, self.azure.handlers), ({}, {}))
+
     def test_instructions_on_an_agent_without_the_handler_api_save_nothing(self):
         self._plan("p")
         self.azure.fail("GET", "agent", "incidentHandlers", 200, "<!doctype html><html></html>",

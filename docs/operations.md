@@ -1196,9 +1196,14 @@ plan and keep the handler's other fields, such as `tools` set in the portal.
 `create --overwrite` does the same. A plan without instructions gets a new
 handler whose `id` is the plan name. If a handler with that `id` belongs to
 another plan, or the agent has no handler API (it answers with a web page),
-`create` and `update` fail before anything is saved. An empty value, such as
-`--title-contains=""` or `--instructions=""`, removes that criterion or clears
-the instructions. Write it with `=`: PowerShell drops a separate `""` argument.
+`create` and `update` fail before anything is saved. If a handler with that
+`id` isn't linked to any plan (its `incidentFilterId` is missing, null or
+empty), `create --overwrite` and `update` take it over: they link it to the
+plan, apply the new fields, keep its other fields and warn. `create` without
+`--overwrite` fails before anything is saved. Once linked, `delete` removes
+it. An empty value, such as `--title-contains=""` or `--instructions=""`,
+removes that criterion or clears the instructions. Write it with `=`:
+PowerShell drops a separate `""` argument.
 
 `response-plan delete` deletes the filter first and the linked handlers after
 it, so a failure part-way never leaves an active plan without its
