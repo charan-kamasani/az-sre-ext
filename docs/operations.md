@@ -35,8 +35,12 @@ az sre identity show -g myrg --agent-name myagent
 az sre identity remove -g myrg --agent-name myagent --system-assigned
 ```
 
-`identity remove` is correctly rejected by the server if it would leave the
-agent with zero identities (`ManagedIdentityRequired`).
+`identity remove` refuses, before sending anything, a removal that would leave
+the agent with no identity. The service rejects that request
+(`ManagedIdentityRequired`), but it still deletes the system-assigned
+identity's service principal, and the agent goes on reporting a principal that
+no longer exists. If that already happened, `identity assign --system-assigned`
+makes a new principal; grant it the roles the old one had.
 
 `identity assign` and `identity remove` send a PATCH that carries only the
 `identity` block, so the rest of the agent (App Insights link, incident
