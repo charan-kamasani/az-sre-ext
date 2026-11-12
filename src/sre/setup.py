@@ -39,6 +39,10 @@ setup(
     version=VERSION,
     description='Microsoft Azure Command-Line Tools Sre Extension.',
     long_description=README + '\n\n' + HISTORY,
+    license_expression='MIT',
+    # Copy of the repository root LICENSE: setuptools deprecates
+    # license_files paths that contain '..'.
+    license_files=['LICENSE'],
     author='Microsoft Corporation',
     author_email='azpycli@microsoft.com',
     url='https://github.com/charan-kamasani/az-sre-ext',

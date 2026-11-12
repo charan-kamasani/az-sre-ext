@@ -23,6 +23,11 @@
    `test_action_configuration_mode.py` uses the same offline harness to show
    that `agent create`/`agent update` reject `--action-configuration` mode
    `ReadOnly` while arguments are parsed, before a managed identity is created.
+   `test_cli_connectors.py` runs connector and knowledge commands through the
+   same loader against a stateful fake ARM at `requests.adapters.HTTPAdapter.send`,
+   which sits below both the generated commands and `send_raw_request`, so it
+   records what each command wrote, read or deleted. These harnesses block the
+   network at that same adapter.
    The documented test dependencies include `msrest` and `azure-common`
    because Azure CLI's real error formatter imports them even for local
    argument-validation errors.

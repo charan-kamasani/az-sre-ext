@@ -223,3 +223,7 @@ Most commands are generated from the `Microsoft.App/agents` API spec under
 ## Feedback
 
 Found a bug or want a command added? [Open an issue](https://github.com/charan-kamasani/az-sre-ext/issues).
+
+## License
+
+Licensed under the [MIT License](LICENSE).
