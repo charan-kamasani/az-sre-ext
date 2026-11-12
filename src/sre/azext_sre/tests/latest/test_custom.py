@@ -6154,14 +6154,35 @@ class McpEndpointSafetyTests(unittest.TestCase):
 
     def test_well_formed_endpoints_are_accepted(self):
         for endpoint in ("https://mcp.contoso.com:8443/v1/mcp?x=1", "https://10.0.0.4/mcp",
-                         "https://example.com/a%20b"):
+                         "https://example.com/a%20b", "https://[::1]/mcp", "https://localhost:8443/mcp"):
             with self.subTest(endpoint=endpoint):
                 self.assertEqual(self._run(mcp_endpoint=endpoint)[0].data_source, endpoint)
 
     def test_bearer_token_from_a_missing_file_is_rejected(self):
         # Azure CLI leaves '@path' as typed when it can't read the file.
-        with self.assertRaisesRegex(InvalidArgumentValueError, "nope.txt"):
+        with patch("sys.argv", ["az", "--bearer-token", "@C:\\nope.txt"]), \
+                self.assertRaisesRegex(InvalidArgumentValueError, "nope.txt"):
             self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="@C:\\nope.txt")
+
+    def test_unread_token_error_does_not_echo_the_value(self):
+        with patch("sys.argv", ["az"]), self.assertRaises(InvalidArgumentValueError) as raised:
+            self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="@secret-value")
+        self.assertNotIn("secret-value", str(raised.exception))
+
+    def test_token_file_that_starts_with_at_is_accepted(self):
+        handle = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
+        self.addCleanup(lambda: os.remove(handle.name))
+        handle.write("@secret")
+        handle.close()
+        with patch("sys.argv", ["az", f"--bearer-token=@{handle.name}"]):
+            args, _ = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="@secret")
+        self.assertEqual(args.extended_properties["bearerToken"], "@secret")
+
+    def test_empty_bearer_token_is_rejected(self):
+        for token in ("", "  "):
+            with self.subTest(token=token), patch("sys.argv", ["az"]), \
+                    self.assertRaisesRegex(InvalidArgumentValueError, "empty"):
+                self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token=token)
 
 
 class ConnectorUpdateMcpArgsTests(unittest.TestCase):
@@ -6169,6 +6190,9 @@ class ConnectorUpdateMcpArgsTests(unittest.TestCase):
 
     class _Base:
         def pre_operations(self):
+            pass
+
+        def pre_instance_update(self, instance):
             pass
 
         def post_instance_update(self, instance):
@@ -6182,23 +6206,38 @@ class ConnectorUpdateMcpArgsTests(unittest.TestCase):
                 "extended_properties": None}
         args.update(extra_args)
         command = _bare_command(self._Command, **args)
-        with patch("azext_sre.custom.logger") as fake_logger:
+        with patch("azext_sre.custom.logger") as fake_logger, patch("sys.argv", ["az"]):
             command.pre_operations()
         return command, fake_logger
 
-    @staticmethod
-    def _instance(connector_type):
-        return SimpleNamespace(properties=SimpleNamespace(
-            data_connector_type=SimpleNamespace(to_serialized_data=lambda: connector_type)))
+    class _Value:
+        def __init__(self, value):
+            self.value = value
 
-    def test_bearer_token_rotation_sends_endpoint_and_token(self):
+        def to_serialized_data(self):
+            return self.value
+
+    @classmethod
+    def _instance(cls, connector_type, extended_properties=None):
+        return SimpleNamespace(properties=SimpleNamespace(
+            data_connector_type=cls._Value(connector_type),
+            extended_properties=cls._Value(extended_properties)))
+
+    def _update(self, command, instance):
+        with patch("azext_sre.custom.has_value", lambda value: getattr(value, "value", None) is not None), \
+                patch("azext_sre.custom.logger") as fake_logger:
+            command.pre_instance_update(instance)
+            command.post_instance_update(instance)
+        return instance.properties.extended_properties, fake_logger
+
+    def test_bearer_token_rotation_keeps_other_settings(self):
         command, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="new-token")
         self.assertEqual(command.ctx.args.data_source, "https://mcp.contoso.com/mcp")
-        self.assertEqual(command.ctx.args.extended_properties, {
-            "transport": "Http", "endpoint": "https://mcp.contoso.com/mcp",
-            "authType": "BearerToken", "bearerToken": "new-token"})
+        self.assertIsNone(command.ctx.args.extended_properties)
         log.warning.assert_not_called()
-        command.post_instance_update(self._instance("Mcp"))
+        stored = {"transport": "Http", "authType": "BearerToken", "partnerType": "DynatraceMcp", "x": 1}
+        merged, _ = self._update(command, self._instance("Mcp", stored))
+        self.assertEqual(merged, {**stored, "endpoint": "https://mcp.contoso.com/mcp", "bearerToken": "new-token"})
 
     def test_auth_flag_without_an_endpoint_is_rejected(self):
         with self.assertRaisesRegex(CLIError, "--mcp-endpoint"):
@@ -6207,10 +6246,16 @@ class ConnectorUpdateMcpArgsTests(unittest.TestCase):
     def test_endpoint_from_extended_properties_is_enough(self):
         command, _ = self._run(bearer_token="new-token",
                                extended_properties={"transport": "Http", "endpoint": "https://x.contoso.com"})
-        self.assertEqual(command.ctx.args.extended_properties["bearerToken"], "new-token")
+        self.assertEqual(command._mcp_auth_overlay["bearerToken"], "new-token")
+
+    def test_endpoint_without_auth_on_a_bearer_connector_is_rejected(self):
+        command, _ = self._run(mcp_endpoint="https://mcp.contoso.com/mcp")
+        with self.assertRaisesRegex(CLIError, "--bearer-token"):
+            self._update(command, self._instance("Mcp", {"authType": "BearerToken"}))
 
     def test_endpoint_without_auth_warns_that_auth_is_dropped(self):
-        _, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp")
+        command, _ = self._run(mcp_endpoint="https://mcp.contoso.com/mcp")
+        _, log = self._update(command, self._instance("Mcp", {"transport": "Http"}))
         log.warning.assert_called_once()
 
     def test_missing_token_file_and_malformed_endpoint_are_rejected(self):
@@ -6224,12 +6269,13 @@ class ConnectorUpdateMcpArgsTests(unittest.TestCase):
             self._run(data_connector_type="Kusto", mcp_endpoint="https://mcp.contoso.com/mcp")
         command, _ = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="t")
         with self.assertRaisesRegex(CLIError, "Mcp"):
-            command.post_instance_update(self._instance("KustoClient"))
+            self._update(command, self._instance("KustoClient"))
 
     def test_without_mcp_flags_nothing_changes(self):
         command, _ = self._run(data_source="https://cluster.kusto.windows.net/db")
         self.assertIsNone(command.ctx.args.extended_properties)
-        command.post_instance_update(self._instance("KustoClient"))
+        instance = self._instance("KustoClient")
+        self.assertIsNone(self._update(command, instance)[0].value)
 
     def test_update_schema_has_the_flags(self):
         schema = ConnectorUpdate._build_arguments_schema()

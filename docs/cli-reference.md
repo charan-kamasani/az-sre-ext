@@ -681,7 +681,7 @@ consentStatus is shown for EntraOAuth-backed Mcp connectors.
 
 Update an Agent Connector.
 
-An update sends the whole connector back, and the service never returns a connector's data source or identity, or an MCP connector's endpoint and credentials. So pass --data-source and --identity on every update (null for one the connector doesn't have), and pass all of an MCP connector's --extended-properties, or --mcp-endpoint plus its auth flag. To change a knowledge source, run 'az sre knowledge create' with --overwrite.
+An update sends the whole connector back, and the service never returns a connector's data source or identity, or an MCP connector's endpoint and credentials. So pass --data-source and --identity on every update (null for one the connector doesn't have), and pass all of an MCP connector's --extended-properties, or --mcp-endpoint plus its auth flag. With --mcp-endpoint, the connector's other settings (like partnerType) are kept, and --extended-properties is merged in; custom headers are never returned, so pass them again with --extended-properties '{"headers": {...}}'. These flags only work on Mcp connectors. To change a knowledge source, run 'az sre knowledge create' with --overwrite.
 
 **Syntax**
 

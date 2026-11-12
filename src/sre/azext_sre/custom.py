@@ -425,23 +425,27 @@ def _no_http_trace():
             http_logger.setLevel(level)
 
 
+def _raw_flag_value(flag):
+    """The value typed after `flag`, before Azure CLI replaced @file with the
+    file's contents. None when the flag isn't in sys.argv."""
+    argv = sys.argv[1:]
+    for index, arg in enumerate(argv):
+        if arg == flag and index + 1 < len(argv):
+            return argv[index + 1]
+        if arg.startswith(flag + "="):
+            return arg[len(flag) + 1:]
+    return None
+
+
 def _warn_if_secret_typed(flag, safer):
     """Warn when a secret was typed on the command line instead of read from
     @file. Azure CLI loads @file after echoing the arguments, so sys.argv
     still shows the raw form."""
-    argv = sys.argv[1:]
-    for index, arg in enumerate(argv):
-        if arg == flag and index + 1 < len(argv):
-            value = argv[index + 1]
-        elif arg.startswith(flag + "="):
-            value = arg[len(flag) + 1:]
-        else:
-            continue
-        if not value.startswith("@"):
-            logger.warning(
-                "%s was typed on the command line, so it shows up in --debug "
-                "output and shell history. Next time, %s.", flag, safer)
-        return
+    value = _raw_flag_value(flag)
+    if value is not None and not value.startswith("@"):
+        logger.warning(
+            "%s was typed on the command line, so it shows up in --debug "
+            "output and shell history. Next time, %s.", flag, safer)
 
 
 # Local file the data-plane `sre` CLI (separate deliverable, not an az
@@ -1709,20 +1713,46 @@ def _add_mcp_auth_args(schema):
     )
 
 
+def _check_bearer_token(bearer_token):
+    """Refuse a token Azure CLI couldn't read from its file, or an empty one.
+
+    Azure CLI replaces @path with the file's contents, but leaves the text
+    alone when it can't read the file, so the value alone can't tell the two
+    apart: the file itself may start with '@'. Check the path typed in argv
+    instead, and never put the value in an error, because it may be the token.
+    """
+    raw = _raw_flag_value("--bearer-token")
+    if raw is not None:
+        path = raw[1:]
+        if raw.startswith("@") and path and path != "-":
+            try:
+                with open(os.path.expanduser(path), "rb"):
+                    pass
+            except OSError:
+                raise InvalidArgumentValueError(
+                    f"--bearer-token: can't read the file '{path}'. Check the path. "
+                    "Nothing was sent.") from None
+    elif bearer_token.startswith("@"):
+        raise InvalidArgumentValueError(
+            "--bearer-token starts with '@', which usually means Azure CLI couldn't read "
+            "the token file. Check the path. Nothing was sent.")
+    if not bearer_token.strip():
+        raise InvalidArgumentValueError(
+            "--bearer-token is empty. If you read it from a file, check that the file "
+            "has the token. Nothing was sent.")
+
+
+_MCP_AUTH_KEYS = ("authType", "bearerToken", "armScope", "scopes", "dcrClientName", "entraOAuth")
+
+
 def _mcp_auth_properties(args, existing):
     """Merge the Mcp auth flags into the extended properties `existing`.
 
     Returns None when no auth flag was passed. The caller checks that the
     connector is an Mcp one."""
     bearer_token = _arg_value(getattr(args, "bearer_token", None))
-    if bearer_token:
-        if bearer_token.startswith("@"):
-            # Azure CLI replaces @path with the file's contents, but leaves the
-            # text alone when it can't read the file. Sending it would store the
-            # path as the token and the connector would never authenticate.
-            raise InvalidArgumentValueError(
-                f"--bearer-token: can't read the file '{bearer_token[1:]}'. Check the path. "
-                "Nothing was sent.")
+    if bearer_token is not None:
+        _check_bearer_token(bearer_token)
         _warn_if_secret_typed("--bearer-token", "read it from a file with --bearer-token @token.txt")
     managed_identity_auth = _arg_value(getattr(args, "managed_identity_auth", None))
     mi_token_scope = _arg_value(getattr(args, "mi_token_scope", None))
@@ -1731,7 +1761,7 @@ def _mcp_auth_properties(args, existing):
     oauth_client_name = _arg_value(getattr(args, "oauth_client_name", None))
 
     auth_flags_used = [
-        bool(bearer_token),
+        bearer_token is not None,
         bool(managed_identity_auth or mi_token_scope),
         bool(oauth_dcr),
     ]
@@ -1746,7 +1776,7 @@ def _mcp_auth_properties(args, existing):
     if not any(auth_flags_used):
         return None
 
-    if bearer_token:
+    if bearer_token is not None:
         return {**existing, "authType": "BearerToken", "bearerToken": bearer_token}
     if managed_identity_auth or mi_token_scope:
         if not mi_token_scope:
@@ -2040,41 +2070,79 @@ class _ConnectorUpdateMcpArgsMixin:
         _add_mcp_auth_args(schema)
         return schema
 
+    _mcp_endpoint_properties = None
+    _mcp_auth_overlay = None
+    _original_extended_properties = None
+
     def pre_operations(self):
+        # Check everything here, before the connector is read, so a bad flag
+        # never reaches the PUT.
         args = self.ctx.args
         mcp_endpoint = _arg_value(getattr(args, "mcp_endpoint", None))
-        existing = _arg_value(getattr(args, "extended_properties", None)) or {}
-        if not isinstance(existing, dict):
-            existing = {}
+        given = _arg_value(getattr(args, "extended_properties", None))
+        given = given if isinstance(given, dict) else {}
+        endpoint_properties = {}
         if mcp_endpoint:
             _validate_mcp_endpoint(mcp_endpoint)
             args.data_source = mcp_endpoint
-            existing = {**existing, "transport": "Http", "endpoint": mcp_endpoint}
-        auth_properties = _mcp_auth_properties(args, existing)
-        if mcp_endpoint or auth_properties is not None:
+            endpoint_properties = {"transport": "Http", "endpoint": mcp_endpoint}
+        auth_overlay = _mcp_auth_properties(args, {"endpoint": mcp_endpoint or given.get("endpoint")})
+        if mcp_endpoint or auth_overlay is not None:
             connector_type = _arg_value(getattr(args, "data_connector_type", None))
             if connector_type is not None and connector_type != "Mcp":
                 raise CLIError("--mcp-endpoint and the MCP auth flags only apply to Mcp connectors.")
-            properties = existing if auth_properties is None else auth_properties
-            if not properties.get("endpoint"):
+            if not (mcp_endpoint or given.get("endpoint")):
                 raise CLIError(
                     "Pass --mcp-endpoint too. The service never returns an MCP connector's "
                     "endpoint, so the update has to send it again.")
-            if not properties.get("authType") and not properties.get("headers"):
-                logger.warning(
-                    "No auth flag was passed, so the connector is saved without authentication. "
-                    "Pass --bearer-token, --managed-identity-auth or --oauth-dcr to keep one.")
-            args.extended_properties = properties
+            if auth_overlay is not None:
+                auth_overlay.pop("endpoint", None)
+            self._mcp_endpoint_properties = endpoint_properties
+            self._mcp_auth_overlay = auth_overlay
             self._mcp_flags_used = True
         super().pre_operations()
+
+    def pre_instance_update(self, instance):
+        super().pre_instance_update(instance)
+        if not self._mcp_flags_used:
+            return
+        # Check the stored type, before --data-connector-type is applied, so
+        # these flags can't turn another connector into an Mcp one.
+        properties = instance.properties
+        connector_type = (properties.data_connector_type.to_serialized_data()
+                          if has_value(properties.data_connector_type) else None)
+        if not isinstance(connector_type, str) or connector_type.lower() != "mcp":
+            raise CLIError("--mcp-endpoint and the MCP auth flags only apply to Mcp connectors.")
+        original = (properties.extended_properties.to_serialized_data()
+                    if has_value(properties.extended_properties) else None)
+        self._original_extended_properties = original if isinstance(original, dict) else {}
 
     def post_instance_update(self, instance):
         super().post_instance_update(instance)
         if not self._mcp_flags_used:
             return
-        connector_type = instance.properties.data_connector_type.to_serialized_data()
-        if not isinstance(connector_type, str) or connector_type.lower() != "mcp":
-            raise CLIError("--mcp-endpoint and the MCP auth flags only apply to Mcp connectors.")
+        properties = instance.properties
+        current = (properties.extended_properties.to_serialized_data()
+                   if has_value(properties.extended_properties) else None)
+        # Keep what the service returned (partnerType and custom fields), then
+        # what was passed in --extended-properties and --partner-type.
+        merged = {**(self._original_extended_properties or {}),
+                  **(current if isinstance(current, dict) else {})}
+        if self._mcp_auth_overlay is not None:
+            for key in _MCP_AUTH_KEYS:
+                merged.pop(key, None)
+        merged.update(self._mcp_endpoint_properties or {})
+        merged.update(self._mcp_auth_overlay or {})
+        if self._mcp_auth_overlay is None:
+            if merged.get("authType") == "BearerToken" and not merged.get("bearerToken"):
+                raise CLIError(
+                    "This connector uses a bearer token, which the service never returns. "
+                    "Pass --bearer-token @token.txt again. Nothing was sent.")
+            if not merged.get("authType") and not merged.get("headers"):
+                logger.warning(
+                    "No auth flag was passed, so the connector is saved without authentication. "
+                    "Pass --bearer-token, --managed-identity-auth or --oauth-dcr to keep one.")
+        properties.extended_properties = merged
 
 
 @register_command("sre connector create")
@@ -2141,12 +2209,14 @@ class ConnectorCreate(
         return _annotate_connector_consent_status(result)
 
 
-def _require_write_only_settings(args, instance):
+def _require_write_only_settings(args, instance, mcp_settings_given=False):
     """Refuse an update whose PUT would drop settings the service never returns.
 
     The generated update reads the connector, merges the arguments into it and
     PUTs the result. The read never includes the data source or identity, an
     MCP connector's endpoint and credentials, or a knowledge file's content.
+    `mcp_settings_given` is True when --mcp-endpoint or an auth flag already
+    supplied an MCP connector's endpoint and credentials.
     """
     properties = instance.properties
     connector_type = (properties.data_connector_type.to_serialized_data()
@@ -2163,7 +2233,7 @@ def _require_write_only_settings(args, instance):
         ("--identity", args.identity, properties.identity),
     ) if not (has_value(argument) or has_value(value))]
     if (isinstance(connector_type, str) and connector_type.lower() == "mcp"
-            and not has_value(args.extended_properties)):
+            and not mcp_settings_given and not has_value(args.extended_properties)):
         missing.append("--extended-properties")
     if not missing:
         return
@@ -2193,8 +2263,12 @@ class ConnectorUpdate(
     connector's data source or identity, or an MCP connector's endpoint and
     credentials. So pass --data-source and --identity on every update (null for
     one the connector doesn't have), and pass all of an MCP connector's
-    --extended-properties, or --mcp-endpoint plus its auth flag. To change a
-    knowledge source, run 'az sre knowledge create' with --overwrite.
+    --extended-properties, or --mcp-endpoint plus its auth flag. With
+    --mcp-endpoint, the connector's other settings (like partnerType) are kept,
+    and --extended-properties is merged in; custom headers are never returned,
+    so pass them again with --extended-properties '{"headers": {...}}'. These
+    flags only work on Mcp connectors. To change a knowledge source, run
+    'az sre knowledge create' with --overwrite.
 
     :example: Point a Kusto connector that has no identity at a different database
         az sre connector update -g myrg --agent-name myagent -n conn-kusto \\
@@ -2219,7 +2293,7 @@ class ConnectorUpdate(
 
     def post_instance_update(self, instance):
         super().post_instance_update(instance)
-        _require_write_only_settings(self.ctx.args, instance)
+        _require_write_only_settings(self.ctx.args, instance, mcp_settings_given=self._mcp_flags_used)
 
     def _output(self, *args, **kwargs):
         result = super()._output(*args, **kwargs)
