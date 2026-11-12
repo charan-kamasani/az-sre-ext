@@ -33,8 +33,15 @@
    APIs at the same adapter. The tests check what each command wrote or
    deleted, that each noun touches only its own extension type, that commands
    fall back to the agent's API when ARM refuses the tenant, and that
-   credentials stay out of output and `--debug` logs. All these harnesses
-   block the network at that adapter.
+   credentials stay out of output and `--debug` logs.
+   `test_cli_agent_identity.py` runs the agent lifecycle, identity, wait,
+   usage and network commands through the real parser against a stateful fake
+   ARM. It fakes HTTP at `requests.adapters.HTTPAdapter.send`, which both the
+   AAZ pipeline and `send_raw_request` reach (a `Session.request` fake misses
+   the hand-written requests), so tests can check what a command wrote, kept
+   or deleted. Its secret tests set up Azure CLI's own console and `az.log`
+   logging and count lines that contain a fake secret, including on a retried
+   request. All these harnesses block the network at that adapter.
    The documented test dependencies include `msrest` and `azure-common`
    because Azure CLI's real error formatter imports them even for local
    argument-validation errors.
