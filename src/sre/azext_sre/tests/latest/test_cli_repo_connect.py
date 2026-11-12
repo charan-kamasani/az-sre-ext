@@ -407,8 +407,13 @@ class RepoConnectCliTests(_CliTestCase):
                 self.assertEqual(code, 0, stderr)
                 saved = self.services.value("repositories", "api")
                 self.assertEqual(saved.get("feedCredentials"), [FEED])
-                printed = json.loads(stdout)["repository"]["properties"]["value"]["feedCredentials"]
-                self.assertEqual([feed["pat"] for feed in printed], ["******"])
+                repository = json.loads(stdout)["repository"]
+                if route == "arm":
+                    printed = repository["properties"]["value"]["feedCredentials"]
+                    self.assertEqual([feed["pat"] for feed in printed], ["******"])
+                else:
+                    # The agent API answers without the item, so the request isn't printed back.
+                    self.assertNotIn("properties", repository)
                 # Plain, and inside the base64 values ARM sends and receives.
                 forms = [FEED_PAT, _b64(stored), _b64(saved)]
                 forms += [json.loads(body)["properties"]["value"] for method, url, body in self.services.calls
