@@ -253,6 +253,7 @@ az sre response-plan show -g "$RG" --agent-name "$AGENT" --name sev1-checkout
 | Step | Label | How |
 | --- | --- | --- |
 | Change severities, mode or other settings | CLI | `az sre response-plan update`. A list flag such as `--priority` replaces the whole list. |
+| Remove a criterion or the instructions | CLI | `az sre response-plan update` with an empty value, such as `--title-contains=""`, `--priority=""` or `--instructions=""`. Keep the `=`: PowerShell drops a separate `""`. |
 | Turn a plan off and on | CLI | `az sre response-plan disable`, `az sre response-plan enable` |
 | Delete a plan | CLI | `az sre response-plan delete -g "$RG" --agent-name "$AGENT" --name sev1-checkout --yes` when you no longer need it. Check the exact name first with `az sre response-plan list`. |
 
@@ -330,7 +331,7 @@ connections, and resource-group permission levels.
 | Deploy: make you SRE Agent Administrator | CLI | `--grant-access-to-me admin` |
 | Open Set up your agent | Portal | Opens after deployment. Each card is a row below. |
 | Code: GitHub with your account or a PAT | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://github.com/<org>/<repo>"`. It shows a one-time code and opens GitHub's sign-in page in your browser. To use a PAT instead, set `GITHUB_TOKEN` to it first. |
-| Code: Azure DevOps with your account or a managed identity | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://dev.azure.com/<org>/<project>/_git/<repo>"`. The CLI creates a PAT from your sign-in; for a managed identity, add `--devops-auth-type managed-identity --devops-identity <identity-resource-id>`. |
+| Code: Azure DevOps with your account or a managed identity | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://dev.azure.com/<org>/<project>/_git/<repo>"`. The CLI creates a PAT from your sign-in that expires after 30 days; for a managed identity, add `--devops-auth-type managed-identity --devops-identity <identity-resource-id>`. |
 | Code: GitHub App or GitLab | Portal | Code access (`/views/context/codeAccess`). `az sre repo connect` supports GitHub and Azure DevOps tokens and managed identities only. |
 | Logs: Azure Data Explorer | CLI | See [Set up Kusto connector](#set-up-kusto-connector). |
 | Logs: Log Analytics Workspace or Application Insights | Portal | Connectors (`/views/extensions/connectors`). The wizard also assigns Log Analytics Reader and Monitoring Reader on the resource group and adds it to managed resources. |
@@ -492,13 +493,13 @@ removing repositories and pull requests from chat are in the portal.
 
 | Step | Label | How |
 | --- | --- | --- |
-| Add a GitHub repository with OAuth or a PAT | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://github.com/<org>/<repo>"`. Run it once per repository. To use a PAT, set `GITHUB_TOKEN` to it first. |
-| Add an Azure DevOps repository with your account, a managed identity or a PAT | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://dev.azure.com/<org>/<project>/_git/<repo>"`. Add `--devops-auth-type managed-identity --devops-identity <identity-resource-id>` for a managed identity. |
+| Add a GitHub repository with OAuth or a PAT | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://github.com/<org>/<repo>"`. Run it once per repository. To use a PAT, set `GITHUB_TOKEN` to it first. The agent keeps one GitHub credential for all its GitHub repositories, so the PAT must be able to read all of them. |
+| Add an Azure DevOps repository with your account, a managed identity or a PAT | CLI | `az sre repo connect -g "$RG" --agent-name "$AGENT" --repo-url "https://dev.azure.com/<org>/<project>/_git/<repo>"`. The PAT the CLI creates expires after 30 days. Add `--devops-auth-type managed-identity --devops-identity <identity-resource-id>` for a managed identity. |
 | Add a repository with your GitHub App | Portal | Code access (`/views/context/codeAccess`). |
 | Set a display name | CLI | `--display-name`. A separate description needs the portal. |
 | Create a pull request from chat | Portal | New chat. |
 | Remove a repository | Portal | Code access > Delete. `az sre` can't remove repositories. |
-| Update authentication after a PAT expires | CLI | Set `GITHUB_TOKEN` to the new PAT and run `az sre repo connect` again; it replaces the stored token. |
+| Update authentication after a PAT expires | CLI | Set `GITHUB_TOKEN` to the new PAT and run `az sre repo connect` again for the same repository URL; it replaces the stored token. For Azure DevOps, run it again before the 30-day PAT expires. |
 | Use GitHub as an MCP server with a custom agent instead | CLI | See [Set up MCP connector](#set-up-mcp-connector). |
 
 ## Tutorials: Connect

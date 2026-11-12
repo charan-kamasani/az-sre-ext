@@ -48,7 +48,8 @@ az sre agent show \
 
 For GitHub, the command shows a one-time code and opens GitHub's sign-in page in
 your browser; enter the code there. In CI, set `GITHUB_TOKEN` or pass
-`--github-token` instead.
+`--github-token` instead. The agent keeps one GitHub credential for all its
+GitHub repositories, so use a token that can read every repository you connect.
 
 ```bash
 az sre repo connect \

@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import requests
 from azure.cli.core import get_default_cli
-from azure.cli.core.azclierror import CLIError
+from azure.cli.core.azclierror import CLIError, ResourceNotFoundError
 from azure.cli.core.extension import DevExtension
 
 from azext_sre.custom import _github_device_flow
@@ -148,6 +148,10 @@ class GithubSignInCliTests(unittest.TestCase):
         stack.enter_context(patch("time.sleep"))
         stack.enter_context(patch("azure.cli.core.util.open_page_in_browser", return_value=True))
         stack.enter_context(patch("azext_sre.custom._extension_resource_create", side_effect=self._create))
+        # The agent has no repositories yet; repo connect reads them before signing in.
+        stack.enter_context(patch(
+            "azext_sre.custom._extension_resource_show", side_effect=ResourceNotFoundError("Not found.")))
+        stack.enter_context(patch("azext_sre.custom._extension_resource_list", return_value={"value": []}))
 
     @staticmethod
     def _create(cli_ctx, agent_name, resource_group, extension_type, name, value, overwrite=False):
