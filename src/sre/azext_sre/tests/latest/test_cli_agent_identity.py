@@ -368,6 +368,7 @@ class AgentCliTestCase(unittest.TestCase):
         root, cli = logging.getLogger(), logging.getLogger("cli")
         with patch.dict(os.environ, {"AZURE_LOGGING_ENABLE_LOG_FILE": "true"}), \
                 patch.object(root, "handlers", []), patch.object(cli, "handlers", []), \
+                patch.object(root, "level", root.level), patch.object(cli, "level", cli.level), \
                 redirect_stdout(io.StringIO()) as output, redirect_stderr(errors):
             try:
                 code = get_default_cli().invoke(list(arguments), out_file=output)

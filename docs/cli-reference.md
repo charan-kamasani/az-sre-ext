@@ -1464,29 +1464,30 @@ Supports GitHub and Azure DevOps. GitLab isn't exposed by this CLI yet.
 
 | Verb | Exact syntax |
 | --- | --- |
-| `connect` | `az sre repo connect --agent-name <value> --resource-group <value> --repo-url <value> [--provider {GitHub,AzureDevOps}] [--display-name <value>] [--branch <value>] [--github-token <value>] [--devops-organization <value>] [--devops-auth-type {pat,managed-identity}] [--devops-identity <value>] [--devops-federated-client-id <value>] [--devops-federated-tenant-id <value>]` |
+| `connect` | `az sre repo connect --agent-name <value> --resource-group <value> --repo-url <value> [--provider {GitHub,AzureDevOps}] [--display-name <value>] [--overwrite {false,true}] [--branch <value>] [--github-token <value>] [--devops-organization <value>] [--devops-auth-type {pat,managed-identity}] [--devops-identity <value>] [--devops-federated-client-id <value>] [--devops-federated-tenant-id <value>]` |
 
 ### `az sre repo connect`
 
 Connect a GitHub or Azure DevOps repo to an agent.
 
-For GitHub, the command uses --github-token, or the GITHUB_TOKEN or GH_TOKEN environment variable. If none is set, it shows a one-time code and opens GitHub's sign-in page in your browser. Enter the code there before it expires (15 minutes).
+The agent keeps one credential for all its GitHub repositories, and one per Azure DevOps organization. Each run saves a new one, which the agent's other repos on that host or organization then use too. For GitHub, the command uses --github-token, or the GITHUB_TOKEN or GH_TOKEN environment variable. If none is set, it shows a one-time code and opens GitHub's sign-in page in your browser. Enter the code there before it expires (15 minutes). For Azure DevOps, it creates a personal access token (PAT) that expires after 30 days; run the command again before then, or use a managed identity, which doesn't expire. Running the command again for the same repo keeps its other settings, such as the branch and sparse checkout paths.
 
 **Syntax**
 
-`az sre repo connect --agent-name <value> --resource-group <value> --repo-url <value> [--provider {GitHub,AzureDevOps}] [--display-name <value>] [--branch <value>] [--github-token <value>] [--devops-organization <value>] [--devops-auth-type {pat,managed-identity}] [--devops-identity <value>] [--devops-federated-client-id <value>] [--devops-federated-tenant-id <value>]`
+`az sre repo connect --agent-name <value> --resource-group <value> --repo-url <value> [--provider {GitHub,AzureDevOps}] [--display-name <value>] [--overwrite {false,true}] [--branch <value>] [--github-token <value>] [--devops-organization <value>] [--devops-auth-type {pat,managed-identity}] [--devops-identity <value>] [--devops-federated-client-id <value>] [--devops-federated-tenant-id <value>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
-| `--repo-url` | String | Yes |  |  | HTTPS clone URL of the repo. |
-| `--provider` | String | No |  | `GitHub`, `AzureDevOps` | Repo provider. Auto-detected from --repo-url's host when omitted. |
-| `--display-name`, `--name`, `-n` | String | No |  |  | Display name for the repo. Defaults to the repo name from --repo-url (without .git). |
-| `--branch` | String | No |  |  | Branch to check out. Defaults to the repo's default branch. |
-| `--github-token` | String | No |  |  | GitHub token. Defaults to GITHUB_TOKEN or GH_TOKEN, then to browser sign-in with a one-time code. A fine-grained, repo-scoped token is recommended; it is stored on the agent. |
+| `--repo-url` | String | Yes |  |  | HTTPS clone URL of the repo, on github.com, dev.azure.com or `<organization>.visualstudio.com`. Don't put a user name or token in it. |
+| `--provider` | String | No |  | `GitHub`, `AzureDevOps` | Repo provider. Detected from --repo-url's host; if given, it must match that host. |
+| `--display-name`, `--name`, `-n` | String | No |  |  | Display name for the repo, unique on the agent. Defaults to the repo name from --repo-url (without .git). |
+| `--overwrite` | Boolean | No |  | `false`, `true` | Replace a repo with the same display name that points to a different URL. Without this flag, the command stops before saving anything. |
+| `--branch` | String | No |  |  | Branch to check out. Defaults to the repo's default branch, or to the saved branch when you connect the same repo again. |
+| `--github-token` | String | No |  |  | GitHub token. Defaults to GITHUB_TOKEN or GH_TOKEN, then to browser sign-in with a one-time code. It is stored on the agent and used for all its GitHub repos, so it must be able to read every one of them. |
 | `--devops-organization` | String | No |  |  | Azure DevOps organization. Default: taken from --repo-url. |
-| `--devops-auth-type` | String | No | pat | `pat`, `managed-identity` | Azure DevOps auth method. Use managed-identity if your org blocks PAT creation. |
+| `--devops-auth-type` | String | No | pat | `pat`, `managed-identity` | Azure DevOps auth method. pat creates a PAT that expires after 30 days. Use managed-identity if your org blocks PAT creation, or to avoid the expiry. |
 | `--devops-identity` | String | No |  |  | Managed identity resource ID. Required with --devops-auth-type managed-identity. |
 | `--devops-federated-client-id`, `--devops-fed-client-id` | String | No |  |  | Federated client ID, for an identity in a different tenant. Use with --devops-federated-tenant-id. |
 | `--devops-federated-tenant-id`, `--devops-fed-tenant-id` | String | No |  |  | Federated tenant ID. Use with --devops-federated-client-id. |
@@ -1504,6 +1505,12 @@ For GitHub, the command uses --github-token, or the GITHUB_TOKEN or GH_TOKEN env
   ```bash
   az sre repo connect --agent-name myagent --resource-group myrg \
   --repo-url https://github.com/contoso/my-service
+  ```
+- Connect a second repo whose name is already taken on the agent
+
+  ```bash
+  az sre repo connect --agent-name myagent --resource-group myrg \
+  --repo-url https://github.com/fabrikam/my-service --display-name fabrikam-my-service
   ```
 - Connect an Azure DevOps repo
 

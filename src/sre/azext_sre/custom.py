@@ -389,25 +389,37 @@ def _cli_invoke(cli_ctx, *args, allow_missing=False):
     return result
 
 
-def _redact_auth_result(auth_result):
-    """Mask a freshly-minted PAT/secret before 'sre repo connect' echoes it
-    back to the user. Confirmed live that 'extension create' already
-    redacts this server-side for githubAuths (pat comes back as "******"),
-    but NOT for azureDevOpsAuths (the real PAT is returned verbatim) --
-    redact defensively here for both so this command never prints a live
-    secret regardless of which provider's server-side behavior changes.
-    """
-    import copy
+_SECRET_KEY_SUFFIXES = ("pat", "token", "password", "secret", "key")
 
-    if not isinstance(auth_result, dict):
-        return auth_result
-    redacted = copy.deepcopy(auth_result)
-    value = redacted.get("properties", {}).get("value")
-    if isinstance(value, dict):
-        for secret_key in ("pat", "secret", "password", "token"):
-            if value.get(secret_key):
-                value[secret_key] = "******"
-    return redacted
+
+def _scrub_secrets(text, secrets):
+    for secret in secrets:
+        if secret and len(secret) >= 8:
+            text = text.replace(secret, "******")
+    return text
+
+
+def _redact_auth_result(auth_result, secrets=()):
+    """Mask secrets before 'sre repo connect' echoes the service's replies.
+    Confirmed live that 'extension create' already redacts this server-side
+    for githubAuths (pat comes back as "******"), but NOT for
+    azureDevOpsAuths (the real PAT is returned verbatim) -- redact
+    defensively here for both so this command never prints a live secret
+    regardless of which provider's server-side behavior changes. Secret-like
+    keys are masked at any depth, and the values the command sent (secrets)
+    are masked wherever they appear.
+    """
+    if isinstance(auth_result, dict):
+        return {
+            key: "******" if value and isinstance(key, str) and key.lower().endswith(_SECRET_KEY_SUFFIXES)
+            else _redact_auth_result(value, secrets)
+            for key, value in auth_result.items()
+        }
+    if isinstance(auth_result, list):
+        return [_redact_auth_result(item, secrets) for item in auth_result]
+    if isinstance(auth_result, str):
+        return _scrub_secrets(auth_result, secrets)
+    return auth_result
 
 
 @contextlib.contextmanager
@@ -455,6 +467,25 @@ def _warn_if_secret_typed(flag, safer):
 _CONNECTIONS_FILE = os.path.join(
     os.path.expanduser("~"), ".azure", "sreAgentConnections.json"
 )
+
+
+def _write_json_file_atomically(path, data):
+    """Write JSON to a temporary file next to path, then swap it in, so a
+    failed write leaves the old file whole."""
+    import tempfile
+
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    handle, temporary_path = tempfile.mkstemp(
+        dir=directory, prefix=f".{os.path.basename(path)}.", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as temporary:
+            json.dump(data, temporary, indent=2)
+        os.replace(temporary_path, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(temporary_path)
+        raise
 
 
 # Real API enum values confirmed from the merged stable/2026-07-01 TypeSpec
@@ -3861,7 +3892,8 @@ class GetConnection(AAZCommand):
         connections = {}
         if os.path.exists(_CONNECTIONS_FILE):
             try:
-                with open(_CONNECTIONS_FILE, "r", encoding="utf-8") as handle:
+                # utf-8-sig: editors such as Windows PowerShell 5.1 save JSON with a BOM.
+                with open(_CONNECTIONS_FILE, "r", encoding="utf-8-sig") as handle:
                     connections = json.load(handle)
             except (OSError, ValueError) as ex:
                 raise CLIError(
@@ -3873,19 +3905,34 @@ class GetConnection(AAZCommand):
                     f"{_CONNECTIONS_FILE} does not contain a JSON object. "
                     "The file was left unchanged; fix or delete it and retry."
                 )
-        key = f"{resource_group}/{name}"
-        connections[key] = {
+        subscription = parse_resource_id(agent.get("id") or "").get("subscription")
+        if not subscription:
+            raise CLIError(f"Could not resolve the subscription of agent '{name}'.")
+        # Same-named agents can exist in several subscriptions. Entries that
+        # older versions keyed as '<resource-group>/<name>' are left as they are.
+        key = f"{subscription}/{resource_group}/{name}"
+        entry = {
+            "subscriptionId": subscription,
             "name": name,
             "resourceGroup": resource_group,
             "agentEndpoint": endpoint,
             "dataPlaneAudience": audience,
         }
-        os.makedirs(os.path.dirname(_CONNECTIONS_FILE), exist_ok=True)
-        with open(_CONNECTIONS_FILE, "w", encoding="utf-8") as handle:
-            json.dump(connections, handle, indent=2)
-        logger.warning("Merged '%s' connection into %s", key, _CONNECTIONS_FILE)
+        previous = connections.get(key)
+        connections[key] = entry
+        try:
+            _write_json_file_atomically(_CONNECTIONS_FILE, connections)
+        except OSError as ex:
+            raise CLIError(
+                f"Could not write {_CONNECTIONS_FILE} ({ex}). The file was left unchanged."
+            ) from ex
+        if previous is not None and previous != entry:
+            logger.warning("Updated '%s' in %s", key, _CONNECTIONS_FILE)
+        else:
+            logger.warning("Saved '%s' to %s", key, _CONNECTIONS_FILE)
 
         return {
+            "subscriptionId": subscription,
             "name": name,
             "resourceGroup": resource_group,
             "agentEndpoint": endpoint,
@@ -8142,7 +8189,7 @@ def _github_token(explicit_token=None, hostname="github.com"):
         if env_token:
             logger.warning(
                 "Using the GitHub token from the %s environment variable; it will be stored on the "
-                "agent. Pass a fine-grained, repo-scoped token with --github-token to control this.",
+                "agent and used for every GitHub repository connected to it.",
                 env_var,
             )
             return env_token
@@ -8165,9 +8212,18 @@ def _devops_access_token(cli_ctx):
     return token
 
 
+ADO_PAT_LIFETIME_DAYS = 30
+
+
+def _devops_pat_policy_hint(organization):
+    return ("Retry with --devops-auth-type managed-identity --devops-identity <resource-id-of-an-identity-"
+            f"already-added-to-the-'{organization}'-org> instead.")
+
+
 def _devops_pat_token(cli_ctx, organization, display_name):
     """Mint a short-lived Azure DevOps PAT via the vssps REST API and return
-    (pat, authorization_id); the authorization ID is what revokes it.
+    (pat, authorization_id, valid_to); the authorization ID is what revokes
+    it, and valid_to is when it expires.
 
     `az devops` has no PAT-creation command, so this calls the same
     vssps.dev.azure.com/_apis/tokens/pats endpoint the Portal's "New token"
@@ -8178,7 +8234,7 @@ def _devops_pat_token(cli_ctx, organization, display_name):
 
     token = _devops_access_token(cli_ctx)
     valid_to = (datetime.datetime.now(datetime.timezone.utc)
-                + datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                + datetime.timedelta(days=ADO_PAT_LIFETIME_DAYS)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     body = {
         "displayName": display_name,
         "scope": "vso.code",
@@ -8193,11 +8249,26 @@ def _devops_pat_token(cli_ctx, organization, display_name):
         headers=[f"Authorization=Bearer {token}", "Content-Type=application/json"],
         body=json.dumps(body),
     )
-    pat_token = response.json().get("patToken") or {}
+    try:
+        result = response.json() if response.content else {}
+    except ValueError:
+        result = {}
+    result = result if isinstance(result, dict) else {}
+    pat_token = result.get("patToken") or {}
     pat = pat_token.get("token")
     if not pat:
+        # Pats - Create reports refusals in a 200 reply: patTokenError names
+        # the reason, for example patLifespanPolicyViolation.
+        reason = result.get("patTokenError")
+        if isinstance(reason, str) and reason and reason.lower() != "none":
+            explanation = (
+                f" The organization's policy doesn't allow PATs that last {ADO_PAT_LIFETIME_DAYS} days."
+                if reason.lower() == "patlifespanpolicyviolation" else "")
+            raise CLIError(
+                f"Azure DevOps didn't create a PAT in '{organization}' ({reason}).{explanation} "
+                + _devops_pat_policy_hint(organization))
         raise CLIError("Azure DevOps did not return a PAT token.")
-    return pat, pat_token.get("authorizationId")
+    return pat, pat_token.get("authorizationId"), pat_token.get("validTo") or valid_to
 
 
 def _revoke_devops_pat(cli_ctx, organization, authorization_id):
@@ -8216,16 +8287,83 @@ def _revoke_devops_pat(cli_ctx, organization, authorization_id):
                        "it manually in Azure DevOps (User settings > Personal access tokens).", ex)
 
 
-def _detect_repo_provider(repo_url):
-    host = (urlparse(repo_url).hostname or "").lower()
+_SUPPORTED_REPO_HOSTS = "github.com, dev.azure.com and <organization>.visualstudio.com"
+
+
+def _repo_provider_for_host(host):
+    """The provider whose credential the agent uses for this exact host, or None."""
     if host == "github.com":
         return "GitHub"
-    if any(host == d or host.endswith("." + d) for d in ("dev.azure.com", "visualstudio.com")):
+    if host == "dev.azure.com" or host.endswith(".visualstudio.com"):
         return "AzureDevOps"
-    raise CLIError(
-        f"Could not detect the repo provider from '{repo_url}'. Pass "
-        "--provider GitHub or --provider AzureDevOps explicitly."
-    )
+    return None
+
+
+def _detect_repo_provider(repo_url):
+    host = (urlparse(repo_url).hostname or "").lower()
+    provider = _repo_provider_for_host(host)
+    if provider is None:
+        raise InvalidArgumentValueError(
+            f"'az sre repo connect' only supports repositories on {_SUPPORTED_REPO_HOSTS}"
+            + (f", not '{host}'." if host else ".")
+            + " GitHub Enterprise Server, GitLab and other hosts aren't supported."
+        )
+    return provider
+
+
+def _validate_repo_url(repo_url, provider=None):
+    """Check --repo-url before any credential is fetched and return its provider.
+
+    The agent uses its credential for the URL's host, so the host must be one
+    the provider owns, whichever way the provider was chosen. Backslashes and
+    control characters are rejected because urlparse and requests/urllib3
+    read such URLs as different hosts, and a user name or password in the URL
+    would be stored on the agent and printed.
+    """
+    if not isinstance(repo_url, str) or "\\" in repo_url or any(ord(c) < 33 or ord(c) == 127 for c in repo_url):
+        raise InvalidArgumentValueError(
+            "--repo-url must be a plain https clone URL, without spaces, backslashes or control characters.")
+    parsed = urlparse(repo_url)
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = -1
+    if parsed.scheme.lower() != "https" or not host or port == -1 or (
+            parsed.netloc.rpartition("@")[2].lower() != (f"{host}:{port}" if port else host)):
+        raise InvalidArgumentValueError(
+            "--repo-url must be an https clone URL, for example https://github.com/contoso/my-service.")
+    if "@" in parsed.netloc and not (
+            # The Azure DevOps portal's clone URLs start with '<organization>@'.
+            _repo_provider_for_host(host) == "AzureDevOps" and parsed.password is None
+            and (parsed.username or "").lower() == _devops_organization_from_url(repo_url).lower()):
+        raise InvalidArgumentValueError(
+            "--repo-url must not contain a user name or token (the part before '@'): the URL is stored "
+            "on the agent and shown in output. Use the plain clone URL. For GitHub, pass the token with "
+            "GITHUB_TOKEN or --github-token \"@token.txt\".")
+    detected = _detect_repo_provider(repo_url)
+    if provider and provider != detected:
+        raise InvalidArgumentValueError(
+            f"--provider {provider} doesn't match the host of --repo-url ({host}). "
+            f"'az sre repo connect' only supports repositories on {_SUPPORTED_REPO_HOSTS}.")
+    return detected
+
+
+def _repo_url_key(repo_url):
+    """Host and path of a repository URL, without credentials, '.git' or case, for comparing two URLs."""
+    parsed = urlparse(repo_url)
+    path = parsed.path.rstrip("/")
+    if path.lower().endswith(".git"):
+        path = path[:-4]
+    return f"{(parsed.hostname or '').lower()}{path.lower()}"
+
+
+def _repo_url_for_display(repo_url):
+    """Drop a user name or password, for example one saved by an older version, before showing a URL."""
+    parsed = urlparse(repo_url)
+    if "@" not in parsed.netloc:
+        return repo_url
+    return parsed._replace(netloc=parsed.netloc.rpartition("@")[2]).geturl()
 
 
 # Characters ARM rejects in resource names; the repository name becomes one.
@@ -8247,14 +8385,144 @@ def _devops_organization_from_url(repo_url):
     return parsed.path.strip("/").split("/", 1)[0]
 
 
+def _repository_to_update(cli_ctx, agent_name, resource_group, name, repo_url, overwrite):
+    """Read the agent's repository with this name before any credential is fetched.
+
+    Return its stored value if it points to the same URL, so that running the
+    command again keeps its other settings. Stop if it points to a different
+    URL, unless overwrite is set; then it is replaced from scratch. Return
+    None when there is nothing to keep.
+    """
+    try:
+        # The reply can hold feed PATs, or a credential in a URL saved by an
+        # older version, so keep it out of --debug and the log file.
+        with _no_http_trace():
+            existing = _extension_resource_show(cli_ctx, agent_name, resource_group, "repositories", name)
+    except ResourceNotFoundError:
+        return None
+    value = (existing.get("properties") or {}).get("value") if isinstance(existing, dict) else None
+    existing_url = value.get("url") if isinstance(value, dict) else None
+    if not isinstance(existing_url, str):
+        return None
+    if _repo_url_key(existing_url) == _repo_url_key(repo_url):
+        return value
+    shown = _repo_url_for_display(existing_url)
+    if not overwrite:
+        raise ResourceExistsError(
+            f"Agent '{agent_name}' already has a repository named '{name}', which points to {shown}. Pass "
+            f"--display-name to connect {repo_url} under another name, or --overwrite to replace it.")
+    logger.warning("Replacing repository '%s' on agent '%s', which points to %s.", name, agent_name, shown)
+    return None
+
+
+def _feed_pat_missing(feed):
+    """True for a feed credential whose PAT the agent didn't return, or returned masked as '******'."""
+    if not isinstance(feed, dict):
+        return False
+    pat = feed.get("pat")
+    return not isinstance(pat, str) or not pat.strip("*")
+
+
+def _updated_repository_value(stored, agent_name, name, repo_url, provider, branch):
+    """The stored repository value, as JSON text, with the new URL and type,
+    and the new branch if one was given. Everything else is kept, except feed
+    credentials whose PAT the agent didn't return: writing back a masked PAT
+    would break them."""
+    # A null is an unset field, and the shape check rejects nulls.
+    value = {key: item for key, item in stored.items() if item is not None}
+    value["url"] = repo_url
+    value["type"] = provider
+    if branch:
+        value["branch"] = branch
+    if not isinstance(value.get("description"), str) or not value["description"]:
+        value["description"] = name
+    feeds = value.get("feedCredentials")
+    dropped = [feed for feed in feeds if _feed_pat_missing(feed)] if isinstance(feeds, list) else []
+    if dropped:
+        value["feedCredentials"] = [feed for feed in feeds if not _feed_pat_missing(feed)]
+        logger.warning(
+            "Repository '%s' won't keep the feed credentials for %s, because agent '%s' didn't return their "
+            "PATs. Set them again after this command finishes.",
+            name, _quoted_list([str(feed.get("feedUrl")) for feed in dropped]), agent_name)
+    try:
+        return _normalize_extension_value(json.dumps(value), "repositories")
+    except CLIError as ex:
+        reason = str(ex).replace("--value.", "")
+        raise CLIError(
+            f"The saved settings of repository '{name}' on agent '{agent_name}' aren't valid, so this command "
+            f"can't keep them: {reason} Nothing was changed. Fix them in the portal, then run the command "
+            "again.") from ex
+
+
+def _quoted_list(names):
+    quoted = [f"'{name}'" for name in names]
+    return quoted[0] if len(quoted) == 1 else f"{', '.join(quoted[:-1])} and {quoted[-1]}"
+
+
+def _warn_about_shared_credential(cli_ctx, agent_name, resource_group, provider, organization, name):
+    """Name the agent's other repositories that will use the credential this
+    command saves: the agent keeps one for github.com and one per Azure
+    DevOps organization."""
+    try:
+        with _no_http_trace():
+            listed = _extension_resource_list(cli_ctx, agent_name, resource_group, "repositories")
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.debug("Could not list the agent's repositories: %s", ex)
+        return
+    sharing = []
+    for item in (listed.get("value") if isinstance(listed, dict) else None) or []:
+        other = item.get("name") if isinstance(item, dict) else None
+        value = (item.get("properties") or {}).get("value") if isinstance(item, dict) else None
+        url = value.get("url") if isinstance(value, dict) else None
+        if not isinstance(other, str) or not isinstance(url, str) or other.lower() == name.lower():
+            continue
+        with contextlib.suppress(ValueError):
+            if _repo_provider_for_host((urlparse(url).hostname or "").lower()) != provider:
+                continue
+            if provider == "AzureDevOps" and _devops_organization_from_url(url).lower() != organization.lower():
+                continue
+            sharing.append(other)
+    if not sharing:
+        return
+    if provider == "GitHub":
+        logger.warning(
+            "Agent '%s' uses one GitHub credential for all its GitHub repositories, so %s will use the "
+            "token saved now too. Make sure it can read them.", agent_name, _quoted_list(sharing))
+    else:
+        logger.warning(
+            "Agent '%s' uses one Azure DevOps credential per organization, so %s in '%s' will use the "
+            "credential saved now too. Make sure it can read them.", agent_name, _quoted_list(sharing),
+            organization)
+
+
+def _raise_without_secrets(error, secrets):
+    """Replace an error whose text holds a secret this command sent, for
+    example a service reply that echoes the request, before Azure CLI prints
+    it and saves it in its command log."""
+    if isinstance(error, Exception):
+        message = str(error)
+        scrubbed = _scrub_secrets(message, secrets)
+        if scrubbed != message:
+            raise CLIError(scrubbed) from None
+
+
+def _utc_time_text(timestamp):
+    match = re.match(r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::[\d.]+)?(?:Z|[+-]00:?00)$", timestamp or "")
+    return f"{match[1]} {match[2]} UTC" if match else timestamp
+
+
 @register_command("sre repo connect")
 class RepoConnect(AAZCommand):
     """Connect a GitHub or Azure DevOps repo to an agent.
 
-    For GitHub, the command uses --github-token, or the GITHUB_TOKEN or
-    GH_TOKEN environment variable. If none is set, it shows a one-time code
-    and opens GitHub's sign-in page in your browser. Enter the code there
-    before it expires (15 minutes).
+    The agent keeps one credential for all its GitHub repositories, and one per Azure DevOps
+    organization. Each run saves a new one, which the agent's other repos on that host or
+    organization then use too. For GitHub, the command uses --github-token, or the GITHUB_TOKEN or
+    GH_TOKEN environment variable. If none is set, it shows a one-time code and opens GitHub's
+    sign-in page in your browser. Enter the code there before it expires (15 minutes). For Azure
+    DevOps, it creates a personal access token (PAT) that expires after 30 days; run the command
+    again before then, or use a managed identity, which doesn't expire. Running the command again
+    for the same repo keeps its other settings, such as the branch and sparse checkout paths.
 
     :example: Connect a GitHub repo
         az sre repo connect --agent-name myagent --resource-group myrg \\
@@ -8263,6 +8531,10 @@ class RepoConnect(AAZCommand):
     :example: Connect a GitHub repo in CI, with the token in GITHUB_TOKEN
         az sre repo connect --agent-name myagent --resource-group myrg \\
             --repo-url https://github.com/contoso/my-service
+
+    :example: Connect a second repo whose name is already taken on the agent
+        az sre repo connect --agent-name myagent --resource-group myrg \\
+            --repo-url https://github.com/fabrikam/my-service --display-name fabrikam-my-service
 
     :example: Connect an Azure DevOps repo
         az sre repo connect --agent-name myagent --resource-group myrg \\
@@ -8289,27 +8561,35 @@ class RepoConnect(AAZCommand):
         schema.resource_group = AAZResourceGroupNameArg(required=True)
         schema.repo_url = AAZStrArg(
             options=["--repo-url"],
-            help="HTTPS clone URL of the repo.",
+            help="HTTPS clone URL of the repo, on github.com, dev.azure.com or "
+                 "`<organization>.visualstudio.com`. Don't put a user name or token in it.",
             required=True,
         )
         schema.provider = AAZStrArg(
             options=["--provider"],
-            help="Repo provider. Auto-detected from --repo-url's host when omitted.",
+            help="Repo provider. Detected from --repo-url's host; if given, it must match that host.",
             enum={"GitHub": "GitHub", "AzureDevOps": "AzureDevOps"},
         )
         schema.display_name = AAZStrArg(
             options=["--display-name", "--name", "-n"],
-            help="Display name for the repo. Defaults to the repo name from --repo-url (without .git).",
+            help="Display name for the repo, unique on the agent. Defaults to the repo name from "
+                 "--repo-url (without .git).",
+        )
+        schema.overwrite = AAZBoolArg(
+            options=["--overwrite"],
+            help="Replace a repo with the same display name that points to a different URL. Without "
+                 "this flag, the command stops before saving anything.",
         )
         schema.branch = AAZStrArg(
             options=["--branch"],
-            help="Branch to check out. Defaults to the repo's default branch.",
+            help="Branch to check out. Defaults to the repo's default branch, or to the saved branch "
+                 "when you connect the same repo again.",
         )
         schema.github_token = AAZStrArg(
             options=["--github-token"],
             help="GitHub token. Defaults to GITHUB_TOKEN or GH_TOKEN, then to browser sign-in "
-                 "with a one-time code. A fine-grained, repo-scoped token is recommended; "
-                 "it is stored on the agent.",
+                 "with a one-time code. It is stored on the agent and used for all its GitHub "
+                 "repos, so it must be able to read every one of them.",
         )
         schema.devops_organization = AAZStrArg(
             options=["--devops-organization"],
@@ -8317,7 +8597,8 @@ class RepoConnect(AAZCommand):
         )
         schema.devops_auth_type = AAZStrArg(
             options=["--devops-auth-type"],
-            help="Azure DevOps auth method. Use managed-identity if your org blocks PAT creation.",
+            help="Azure DevOps auth method. pat creates a PAT that expires after 30 days. Use "
+                 "managed-identity if your org blocks PAT creation, or to avoid the expiry.",
             enum={"pat": "pat", "managed-identity": "managed-identity"},
             default="pat",
         )
@@ -8341,19 +8622,23 @@ class RepoConnect(AAZCommand):
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
         repo_url = _arg_value(self.ctx.args.repo_url)
-        provider = _arg_value(self.ctx.args.provider) or _detect_repo_provider(repo_url)
-        display_name = _arg_value(self.ctx.args.display_name) or _repo_name_from_url(repo_url)
-        branch = _arg_value(self.ctx.args.branch)
         github_token = _arg_value(self.ctx.args.github_token)
+        if github_token:
+            _warn_if_secret_typed(
+                "--github-token", "read it from a file with --github-token \"@token.txt\" or set GITHUB_TOKEN. "
+                "With file logging on, Azure CLI's log file records it too")
+        provider = _validate_repo_url(repo_url, _arg_value(self.ctx.args.provider))
+        display_name = _arg_value(self.ctx.args.display_name) or _repo_name_from_url(repo_url)
+        overwrite = bool(_arg_value(self.ctx.args.overwrite))
+        branch = _arg_value(self.ctx.args.branch)
         devops_organization = _arg_value(self.ctx.args.devops_organization)
         devops_auth_type = _arg_value(self.ctx.args.devops_auth_type) or "pat"
         devops_identity = _arg_value(self.ctx.args.devops_identity)
         devops_federated_client_id = _arg_value(self.ctx.args.devops_federated_client_id)
         devops_federated_tenant_id = _arg_value(self.ctx.args.devops_federated_tenant_id)
-        pat_authorization_id = None
 
-        # Validate the repository before touching auth: the auth write below
-        # replaces any existing credentials for the host/org.
+        # Validate everything before fetching a credential: the auth write
+        # below replaces the agent's credential for the host or organization.
         if not display_name or any(ch in display_name for ch in _INVALID_REPO_NAME_CHARS):
             raise InvalidArgumentValueError(
                 f"'{display_name}' is not a valid repository name. Pass --display-name with a name "
@@ -8365,27 +8650,15 @@ class RepoConnect(AAZCommand):
             repo_body["branch"] = branch
         repo_value = _normalize_extension_value(json.dumps(repo_body), "repositories")
 
-        if provider == "GitHub":
-            if github_token:
-                _warn_if_secret_typed(
-                    "--github-token", "set GITHUB_TOKEN and leave the flag off, or use the browser sign-in")
-            token = _github_token(explicit_token=github_token)
-            try:
-                auth_value = json.dumps({"authType": "Pat", "pat": token})
-            finally:
-                token = None
-            auth_result = _extension_resource_create(
-                self.cli_ctx, agent_name, resource_group, "githubAuths", "github_com",
-                auth_value, overwrite=True,
-            )
-        else:
+        organization = None
+        auth_value = None
+        if provider == "AzureDevOps":
             organization = devops_organization or _devops_organization_from_url(repo_url)
             if not organization:
                 raise CLIError(
                     "Could not detect the Azure DevOps organization from --repo-url. "
                     "Pass --devops-organization explicitly."
                 )
-
             if devops_auth_type == "managed-identity":
                 if not devops_identity:
                     raise CLIError(
@@ -8402,46 +8675,77 @@ class RepoConnect(AAZCommand):
                     auth_dict["federatedClientId"] = devops_federated_client_id
                     auth_dict["federatedTenantId"] = devops_federated_tenant_id
                 auth_value = json.dumps(auth_dict)
-            else:
+
+        stored_repo = _repository_to_update(
+            self.cli_ctx, agent_name, resource_group, display_name, repo_url, overwrite)
+        if stored_repo is not None:
+            repo_value = _updated_repository_value(
+                stored_repo, agent_name, display_name, repo_url, provider, branch)
+        _warn_about_shared_credential(
+            self.cli_ctx, agent_name, resource_group, provider, organization, display_name)
+
+        auth_type, auth_name = ("githubAuths", "github_com") if provider == "GitHub" else (
+            "azureDevOpsAuths", organization)
+        # Values that must not reach the output or an error message: the feed
+        # PATs kept from the stored repository, and the repository value in
+        # the base64 form the ARM route sends.
+        secrets = [feed["pat"] for feed in json.loads(repo_value).get("feedCredentials", [])]
+        secrets.append(base64.b64encode(repo_value.encode("utf-8")).decode("ascii"))
+        pat_minted = False
+        pat_authorization_id = pat_valid_to = None
+        try:
+            if provider == "GitHub":
+                token = _github_token(explicit_token=github_token)
+                secrets.append(token)
+                auth_value = json.dumps({"authType": "Pat", "pat": token})
+            elif auth_value is None:
                 try:
                     with _no_http_trace():
-                        pat, pat_authorization_id = _devops_pat_token(
+                        pat, pat_authorization_id, pat_valid_to = _devops_pat_token(
                             self.cli_ctx, organization, f"sre-agent-{agent_name}")
                 except Exception as ex:
                     if "DisablePatCreationPolicyViolation" in str(ex):
                         raise CLIError(
-                            f"Azure DevOps org '{organization}' has a policy blocking PAT "
-                            "creation. Retry with --devops-auth-type managed-identity "
-                            "--devops-identity <resource-id-of-an-identity-already-added-to-"
-                            f"the-'{organization}'-org> instead."
+                            f"Azure DevOps org '{organization}' has a policy blocking PAT creation. "
+                            + _devops_pat_policy_hint(organization)
                         ) from ex
                     raise
-                try:
-                    auth_value = json.dumps({"authType": "Pat", "pat": pat})
-                finally:
-                    pat = None
-            try:
-                auth_result = _extension_resource_create(
-                    self.cli_ctx, agent_name, resource_group, "azureDevOpsAuths", organization,
-                    auth_value, overwrite=True,
-                )
-            except Exception:
-                if devops_auth_type != "managed-identity":
-                    _revoke_devops_pat(self.cli_ctx, organization, pat_authorization_id)
-                raise
+                pat_minted = True
+                secrets.append(pat)
+                auth_value = json.dumps({"authType": "Pat", "pat": pat})
+            # The ARM route sends the value base64-encoded.
+            secrets.append(base64.b64encode(auth_value.encode("utf-8")).decode("ascii"))
+            auth_result = _extension_resource_create(
+                self.cli_ctx, agent_name, resource_group, auth_type, auth_name, auth_value, overwrite=True,
+            )
+        except BaseException as ex:
+            # Also on Ctrl+C: a PAT that was never saved would stay valid for its whole lifetime.
+            if pat_minted:
+                _revoke_devops_pat(self.cli_ctx, organization, pat_authorization_id)
+            _raise_without_secrets(ex, secrets)
+            raise
+        if pat_valid_to:
+            logger.warning(
+                "The Azure DevOps PAT saved for '%s' expires on %s. Run 'az sre repo connect' again "
+                "before then, or use --devops-auth-type managed-identity, which doesn't expire.",
+                organization, _utc_time_text(pat_valid_to),
+            )
 
         try:
             repo_result = _extension_resource_create(
                 self.cli_ctx, agent_name, resource_group, "repositories", display_name,
                 repo_value, overwrite=True,
             )
-        except Exception:
+        except Exception as ex:
             # The auth write above already replaced the old credentials, so
             # the agent can't fall back to them.
-            auth_name = "github_com" if provider == "GitHub" else organization
             logger.warning(
                 "Saved new %s credentials ('%s') on agent '%s', but connecting repository '%s' failed. "
                 "Re-run 'az sre repo connect' to finish.", repo_type, auth_name, agent_name, display_name,
             )
+            _raise_without_secrets(ex, secrets)
             raise
-        return {"auth": _redact_auth_result(auth_result), "repository": repo_result}
+        result = {"auth": auth_result, "repository": repo_result}
+        if pat_valid_to:
+            result["patExpiresOn"] = pat_valid_to
+        return _redact_auth_result(result, secrets)
