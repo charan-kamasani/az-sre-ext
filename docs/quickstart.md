@@ -5,7 +5,7 @@ and a data source, share it, let it monitor your Azure resources, add a custom s
 route incidents to it. The first steps repeat the [README quick start](../README.md#quick-start),
 so you can follow this page on its own.
 
-You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.90.0 or
+You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or
 later with the `sre` extension installed, and a subscription where you can create
 resources. The examples use bash. In PowerShell, set variables as `$RG = "my-rg"` and end
 continued lines with a backtick (`` ` ``). Flags that take JSON need extra care on Windows;

@@ -106,7 +106,7 @@ jobs:
           uv pip install \
             --python "$RUNNER_TEMP/installed-cli/bin/python" \
             --prerelease=allow \
-            azure-cli==2.92.0
+            azure-cli==2.81.0
           PATH="$RUNNER_TEMP/installed-cli/bin:$PATH" \
             scripts/verify_installed_wheel.sh \
               "${{ steps.build.outputs.wheel }}" \

@@ -16,7 +16,7 @@ response plans under `az sre`.
 
 ## Install
 
-You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.90.0 or
+You need [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or
 later and the [GitHub CLI](https://cli.github.com) 2.68.0 or later, signed in (`gh auth login`) with an
 account that can see this repository. The repository is private, so the script downloads
 through `gh`. It installs the latest release wheel after verifying its SHA-256 checksum
@@ -44,7 +44,7 @@ PowerShell. `SRE_INSTALL_RELEASE_TAG` also works; in the pipe form set it on `sh
 
 Create an agent, connect a repository and an Azure Data Explorer data source, then clean
 up. You need
-[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.90.0 or later with
+[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or later with
 the `sre` extension installed, and a subscription where you can create resources.
 
 Sign in, then set the subscription and a unique test context. The examples use bash; in

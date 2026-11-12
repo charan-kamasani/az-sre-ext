@@ -38,7 +38,7 @@ import re
 import sys
 import uuid
 from functools import partial
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 # 'requests' is imported eagerly here (rather than left to its normal lazy
 # import inside azure.cli.core.util.send_raw_request) to avoid a real,
@@ -219,21 +219,80 @@ def _resolve_agent_endpoint(cli_ctx, agent_name, resource_group):
     return endpoint
 
 
+def _remove_dot_segments(path):
+    """Copy of azure-cli-core 2.91 util._remove_dot_segments (MIT), used by _fallback_normalize_url."""
+    leading_slash = path.startswith('/')
+    trailing_slash = path.endswith('/')
+    segments = []
+    for segment in path.split('/'):
+        if segment in ('', '.'):
+            continue
+        if segment == '..':
+            if segments:
+                segments.pop()
+            continue
+        segments.append(segment)
+    new_path = '/'.join(segments)
+    if leading_slash:
+        new_path = '/' + new_path
+    if trailing_slash and not new_path.endswith('/'):
+        new_path += '/'
+    return new_path
+
+
+def _fallback_normalize_url(url):
+    """Copy of azure-cli-core 2.91 util.normalize_url (MIT) for Azure CLI older than 2.90.
+
+    Strips control characters and outer whitespace, lowercases the scheme and
+    host, ends the host at a backslash and removes dot and empty path segments.
+    """
+    if not isinstance(url, str):
+        return url
+    cleaned = ''.join(c for c in url if ord(c) >= 0x20 and ord(c) != 0x7f).strip()
+    try:
+        parts = urlsplit(cleaned)
+    except ValueError:
+        return cleaned
+    scheme = parts.scheme.lower()
+    netloc = parts.netloc
+    path = parts.path
+    if netloc:
+        netloc = netloc.replace('\\', '/')
+        if '/' in netloc:
+            netloc, _, rest = netloc.partition('/')
+            path = '/' + rest + path
+        userinfo, sep, hostport = netloc.rpartition('@')
+        netloc = userinfo + sep + hostport.lower()
+    if path:
+        path = _remove_dot_segments(path)
+    elif netloc:
+        path = '/'
+    return urlunsplit((scheme, netloc, path, parts.query, parts.fragment))
+
+
+def _normalize_url(url):
+    """Azure CLI's normalize_url (2.90 and later), or the same logic on older versions."""
+    try:
+        from azure.cli.core.util import normalize_url
+    except ImportError:
+        return _fallback_normalize_url(url)
+    return normalize_url(url)
+
+
 def _parse_https_url(url, host_suffix=None):
     """Return (normalized_url, parsed) for a safe https URL, or None.
 
-    The URL is checked after azure-cli's normalize_url, the same normalization
-    send_raw_request applies before sending, so the host we validate is the
-    host that gets the request (a backslash ends the host, control characters
-    are dropped). Rejected: non-https, userinfo (requests would turn it into a
-    Basic Authorization header), a bad port or host name, whitespace, a stray
-    '%', and, when host_suffix is given, any host outside it.
+    The URL is checked after azure-cli's normalize_url (or the same logic on
+    Azure CLI older than 2.90), the normalization send_raw_request applies
+    before sending, so the host we validate is the host that gets the request
+    (a backslash ends the host, control characters are dropped). Rejected:
+    non-https, userinfo (requests would turn it into a Basic Authorization
+    header), a bad port or host name, whitespace, a stray '%', and, when
+    host_suffix is given, any host outside it.
     """
-    from azure.cli.core.util import normalize_url
-
     if not isinstance(url, str):
         return None
-    normalized = normalize_url(url)
+    normalized = _normalize_url(url)
     try:
         parsed = urlparse(normalized)
         parsed.port  # pylint: disable=pointless-statement
@@ -248,11 +307,6 @@ def _parse_https_url(url, host_suffix=None):
     if host_suffix and not host.rstrip(".").endswith(host_suffix):
         return None
     return normalized, parsed
-
-
-def _is_azuresre_https_url(url):
-    """True only for a safe https URL whose host is under .azuresre.ai."""
-    return _parse_https_url(url, ".azuresre.ai") is not None
 
 
 def _validate_agent_url(agent_url):
@@ -6560,8 +6614,11 @@ class AutomationHttpTriggerInvoke(_PinnedExtensionShow):
         trigger_url = value.get("triggerUrl") if isinstance(value, dict) else None
         if not trigger_url:
             raise CLIError("This HTTP trigger has no triggerUrl yet, so it can't be called.")
-        if not _is_azuresre_https_url(trigger_url):
+        checked = _parse_https_url(trigger_url, ".azuresre.ai")
+        if checked is None:
             raise CLIError(f"Refusing to send a token to unexpected trigger URL '{trigger_url}'.")
+        # Send the URL we checked, so the request goes to the host the check approved.
+        trigger_url = checked[0]
         if value.get("triggerEnabled") is False:
             raise CLIError("This HTTP trigger is disabled.")
         payload = _arg_value(getattr(self.ctx.args, "payload", None))

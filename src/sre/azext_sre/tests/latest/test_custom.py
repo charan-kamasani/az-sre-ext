@@ -16,6 +16,7 @@ import io
 import copy
 import json
 import os
+import sys
 import tempfile
 import types
 import unittest
@@ -1964,6 +1965,22 @@ class IncidentDataPlaneTests(unittest.TestCase):
         ):
             with self.subTest(url=url), self.assertRaises(CLIError):
                 _validate_agent_url(url)
+
+    def test_fallback_normalize_url_matches_azure_cli(self):
+        from azure.cli.core.util import normalize_url
+        from azext_sre.custom import _fallback_normalize_url, _validate_agent_url
+        for url in (
+            "HTTPS://X.AzureSRE.AI", "https://x.azuresre.ai\\foo", " https://x.azure\tsre.ai ",
+            "https://attacker.example\\@a.azuresre.ai/api", "https://User@X.Example//a/./b/../c/",
+            "https://x.azuresre.ai/a b?q=1#f", "not a url", "", None,
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(_fallback_normalize_url(url), normalize_url(url))
+        # Azure CLI older than 2.90 has no normalize_url; the same checks still apply.
+        with patch.dict(sys.modules, {"azure.cli.core.util": types.SimpleNamespace()}):
+            self.assertEqual(_validate_agent_url("https://x.azuresre.ai\\foo"), "https://x.azuresre.ai")
+            with self.assertRaises(CLIError):
+                _validate_agent_url("https://attacker.example\\@a.azuresre.ai/api")
 
     def test_quickstart_plan_warning(self):
         with self.assertLogs("cli.azext_sre.custom", level="WARNING") as logs:
