@@ -1940,21 +1940,24 @@ class IncidentDataPlaneTests(unittest.TestCase):
             "https://x.azuresre.ai": "https://x.azuresre.ai",
             "https://x.azuresre.ai:443/api?q=1": "https://x.azuresre.ai:443",
             "HTTPS://X.AzureSRE.AI/": "https://x.azuresre.ai",
+            # normalize_url, as in send_raw_request: a backslash ends the host,
+            # control characters and outer spaces are dropped.
+            "https://x.azuresre.ai\\foo": "https://x.azuresre.ai",
+            " https://x.azuresre.ai": "https://x.azuresre.ai",
+            "https://x.azure\tsre.ai": "https://x.azuresre.ai",
         }
         for url, expected in accepted.items():
             with self.subTest(url=url):
                 self.assertEqual(_validate_agent_url(url), expected)
         for url in (
-            # A backslash ends the host in requests/urllib3, so reject it outright.
+            # After normalize_url the host is attacker.example.
             "https://attacker.example\\@a--1.x.swedencentral.azuresre.ai/api",
-            "https://x.azuresre.ai\\foo",
             # Userinfo would become a Basic Authorization header replacing the bearer token.
             "https://evil.example@x.azuresre.ai",
             "https://x.azuresre.ai@evil.example",
             "https://x.azuresre.ai.evil.example",
             "https://x.azuresre.ai:evil",
             "https://x.azuresre.ai:99999",
-            " https://x.azuresre.ai",
             "http://x.azuresre.ai",
             "https://azuresre.ai",
             "",
@@ -6191,6 +6194,13 @@ class McpEndpointSafetyTests(unittest.TestCase):
                          "https://example.com/a%20b", "https://[::1]/mcp", "https://localhost:8443/mcp"):
             with self.subTest(endpoint=endpoint):
                 self.assertEqual(self._run(mcp_endpoint=endpoint)[0].data_source, endpoint)
+
+    def test_endpoint_is_stored_normalized(self):
+        args = self._run(mcp_endpoint="HTTPS://MCP.Contoso.com\\mcp")[0]
+        self.assertEqual(args.data_source, "https://mcp.contoso.com/mcp")
+        self.assertEqual(args.extended_properties["endpoint"], "https://mcp.contoso.com/mcp")
+        with self.assertRaises(InvalidArgumentValueError):
+            self._run(mcp_endpoint="https://user@mcp.contoso.com/mcp")
 
     def test_bearer_token_starting_with_at_is_rejected_without_echo(self):
         # Azure CLI leaves '@path' as typed when it can't read the file.

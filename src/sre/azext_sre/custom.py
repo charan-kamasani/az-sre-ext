@@ -219,45 +219,52 @@ def _resolve_agent_endpoint(cli_ctx, agent_name, resource_group):
     return endpoint
 
 
-def _is_azuresre_https_url(url):
-    """True only for a plain https URL whose host is under .azuresre.ai.
+def _parse_https_url(url, host_suffix=None):
+    """Return (normalized_url, parsed) for a safe https URL, or None.
 
-    urlparse and requests/urllib3 disagree on backslashes and userinfo, so
-    'https://evil\\@x.azuresre.ai' passes a urlparse host check but is sent
-    to 'evil'. Reject anything either parser could read differently.
+    The URL is checked after azure-cli's normalize_url, the same normalization
+    send_raw_request applies before sending, so the host we validate is the
+    host that gets the request (a backslash ends the host, control characters
+    are dropped). Rejected: non-https, userinfo (requests would turn it into a
+    Basic Authorization header), a bad port or host name, whitespace, a stray
+    '%', and, when host_suffix is given, any host outside it.
     """
-    if not isinstance(url, str) or "\\" in url or any(ord(c) < 33 for c in url):
-        return False
-    parsed = urlparse(url)
-    hostname = parsed.hostname or ""
-    return (
-        parsed.scheme == "https"
-        and "@" not in parsed.netloc
-        and parsed.netloc.lower().split(":")[0] == hostname
-        and hostname.endswith(".azuresre.ai")
-    )
+    from azure.cli.core.util import normalize_url
+
+    if not isinstance(url, str):
+        return None
+    normalized = normalize_url(url)
+    try:
+        parsed = urlparse(normalized)
+        parsed.port  # pylint: disable=pointless-statement
+    except ValueError:
+        return None
+    host = parsed.hostname or ""
+    if (parsed.scheme != "https" or "@" in parsed.netloc
+            or not re.fullmatch(r"[a-z0-9.:-]+", host)
+            or any(char.isspace() for char in normalized)
+            or re.search(r"%(?![0-9A-Fa-f]{2})", normalized)):
+        return None
+    if host_suffix and not host.rstrip(".").endswith(host_suffix):
+        return None
+    return normalized, parsed
+
+
+def _is_azuresre_https_url(url):
+    """True only for a safe https URL whose host is under .azuresre.ai."""
+    return _parse_https_url(url, ".azuresre.ai") is not None
 
 
 def _validate_agent_url(agent_url):
-    """Return the https *.azuresre.ai origin of agent_url, since a data-plane token is sent to it.
-
-    Uses the same strict check as http-trigger invoke (_is_azuresre_https_url),
-    which rejects backslashes, userinfo and control characters that urlparse and
-    requests/urllib3 could read as different hosts. Only scheme, host and port
-    are kept in the returned origin.
-    """
-    error = CLIError(
-        "--agent-url must be an https agent endpoint on *.azuresre.ai, "
-        "for example https://<agent>.<hash>.eastus2.azuresre.ai"
-    )
-    if not _is_azuresre_https_url(agent_url):
-        raise error
-    parsed = urlparse(agent_url)
-    try:
-        port = parsed.port
-    except ValueError:
-        raise error from None
-    return f"https://{parsed.hostname}" + (f":{port}" if port is not None else "")
+    """Return the https *.azuresre.ai origin of agent_url, since a data-plane token is sent to it."""
+    result = _parse_https_url(agent_url, ".azuresre.ai")
+    if result is None:
+        raise CLIError(
+            "--agent-url must be an https agent endpoint on *.azuresre.ai, "
+            "for example https://<agent>.<hash>.eastus2.azuresre.ai"
+        )
+    parsed = result[1]
+    return f"https://{parsed.hostname}" + (f":{parsed.port}" if parsed.port is not None else "")
 
 
 def _read_target(args):
@@ -1907,19 +1914,14 @@ GITHUB_COPILOT_MCP_ENDPOINT = "https://api.githubcopilot.com/mcp/"
 
 
 def _validate_mcp_endpoint(endpoint):
-    """The service stores whatever endpoint it's given, so catch a malformed
-    one here: https only, a real host name, no spaces and no bare '%'."""
-    message = "--mcp-endpoint must be a valid https:// URL, for example https://myserver.contoso.com/mcp."
-    if any(char.isspace() for char in endpoint) or re.search(r"%(?![0-9A-Fa-f]{2})", endpoint):
-        raise InvalidArgumentValueError(message)
-    try:
-        parsed = urlparse(endpoint)
-        parsed.port  # pylint: disable=pointless-statement
-    except ValueError:
-        raise InvalidArgumentValueError(message) from None
-    if (parsed.scheme.lower() != "https" or not parsed.hostname
-            or not re.fullmatch(r"[A-Za-z0-9.:-]+", parsed.hostname)):
-        raise InvalidArgumentValueError(message)
+    """Return the normalized endpoint. The service stores whatever it's given,
+    so catch a malformed one here with the same check as --agent-url."""
+    result = _parse_https_url(endpoint)
+    if result is None:
+        raise InvalidArgumentValueError(
+            "--mcp-endpoint must be a valid https:// URL, for example https://myserver.contoso.com/mcp."
+        )
+    return result[0]
 
 
 class _BearerTokenFileFormat(AAZFileArgTextFormat):
@@ -2158,8 +2160,7 @@ class _ConnectorConvenienceArgsMixin:
         if github or mcp_endpoint:
             if connector_type != "Mcp":
                 raise CLIError("--github/--mcp-endpoint require --data-connector-type Mcp.")
-            endpoint = GITHUB_COPILOT_MCP_ENDPOINT if github else mcp_endpoint
-            _validate_mcp_endpoint(endpoint)
+            endpoint = _validate_mcp_endpoint(GITHUB_COPILOT_MCP_ENDPOINT if github else mcp_endpoint)
             args.data_source = endpoint
             existing = _arg_value(getattr(args, "extended_properties", None)) or {}
             if not isinstance(existing, dict):
@@ -2371,7 +2372,7 @@ class _ConnectorUpdateMcpArgsMixin:
         given = given if isinstance(given, dict) else {}
         endpoint_properties = {}
         if mcp_endpoint:
-            _validate_mcp_endpoint(mcp_endpoint)
+            mcp_endpoint = _validate_mcp_endpoint(mcp_endpoint)
             args.data_source = mcp_endpoint
             endpoint_properties = {"transport": "Http", "endpoint": mcp_endpoint}
         auth_overlay = _mcp_auth_properties(args, {"endpoint": mcp_endpoint or given.get("endpoint")},
