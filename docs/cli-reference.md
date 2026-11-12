@@ -1462,7 +1462,7 @@ Supports GitHub and Azure DevOps. GitLab isn't exposed by this CLI yet.
 
 Connect a GitHub or Azure DevOps repo to an agent.
 
-The agent keeps one credential for all its GitHub repositories, and one per Azure DevOps organization. Each run saves a new one, which the agent's other repos on that host or organization then use too. For GitHub, the command uses --github-token, or the GITHUB_TOKEN or GH_TOKEN environment variable. If none is set, it shows a one-time code and opens GitHub's sign-in page in your browser. Enter the code there before it expires (15 minutes). For Azure DevOps, it creates a personal access token (PAT) that expires after 30 days; run the command again before then, or use a managed identity, which doesn't expire.
+The agent keeps one credential for all its GitHub repositories, and one per Azure DevOps organization. Each run saves a new one, which the agent's other repos on that host or organization then use too. For GitHub, the command uses --github-token, or the GITHUB_TOKEN or GH_TOKEN environment variable. If none is set, it shows a one-time code and opens GitHub's sign-in page in your browser. Enter the code there before it expires (15 minutes). For Azure DevOps, it creates a personal access token (PAT) that expires after 30 days; run the command again before then, or use a managed identity, which doesn't expire. Running the command again for the same repo keeps its other settings, such as the branch and sparse checkout paths.
 
 **Syntax**
 
@@ -1476,7 +1476,7 @@ The agent keeps one credential for all its GitHub repositories, and one per Azur
 | `--provider` | String | No |  | `GitHub`, `AzureDevOps` | Repo provider. Detected from --repo-url's host; if given, it must match that host. |
 | `--display-name`, `--name`, `-n` | String | No |  |  | Display name for the repo, unique on the agent. Defaults to the repo name from --repo-url (without .git). |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Replace a repo with the same display name that points to a different URL. Without this flag, the command stops before saving anything. |
-| `--branch` | String | No |  |  | Branch to check out. Defaults to the repo's default branch. |
+| `--branch` | String | No |  |  | Branch to check out. Defaults to the repo's default branch, or to the saved branch when you connect the same repo again. |
 | `--github-token` | String | No |  |  | GitHub token. Defaults to GITHUB_TOKEN or GH_TOKEN, then to browser sign-in with a one-time code. It is stored on the agent and used for all its GitHub repos, so it must be able to read every one of them. |
 | `--devops-organization` | String | No |  |  | Azure DevOps organization. Default: taken from --repo-url. |
 | `--devops-auth-type` | String | No | pat | `pat`, `managed-identity` | Azure DevOps auth method. pat creates a PAT that expires after 30 days. Use managed-identity if your org blocks PAT creation, or to avoid the expiry. |

@@ -36,6 +36,9 @@ ENDPOINTS = {
 GITHUB_TOKEN = "fake_gh_env_GITHUB_TOKEN_2222"
 OLD_GITHUB_TOKEN = "fake_gh_OLD_TOKEN_0000"
 DEVICE_TOKEN = "fake_gh_device_TOKEN_4444"
+FEED_PAT = "fake_feed_PAT_7777"
+FEED = {"orgName": "contoso", "feedUrl": "https://pkgs.dev.azure.com/contoso/_packaging/main/nuget/v3/index.json",
+        "feedType": "NuGet", "pat": FEED_PAT}
 ARM_TOKEN = "fake_arm_entra_token"
 ADO_TOKEN = "fake_ado_entra_token"
 AGENT_PATH = re.compile(
@@ -339,7 +342,9 @@ class RepoConnectCliTests(_CliTestCase):
                 self.assertEqual(self.services.value("githubAuths", "github_com")["pat"], OLD_GITHUB_TOKEN)
 
     def test_overwrite_replaces_it_and_names_the_repositories_sharing_the_credential(self):
-        self.services.seed("repositories", "api", {"url": "https://github.com/orgA/api", "type": "GitHub"})
+        self.services.seed("repositories", "api", {
+            "url": "https://github.com/orgA/api", "type": "GitHub", "branch": "main",
+            "sparseCheckoutPaths": ["src"], "feedCredentials": [FEED]})
         self.services.seed("repositories", "web", {"url": "https://github.com/orgA/web", "type": "GitHub"})
         self.services.seed("repositories", "ado", {
             "url": "https://dev.azure.com/contoso/proj/_git/ado", "type": "AzureDevOps"})
@@ -348,7 +353,9 @@ class RepoConnectCliTests(_CliTestCase):
         code, stdout, stderr = self.connect("https://github.com/orgB/api", "--overwrite")
 
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(self.repo_url("api"), "https://github.com/orgB/api")
+        # Nothing is carried over from a different repository.
+        self.assertEqual(self.services.value("repositories", "api"),
+                         {"url": "https://github.com/orgB/api", "type": "GitHub", "description": "api"})
         self.assertEqual(self.services.value("githubAuths", "github_com")["pat"], GITHUB_TOKEN)
         shared = [line for line in stderr.splitlines() if "'web'" in line]
         self.assertTrue(shared, stderr)
@@ -356,13 +363,89 @@ class RepoConnectCliTests(_CliTestCase):
         self.assertIn("https://github.com/orgA/api", stderr)
         self.assertEqual(json.loads(stdout)["repository"]["properties"]["value"]["url"], "https://github.com/orgB/api")
 
-    def test_reconnecting_the_same_repository_needs_no_overwrite(self):
-        self.services.seed("repositories", "api", {"url": "https://github.com/orgA/api.git", "type": "GitHub"})
+    def test_reconnecting_the_same_repository_needs_no_overwrite_and_keeps_its_settings(self):
+        # An older URL with a credential in it, no 'type', and settings made outside the CLI.
+        stored = {"url": "https://x-access-token:fake_url_OLD_cred_9191@github.com/orgA/api.git",
+                  "description": "Orders API", "branch": "main", "sparseCheckoutPaths": ["src/orders"],
+                  "feedCredentials": [FEED], "indexingEnabled": True}
+        kept = dict(stored, url="https://github.com/orgA/api", type="GitHub")
+        for route in ("arm", "direct"):
+            with self.subTest(route=route):
+                os.environ["AZSRE_EXTENSION_ROUTE"] = route
+                self.services = _Services()
+                self.services.seed("repositories", "api", stored)
 
-        code, _, stderr = self.connect("https://github.com/orgA/api", "--branch", "release")
+                code, _, stderr = self.connect("https://github.com/orgA/api")
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(self.services.value("repositories", "api"), kept)
+
+                code, _, stderr = self.connect("https://github.com/orgA/api", "--branch", "release")
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(self.services.value("repositories", "api"), dict(kept, branch="release"))
+
+    def test_fields_the_agent_returns_as_null_are_left_out(self):
+        self.services.seed("repositories", "api", {
+            "url": "https://github.com/orgA/api", "type": "GitHub", "description": None, "branch": None,
+            "sparseCheckoutPaths": None, "feedCredentials": None})
+
+        code, _, stderr = self.connect("https://github.com/orgA/api")
 
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(self.services.value("repositories", "api")["branch"], "release")
+        self.assertEqual(self.services.value("repositories", "api"),
+                         {"url": "https://github.com/orgA/api", "type": "GitHub", "description": "api"})
+
+    def test_a_kept_feed_pat_is_not_printed_or_logged(self):
+        stored = {"url": "https://github.com/orgA/api", "type": "GitHub", "feedCredentials": [FEED]}
+        for route in ("arm", "direct"):
+            with self.subTest(route=route):
+                os.environ["AZSRE_EXTENSION_ROUTE"] = route
+                self.services = _Services()
+                self.services.seed("repositories", "api", stored)
+
+                code, stdout, stderr = self.connect("https://github.com/orgA/api", "--debug")
+
+                self.assertEqual(code, 0, stderr)
+                saved = self.services.value("repositories", "api")
+                self.assertEqual(saved.get("feedCredentials"), [FEED])
+                printed = json.loads(stdout)["repository"]["properties"]["value"]["feedCredentials"]
+                self.assertEqual([feed["pat"] for feed in printed], ["******"])
+                # Plain, and inside the base64 values ARM sends and receives.
+                forms = [FEED_PAT, _b64(stored), _b64(saved)]
+                forms += [json.loads(body)["properties"]["value"] for method, url, body in self.services.calls
+                          if method == "PUT" and "/repositories/" in url]
+                output = stdout + stderr + self.config_files_text()
+                for form in forms:
+                    self.assertNotIn(form, output)
+
+    def test_feeds_whose_pat_the_agent_does_not_return_are_not_written_back(self):
+        masked = dict(FEED, feedUrl="https://pkgs.dev.azure.com/contoso/_packaging/masked/nuget/v3/index.json",
+                      pat="******")
+        missing = {"orgName": "contoso", "feedType": "Npm",
+                   "feedUrl": "https://pkgs.dev.azure.com/contoso/_packaging/missing/npm/registry/"}
+        self.services.seed("repositories", "api", {
+            "url": "https://github.com/orgA/api", "type": "GitHub", "feedCredentials": [masked, FEED, missing]})
+
+        code, _, stderr = self.connect("https://github.com/orgA/api")
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(self.services.value("repositories", "api").get("feedCredentials"), [FEED])
+        warning = [line for line in stderr.splitlines() if masked["feedUrl"] in line]
+        self.assertTrue(warning, stderr)
+        self.assertIn(missing["feedUrl"], warning[0])
+        self.assertNotIn(FEED["feedUrl"], warning[0])
+
+    def test_saved_settings_that_are_not_valid_stop_it_before_sign_in(self):
+        self.services.seed("repositories", "api", {
+            "url": "https://github.com/orgA/api", "type": "GitHub", "sparseCheckoutPaths": "src/orders"})
+
+        code, _, stderr = self.connect("https://github.com/orgA/api", token=None)
+
+        self.assertNotEqual(code, 0)
+        self.assertIn("saved settings of repository 'api' on agent 'myagent'", stderr)
+        self.assertIn("sparseCheckoutPaths must be a JSON array of strings", stderr)
+        self.assertNotIn("--value", stderr)
+        self.assertNotIn("WDJB-MJHT", stderr)
+        self.assertEqual(self.services.writes(), [])
 
     def test_the_check_runs_before_github_sign_in(self):
         self.services.seed("repositories", "api", {"url": "https://github.com/orgA/api", "type": "GitHub"})

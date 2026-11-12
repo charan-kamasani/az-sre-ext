@@ -1124,8 +1124,14 @@ host or organization:
 - If the agent already has a repository with the same display name that
   points to a different URL, the command stops and names that URL. Pass
   `--display-name` to add the new repository under another name, or
-  `--overwrite` to replace it. Running it again for the same URL, for example
-  to renew a token or change `--branch`, needs neither.
+  `--overwrite` to replace it; the new entry keeps none of the old one's
+  settings. Running it again for the same URL, for example to renew a token
+  or change `--branch`, needs neither, and keeps the repository's other
+  settings: its branch (unless you pass `--branch`), sparse checkout paths,
+  package feed credentials and anything else set outside the CLI. A feed
+  credential whose PAT the agent doesn't return, or returns masked, isn't
+  kept; a warning names it so you can set it again. If the saved settings
+  aren't valid, the command stops and says why.
 - The agent keeps one GitHub credential for all its GitHub repositories and
   one Azure DevOps credential per organization. When other repositories on the
   agent share the credential being saved, a warning names them.

@@ -7375,27 +7375,73 @@ def _devops_organization_from_url(repo_url):
     return parsed.path.strip("/").split("/", 1)[0]
 
 
-def _check_repository_name_is_free(cli_ctx, agent_name, resource_group, name, repo_url, overwrite):
-    """Stop before any credential is fetched if the agent already has a
-    repository with this name and a different URL, unless overwrite is set.
-    Reconnecting the same URL is fine."""
+def _repository_to_update(cli_ctx, agent_name, resource_group, name, repo_url, overwrite):
+    """Read the agent's repository with this name before any credential is fetched.
+
+    Return its stored value if it points to the same URL, so that running the
+    command again keeps its other settings. Stop if it points to a different
+    URL, unless overwrite is set; then it is replaced from scratch. Return
+    None when there is nothing to keep.
+    """
     try:
-        # A URL saved by an older version can hold a credential, so keep the
-        # reply out of --debug and the log file.
+        # The reply can hold feed PATs, or a credential in a URL saved by an
+        # older version, so keep it out of --debug and the log file.
         with _no_http_trace():
             existing = _extension_resource_show(cli_ctx, agent_name, resource_group, "repositories", name)
     except ResourceNotFoundError:
-        return
+        return None
     value = (existing.get("properties") or {}).get("value") if isinstance(existing, dict) else None
     existing_url = value.get("url") if isinstance(value, dict) else None
-    if not isinstance(existing_url, str) or _repo_url_key(existing_url) == _repo_url_key(repo_url):
-        return
+    if not isinstance(existing_url, str):
+        return None
+    if _repo_url_key(existing_url) == _repo_url_key(repo_url):
+        return value
     shown = _repo_url_for_display(existing_url)
     if not overwrite:
         raise ResourceExistsError(
             f"Agent '{agent_name}' already has a repository named '{name}', which points to {shown}. Pass "
             f"--display-name to connect {repo_url} under another name, or --overwrite to replace it.")
     logger.warning("Replacing repository '%s' on agent '%s', which points to %s.", name, agent_name, shown)
+    return None
+
+
+def _feed_pat_missing(feed):
+    """True for a feed credential whose PAT the agent didn't return, or returned masked as '******'."""
+    if not isinstance(feed, dict):
+        return False
+    pat = feed.get("pat")
+    return not isinstance(pat, str) or not pat.strip("*")
+
+
+def _updated_repository_value(stored, agent_name, name, repo_url, provider, branch):
+    """The stored repository value, as JSON text, with the new URL and type,
+    and the new branch if one was given. Everything else is kept, except feed
+    credentials whose PAT the agent didn't return: writing back a masked PAT
+    would break them."""
+    # A null is an unset field, and the shape check rejects nulls.
+    value = {key: item for key, item in stored.items() if item is not None}
+    value["url"] = repo_url
+    value["type"] = provider
+    if branch:
+        value["branch"] = branch
+    if not isinstance(value.get("description"), str) or not value["description"]:
+        value["description"] = name
+    feeds = value.get("feedCredentials")
+    dropped = [feed for feed in feeds if _feed_pat_missing(feed)] if isinstance(feeds, list) else []
+    if dropped:
+        value["feedCredentials"] = [feed for feed in feeds if not _feed_pat_missing(feed)]
+        logger.warning(
+            "Repository '%s' won't keep the feed credentials for %s, because agent '%s' didn't return their "
+            "PATs. Set them again after this command finishes.",
+            name, _quoted_list([str(feed.get("feedUrl")) for feed in dropped]), agent_name)
+    try:
+        return _normalize_extension_value(json.dumps(value), "repositories")
+    except CLIError as ex:
+        reason = str(ex).replace("--value.", "")
+        raise CLIError(
+            f"The saved settings of repository '{name}' on agent '{agent_name}' aren't valid, so this command "
+            f"can't keep them: {reason} Nothing was changed. Fix them in the portal, then run the command "
+            "again.") from ex
 
 
 def _quoted_list(names):
@@ -7465,7 +7511,8 @@ class RepoConnect(AAZCommand):
     GH_TOKEN environment variable. If none is set, it shows a one-time code and opens GitHub's
     sign-in page in your browser. Enter the code there before it expires (15 minutes). For Azure
     DevOps, it creates a personal access token (PAT) that expires after 30 days; run the command
-    again before then, or use a managed identity, which doesn't expire.
+    again before then, or use a managed identity, which doesn't expire. Running the command again
+    for the same repo keeps its other settings, such as the branch and sparse checkout paths.
 
     :example: Connect a GitHub repo
         az sre repo connect --agent-name myagent --resource-group myrg \\
@@ -7525,7 +7572,8 @@ class RepoConnect(AAZCommand):
         )
         schema.branch = AAZStrArg(
             options=["--branch"],
-            help="Branch to check out. Defaults to the repo's default branch.",
+            help="Branch to check out. Defaults to the repo's default branch, or to the saved branch "
+                 "when you connect the same repo again.",
         )
         schema.github_token = AAZStrArg(
             options=["--github-token"],
@@ -7618,15 +7666,21 @@ class RepoConnect(AAZCommand):
                     auth_dict["federatedTenantId"] = devops_federated_tenant_id
                 auth_value = json.dumps(auth_dict)
 
-        _check_repository_name_is_free(
+        stored_repo = _repository_to_update(
             self.cli_ctx, agent_name, resource_group, display_name, repo_url, overwrite)
+        if stored_repo is not None:
+            repo_value = _updated_repository_value(
+                stored_repo, agent_name, display_name, repo_url, provider, branch)
         _warn_about_shared_credential(
             self.cli_ctx, agent_name, resource_group, provider, organization, display_name)
 
         auth_type, auth_name = ("githubAuths", "github_com") if provider == "GitHub" else (
             "azureDevOpsAuths", organization)
-        # Values that must not reach the output or an error message.
-        secrets = []
+        # Values that must not reach the output or an error message: the feed
+        # PATs kept from the stored repository, and the repository value in
+        # the base64 form the ARM route sends.
+        secrets = [feed["pat"] for feed in json.loads(repo_value).get("feedCredentials", [])]
+        secrets.append(base64.b64encode(repo_value.encode("utf-8")).decode("ascii"))
         pat_minted = False
         pat_authorization_id = pat_valid_to = None
         try:
