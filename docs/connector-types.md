@@ -21,8 +21,10 @@ case-insensitive, and the portal's names are accepted too.
 | `KnowledgeWebPage` | Knowledge: web page | |
 | `KnowledgeRepository` | Knowledge: repository | |
 
-Creating a connector links it to the agent. Check `consentStatus` with
-`az sre connector show`, and grant the agent's identity access to the data source.
+Creating a connector links it to the agent. For an EntraOAuth MCP connector, check
+`consentStatus` with `az sre connector show`; for one created with `--oauth-dcr true`,
+finish and check the sign-in in the portal. Grant the agent's identity access to the
+data source.
 
 ## Managed connectors
 

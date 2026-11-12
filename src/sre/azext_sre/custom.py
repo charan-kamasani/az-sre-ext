@@ -326,6 +326,17 @@ def _accepts_subscription(args):
     return any(tuple(args[:len(prefix)]) == prefix for prefix in _SUBSCRIPTION_COMMAND_PREFIXES)
 
 
+def _command_words(args):
+    """The command part of a nested argument list, without option values,
+    which can hold secrets (for example a --data-source connection string)."""
+    words = []
+    for arg in args:
+        if str(arg).startswith("-"):
+            break
+        words.append(str(arg))
+    return " ".join(words)
+
+
 def _cli_invoke(cli_ctx, *args, allow_missing=False):
     """Run another public `az sre ...` command in-process and return its
     parsed result.
@@ -335,6 +346,7 @@ def _cli_invoke(cli_ctx, *args, allow_missing=False):
     from azure.cli.core import get_default_cli
 
     args = list(args)
+    command = _command_words(args)
     # The nested CLI starts fresh, so pass along the caller's --subscription
     # to commands that accept it.
     subscription = (getattr(cli_ctx, "data", None) or {}).get("subscription_id")
@@ -349,7 +361,7 @@ def _cli_invoke(cli_ctx, *args, allow_missing=False):
     except (ResourceNotFoundError, SystemExit) as ex:
         if allow_missing:
             return None
-        raise CLIError(f"'{' '.join(args)}' failed: {ex}") from ex
+        raise CLIError(f"'{command}' failed: {ex}") from ex
     except Exception as ex:  # pylint: disable=broad-except
         # cli.invoke() normally reports a failing invoked command via its
         # exit code (handled below), not an exception -- but some failures
@@ -363,11 +375,11 @@ def _cli_invoke(cli_ctx, *args, allow_missing=False):
         # instead of a confusing unrelated stack trace.
         if allow_missing:
             return None
-        raise CLIError(f"'{' '.join(args)}' failed: {ex}") from ex
+        raise CLIError(f"'{command}' failed: {ex}") from ex
     if exit_code not in (0, None):
         if allow_missing:
             return None
-        raise CLIError(f"'{' '.join(args)}' exited with code {exit_code}.")
+        raise CLIError(f"'{command}' exited with code {exit_code}.")
     result = cli.result.result if cli.result else None
     if result is None and allow_missing:
         return None
@@ -1364,17 +1376,22 @@ MANAGED_CONNECTOR_CARDS = {
     name.lower(): names[0] for names in PORTAL_MANAGED_CONNECTORS for name in names
 }
 
-# Connector types that do not require --data-source at all (the data-plane
-# validator exempts them -- see DataConnectorValidator.cs
-# IsKnowledgeConnectorType). Used only to keep --help accurate; the CLI
-# does not enforce --data-source presence itself (that's left to the
-# service), so this is documentation, not a code path.
+# The connector types 'sre knowledge' manages. None of them requires
+# --data-source (the data-plane validator exempts them -- see
+# DataConnectorValidator.cs IsKnowledgeConnectorType). 'sre knowledge'
+# commands only act on connectors of these types.
 KNOWLEDGE_DATA_CONNECTOR_TYPES = {
     "KnowledgeText",
     "KnowledgeFile",
     "KnowledgeWebPage",
     "KnowledgeRepository",
 }
+
+
+def _is_knowledge_type(data_connector_type):
+    return isinstance(data_connector_type, str) and data_connector_type.lower() in {
+        known.lower() for known in KNOWLEDGE_DATA_CONNECTOR_TYPES}
+
 
 # Connector types that create an ARM link to an external Azure resource the
 # agent will query directly, but grant the agent's identity no data-plane
@@ -1536,6 +1553,32 @@ class _ConnectorGroup(AAZCommandGroup):
     """Connect an SRE Agent to an external data source it can query or act on."""
 
 
+# The service's connector name rule, from the generated --name format.
+# azure-cli-core 2.92 compiles that pattern but never checks it.
+CONNECTOR_NAME_PATTERN = re.compile(r"^[A-Za-z]([-A-Za-z0-9]{0,30}[A-Za-z0-9])$")
+
+
+def _check_connector_name(name, new=False):
+    """Refuse a connector name before any request is sent.
+
+    requests drops '.' and '..' path segments, so '--name ..' would address
+    the agent itself. A new connector's name must also follow the service's rule.
+    """
+    if (not name or name in (".", "..") or "/" in name or "\\" in name
+            or (new and not CONNECTOR_NAME_PATTERN.match(name))):
+        raise InvalidArgumentValueError(
+            f"'{name}' is not a valid connector name. Use 2 to 32 letters, digits and hyphens, "
+            "starting with a letter and ending with a letter or digit.")
+
+
+class _ConnectorNameCheckMixin:
+    """Checks the connector name, including one taken from --ids, before any request."""
+
+    def pre_operations(self):
+        _check_connector_name(_arg_value(self.ctx.args.connector_name))
+        super().pre_operations()
+
+
 class _DataConnectorTypeArgMixin:
     """Shared --data-connector-type help/validation for connector create and update.
 
@@ -1563,13 +1606,14 @@ class _DataConnectorTypeArgMixin:
         if data_source is not None and isinstance(getattr(data_source, "_help", None), dict):
             data_source._help["short-summary"] = (
                 "Connection string or endpoint. For Kusto, include the database: "
-                "`https://cluster.kusto.windows.net/database`."
+                "`https://cluster.kusto.windows.net/database`. On update, pass it again, or null for none."
             )
         for _name, _text in (
             ("endpoint", "Endpoint URL, used by endpoint-based connector types such as Mcp."),
             ("identity", "'system' for the agent's system-assigned identity, or a user-assigned identity "
-             "resource ID. If omitted, no identity is set."),
-            ("extended_properties", "Type-specific settings as JSON or shorthand."),
+             "resource ID. On create, leave it out for no identity; on update, pass it again, or null for none."),
+            ("extended_properties", "Type-specific settings as JSON or shorthand. On update, this replaces "
+             "all of them."),
         ):
             _arg = getattr(schema, _name, None)
             if _arg is not None and isinstance(getattr(_arg, "_help", None), dict):
@@ -1906,9 +1950,7 @@ class _ConnectorPartnerTypeMixin:
             schema.partner_type = AAZStrArg(
                 options=["--partner-type"],
                 arg_group="MCP",
-                help="For Mcp: the partner integration this server belongs to, for example DynatraceMcp. "
-                     "On update, also pass --data-source and --extended-properties, since the service "
-                     "doesn't return the endpoint or credentials.",
+                help="For Mcp: the partner integration this server belongs to, for example DynatraceMcp.",
             )
         return schema
 
@@ -1918,16 +1960,6 @@ class _ConnectorPartnerTypeMixin:
         connector_type = _arg_value(getattr(args, "data_connector_type", None))
         if partner_type and connector_type is not None and connector_type != "Mcp":
             raise CLIError("--partner-type requires --data-connector-type Mcp.")
-        if partner_type and isinstance(self, _GeneratedConnectorUpdate) and (
-                _arg_value(getattr(args, "data_source", None)) is None
-                or _arg_value(getattr(args, "extended_properties", None)) is None):
-            # GET never returns the endpoint or bearer token, so a PUT built
-            # from it alone would wipe them from the connector.
-            raise CLIError(
-                "--partner-type on update also needs --data-source and --extended-properties "
-                "(including the endpoint and credentials), because the service doesn't return "
-                "them and they would otherwise be cleared."
-            )
         if partner_type and not isinstance(self, _GeneratedConnectorUpdate):
             existing = _arg_value(getattr(args, "extended_properties", None)) or {}
             if not isinstance(existing, dict):
@@ -2002,23 +2034,81 @@ class ConnectorCreate(
     ):
         pass
 
+    def pre_operations(self):
+        # Not through _ConnectorNameCheckMixin, which would give this class more
+        # ancestors than the lint allows. New names must also follow the service's rule.
+        _check_connector_name(_arg_value(self.ctx.args.connector_name), new=True)
+        super().pre_operations()
+
     def _output(self, *args, **kwargs):
         result = super()._output(*args, **kwargs)
         _connector_access_reminder(result)
+        if _arg_value(getattr(self.ctx.args, "oauth_dcr", None)):
+            logger.warning(_oauth_dcr_sign_in_guidance(result))
         return _annotate_connector_consent_status(result)
 
 
+def _require_write_only_settings(args, instance):
+    """Refuse an update whose PUT would drop settings the service never returns.
+
+    The generated update reads the connector, merges the arguments into it and
+    PUTs the result. The read never includes the data source or identity, an
+    MCP connector's endpoint and credentials, or a knowledge file's content.
+    """
+    properties = instance.properties
+    connector_type = (properties.data_connector_type.to_serialized_data()
+                      if has_value(properties.data_connector_type) else None)
+    name = _arg_value(args.connector_name)
+    if _is_knowledge_type(connector_type):
+        raise CLIError(
+            f"'{name}' is a knowledge source. To change it, run 'az sre knowledge create' with the "
+            "same --name and --overwrite: the service doesn't return all of a knowledge source's "
+            "settings, so an update could clear them.")
+    # An explicit null shows only on the argument; a --set value only on the instance.
+    missing = [flag for flag, argument, value in (
+        ("--data-source", args.data_source, properties.data_source),
+        ("--identity", args.identity, properties.identity),
+    ) if not (has_value(argument) or has_value(value))]
+    if (isinstance(connector_type, str) and connector_type.lower() == "mcp"
+            and not has_value(args.extended_properties)):
+        missing.append("--extended-properties")
+    if not missing:
+        return
+    flags = missing[0] if len(missing) == 1 else ", ".join(missing[:-1]) + " and " + missing[-1]
+    message = (
+        f"Pass {flags} again. 'connector update' sends the whole connector back, and the service "
+        "never returns these settings, so they would be cleared.")
+    if "--data-source" in missing or "--identity" in missing:
+        message += " Pass null for --data-source or --identity if the connector doesn't have one."
+    if "--extended-properties" in missing:
+        message += (" --extended-properties replaces all of an MCP connector's settings, so include "
+                    "its endpoint and credentials.")
+    raise CLIError(message)
+
+
 @register_command("sre connector update")
-class ConnectorUpdate(_DataConnectorTypeArgMixin, _ConnectorPartnerTypeMixin, _GeneratedConnectorUpdate):
+class ConnectorUpdate(
+    _ConnectorNameCheckMixin,
+    _DataConnectorTypeArgMixin,
+    _ConnectorPartnerTypeMixin,
+    _GeneratedConnectorUpdate,
+):
     """Update an Agent Connector.
 
-    :example: Point a Kusto connector at a different database
-        az sre connector update -g myrg --agent-name myagent -n conn-kusto \\
-            --data-connector-type "Azure Data Explorer" \\
+    An update sends the whole connector back, and the service never returns a
+    connector's data source or identity, or an MCP connector's endpoint and
+    credentials. So pass --data-source and --identity on every update (null for
+    one the connector doesn't have), and pass all of an MCP connector's
+    --extended-properties. To change a knowledge source, run
+    'az sre knowledge create' with --overwrite.
 
-    :example: Mark an MCP connector as a Dynatrace integration. The service doesn't return the endpoint or token, so pass them again.
+    :example: Point a Kusto connector that has no identity at a different database
+        az sre connector update -g myrg --agent-name myagent -n conn-kusto \\
+            --data-source "https://mycluster.westus.kusto.windows.net/otherdb" --identity null
+
+    :example: Mark an MCP connector as a Dynatrace integration
         az sre connector update -g myrg --agent-name myagent -n dynatrace --partner-type DynatraceMcp \\
-            --data-source "$DT_MCP_URL" --extended-properties @dynatrace-mcp.json
+            --data-source "$DT_MCP_URL" --identity null --extended-properties "@dynatrace-mcp.json"
     """
 
     _args_schema = None
@@ -2028,6 +2118,10 @@ class ConnectorUpdate(_DataConnectorTypeArgMixin, _ConnectorPartnerTypeMixin, _G
         _GeneratedConnectorUpdate.AgentsConnectorsCreateOrUpdate,
     ):
         pass
+
+    def post_instance_update(self, instance):
+        super().post_instance_update(instance)
+        _require_write_only_settings(self.ctx.args, instance)
 
     def _output(self, *args, **kwargs):
         result = super()._output(*args, **kwargs)
@@ -2057,6 +2151,15 @@ def _connector_consent_status(extended_properties):
     return "Consented" if extended_properties.get("entraOAuth") else "PendingConsent"
 
 
+def _connector_portal_link(connector):
+    resource_id = connector.get("id") if isinstance(connector, dict) else None
+    return (
+        f"https://portal.azure.com/#@/resource{resource_id}/overview"
+        if isinstance(resource_id, str) and resource_id
+        else "the connector's blade in the Azure portal"
+    )
+
+
 def _connector_consent_guidance(connector):
     """Build an actionable message for a connector stuck in PendingConsent.
 
@@ -2071,13 +2174,8 @@ def _connector_consent_guidance(connector):
     So the CLI can only detect PendingConsent and point the user at the
     one place that *can* complete it: the connector's blade in the portal.
     """
-    resource_id = connector.get("id") if isinstance(connector, dict) else None
     name = connector.get("name") if isinstance(connector, dict) else None
-    where = (
-        f"https://portal.azure.com/#@/resource{resource_id}/overview"
-        if isinstance(resource_id, str) and resource_id
-        else "the connector's blade in the Azure portal"
-    )
+    where = _connector_portal_link(connector)
     label = f"Connector '{name}'" if name else "This connector"
     return (
         f"{label} is PendingConsent: the OAuth sign-in step has not been "
@@ -2086,6 +2184,19 @@ def _connector_consent_guidance(connector):
         f"not as a public ARM action. Open {where} and complete the "
         "sign-in prompt, then re-run this command to confirm consentStatus "
         "has changed to Consented."
+    )
+
+
+def _oauth_dcr_sign_in_guidance(connector):
+    """--oauth-dcr (SpecOAuth) connectors also need a browser sign-in in the
+    portal. Unlike EntraOAuth, the CLI doesn't know which field records that
+    the sign-in is done, so they get no consentStatus."""
+    name = connector.get("name") if isinstance(connector, dict) else None
+    label = f"Connector '{name}'" if name else "This connector"
+    return (
+        f"{label} uses OAuth with dynamic client registration. Open "
+        f"{_connector_portal_link(connector)} and finish the sign-in there. The CLI can't tell "
+        "whether this connector is signed in, so it shows no consentStatus for it."
     )
 
 
@@ -2118,7 +2229,7 @@ def _annotate_connector_consent_status(connector):
 
 
 @register_command("sre connector show")
-class ConnectorShow(_GeneratedConnectorShow):
+class ConnectorShow(_ConnectorNameCheckMixin, _GeneratedConnectorShow):
     """Show a connector, including OAuth consent status.
 
     consentStatus is shown for EntraOAuth-backed Mcp connectors.
@@ -2183,7 +2294,7 @@ def _ctx_agent_id(ctx):
 
 
 @register_command("sre connector delete")
-class ConnectorDelete(_GeneratedConnectorDelete):
+class ConnectorDelete(_ConnectorNameCheckMixin, _GeneratedConnectorDelete):
     """Delete an Agent Connector.
 
     :example: Delete a connector without a prompt
@@ -2193,16 +2304,17 @@ class ConnectorDelete(_GeneratedConnectorDelete):
     _args_schema = None
 
     def pre_operations(self):
+        # Runs the name check before the lookup below sends anything.
+        super().pre_operations()
         agent_name = _arg_value(self.ctx.args.agent_name)
         name = _arg_value(self.ctx.args.connector_name)
         _require_arm_resource(
             self.cli_ctx, f"{_ctx_agent_id(self.ctx)}/connectors/{quote(name, safe='')}",
             f"Connector '{name}' not found on agent '{agent_name}'.")
-        super().pre_operations()
 
 
 @register_command("sre connector wait")
-class ConnectorWait(_GeneratedConnectorWait):
+class ConnectorWait(_ConnectorNameCheckMixin, _GeneratedConnectorWait):
     """Wait for a connector to reach a desired state.
 
     :example: Wait until a connector created with --no-wait exists
@@ -2231,12 +2343,12 @@ class _ConnectorNameAliasMixin:
 
 
 @register_command("sre connector list-secret")
-class ConnectorListSecret(_ConnectorNameAliasMixin, _GeneratedConnectorListSecret):
+class ConnectorListSecret(_ConnectorNameCheckMixin, _ConnectorNameAliasMixin, _GeneratedConnectorListSecret):
     """Show a connector with its secrets in plain text.
 
-    Unlike 'sre connector show'/'sre connector list', which redact secret
-    fields server-side, this command returns them unredacted. HTTP request
-    and response tracing is disabled for this command, including with --debug.
+    Unlike 'sre connector show' and 'sre connector list', which leave secret
+    fields out, this command prints every secret the service returns. HTTP
+    request and response tracing is disabled for this command, including with --debug.
     Store the output securely and never commit it. The service only returns
     secrets to callers with an admin role on the agent; other callers get an
     authorization error.
@@ -2252,6 +2364,11 @@ class ConnectorListSecret(_ConnectorNameAliasMixin, _GeneratedConnectorListSecre
         _GeneratedConnectorListSecret.AgentsConnectorsListSecrets,
     ):
         pass
+
+    def _output(self, *args, **kwargs):
+        # The generated output hides fields the API marks secret, such as
+        # dataSource, but returning them is what this command is for.
+        return self.deserialize_output(self.ctx.vars.instance, client_flatten=True, secret_hidden=False)
 
 
 # --------------------------------------------------------------------------------------------
@@ -2952,6 +3069,45 @@ KNOWLEDGE_TYPES = {
 }
 
 
+def _get_connector(cli_ctx, ctx, name):
+    """The agent's connector `name` as ARM returns it, or None if there is none."""
+    return _arm_request(
+        cli_ctx, "GET", f"{_ctx_agent_id(ctx)}/connectors/{quote(name, safe='')}", API_VERSION,
+        missing_ok=True)
+
+
+def _connector_type(connector):
+    properties = connector.get("properties") if isinstance(connector, dict) else None
+    return properties.get("dataConnectorType") if isinstance(properties, dict) else None
+
+
+def _require_knowledge_source(cli_ctx, ctx, name):
+    """Raise unless the agent has a knowledge source named `name`, so 'sre
+    knowledge' commands never act on another kind of connector."""
+    agent_name = _arg_value(ctx.args.agent_name)
+    connector = _get_connector(cli_ctx, ctx, name)
+    if connector is None:
+        raise ResourceNotFoundError(f"Knowledge source '{name}' not found on agent '{agent_name}'.")
+    connector_type = _connector_type(connector)
+    if not _is_knowledge_type(connector_type):
+        raise InvalidArgumentValueError(
+            f"'{name}' on agent '{agent_name}' is a {connector_type or 'non-knowledge'} connector, "
+            "not a knowledge source. Use the 'az sre connector' commands for it.")
+    return connector
+
+
+def _private_value_file(value):
+    """Write value to a temporary file that only the current user can read, for a
+    nested '--flag @file' argument. A nested command logs its arguments before it
+    reads @file, so the log shows only the path."""
+    import tempfile
+
+    handle, path = tempfile.mkstemp(prefix="az-sre-", suffix=".txt")
+    with os.fdopen(handle, "w", encoding="utf-8") as stream:
+        stream.write(value)
+    return path
+
+
 @register_command_group("sre knowledge")
 class _KnowledgeGroup(AAZCommandGroup):
     """Add files or web pages the agent can read and reason over.
@@ -3010,7 +3166,8 @@ class KnowledgeCreate(AAZCommand):
         )
         schema.overwrite = AAZBoolArg(
             options=["--overwrite"],
-            help="Allow replacing an existing knowledge source of the same name.",
+            help="Allow replacing an existing knowledge source of the same name. "
+            "Other connector types are never replaced.",
         )
         cls._args_schema = schema
         return schema
@@ -3026,17 +3183,26 @@ class KnowledgeCreate(AAZCommand):
         data_source = _arg_value(self.ctx.args.data_source)
         overwrite = _arg_value(getattr(self.ctx.args, "overwrite", None))
 
+        _check_connector_name(name, new=True)
         connector_type = KNOWLEDGE_TYPES[kind]
         if connector_type in ("KnowledgeFile", "KnowledgeText") and not file_path:
             raise CLIError(f"--file-path is required for --type {kind}.")
         if connector_type == "KnowledgeWebPage" and not (url or data_source):
             raise CLIError("--url (or --data-source) is required for --type webpage.")
+        if overwrite:
+            existing = _get_connector(self.cli_ctx, self.ctx, name)
+            if existing is not None and not _is_knowledge_type(_connector_type(existing)):
+                raise ResourceExistsError(
+                    f"A {_connector_type(existing) or 'non-knowledge'} connector named '{name}' already "
+                    f"exists on agent '{agent_name}', and --overwrite only replaces knowledge sources. "
+                    "Choose another --name.")
 
         argv = [
             "sre", "connector", "create",
             "--agent-name", agent_name, "--resource-group", resource_group,
             "--name", name, "--data-connector-type", connector_type,
         ]
+        value_file = None
         if file_path:
             argv += ["--file-path", file_path]
         if url:
@@ -3051,12 +3217,19 @@ class KnowledgeCreate(AAZCommand):
             # ("Redundant tail"), live-confirmed.
             argv += ["--extended-properties", json.dumps({"url": url})]
         elif data_source:
-            argv += ["--data-source", data_source]
+            # The API treats a data source as a secret, so keep it out of the
+            # nested command's argument log.
+            value_file = _private_value_file(data_source)
+            argv += ["--data-source", "@" + value_file]
         if overwrite:
             argv.append("--overwrite")
 
         invoke = partial(_cli_invoke, self.cli_ctx)
-        return invoke(*argv)
+        try:
+            return invoke(*argv)
+        finally:
+            if value_file:
+                os.remove(value_file)
 
 
 @register_command("sre knowledge show")
@@ -3089,6 +3262,8 @@ class KnowledgeShow(AAZCommand):
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
         name = _arg_value(self.ctx.args.name)
+        _check_connector_name(name)
+        _require_knowledge_source(self.cli_ctx, self.ctx, name)
 
         invoke = partial(_cli_invoke, self.cli_ctx)
         return invoke(
@@ -3178,9 +3353,8 @@ class KnowledgeDelete(AAZCommand):
         agent_name = _arg_value(self.ctx.args.agent_name)
         resource_group = _arg_value(self.ctx.args.resource_group)
         name = _arg_value(self.ctx.args.name)
-        _require_arm_resource(
-            self.cli_ctx, f"{_ctx_agent_id(self.ctx)}/connectors/{quote(name, safe='')}",
-            f"Knowledge source '{name}' not found on agent '{agent_name}'.")
+        _check_connector_name(name)
+        _require_knowledge_source(self.cli_ctx, self.ctx, name)
 
         # Forward --yes to the inner "sre connector delete" self-invocation
         # (already confirmed once at this command's own prompt above).
