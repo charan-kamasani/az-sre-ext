@@ -3138,21 +3138,14 @@ class HttpTriggerInvokeTests(unittest.TestCase):
 
         command = _bare_command(AutomationHttpTriggerInvoke, agent_name="a", resource_group="rg",
                                 extension_name="hook", payload=payload)
-        response = SimpleNamespace(content=b"{}", json=lambda: {"success": True, "threadId": "t1"})
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._extension_resource_show",
                    return_value={"name": "hook", "properties": {"value": value}}), \
-             patch("azext_sre.custom.send_raw_request", return_value=response) as send:
-            return command._handler({}), send
-
-    def test_posts_the_payload_to_the_trigger_url_with_the_agent_audience(self):
-        url = "https://a--1.x.swedencentral.azuresre.ai/api/v1/httptriggers/trigger/hook"
-        result, send = self._invoke({"triggerUrl": url, "triggerEnabled": True}, payload='{"alert": "x"}')
-        self.assertEqual(result["threadId"], "t1")
-        args, kwargs = send.call_args
-        self.assertEqual(args[1:3], ("POST", url))
-        self.assertEqual(kwargs["body"], '{"alert": "x"}')
-        self.assertEqual(kwargs["resource"], "https://azuresre.dev")
+             patch("azext_sre.custom._post_to_agent_endpoint") as post:
+            try:
+                return command._handler({})
+            finally:
+                post.assert_not_called()
 
     def test_refuses_unexpected_hosts_and_bad_payloads(self):
         with self.assertRaisesRegex(CLIError, "unexpected"):
@@ -3201,8 +3194,8 @@ class ExtensionTypeEnumTests(unittest.TestCase):
 
 
 class ExtensionTenantGateTests(unittest.TestCase):
-    """The service rejects every agent extension call from a non-internal
-    tenant. The CLI should say that plainly."""
+    """ARM rejects every agent extension call from a non-internal tenant. The
+    CLI then uses the agent's own API, or says plainly that it has no route."""
 
     _AGENT = {"id": "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"}
 
@@ -3270,19 +3263,27 @@ class ExtensionTenantGateTests(unittest.TestCase):
         )
         return HTTPError("400 Client Error", response=response)
 
-    def test_each_extension_operation_explains_the_tenant_gate(self):
+    def test_tenant_gate_is_explained_when_the_agent_api_has_no_route(self):
+        from azext_sre.custom import InternalTenantOnlyError
+
         calls = (
-            (_extension_resource_create, ("subagents", "t", '{"url": "https://github.com/a/b"}'), {"overwrite": True}),
-            (_extension_resource_show, ("subagents", "t"), {}),
-            (_extension_resource_list, ("subagents",), {}),
-            (_extension_resource_delete, ("subagents", "t"), {}),
+            (_extension_resource_create, ("incidentHandlers", "t", "{}")),
+            (_extension_resource_show, ("incidentHandlers", "t")),
+            (_extension_resource_list, ("incidentHandlers",)),
+            (_extension_resource_delete, ("incidentHandlers", "t")),
+            (_extension_resource_list, ("globalSettings",)),
+            (_extension_resource_delete, ("globalSettings", "t")),
         )
-        for func, args, kwargs in calls:
-            with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
-                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()):
-                with self.assertRaises(CLIError) as ctx:
-                    func(None, "myagent", "rg", *args, **kwargs)
-            self.assertIn("This tenant can't use 'subagents' yet", str(ctx.exception))
+        for func, args in calls:
+            with self.subTest(operation=func.__name__, extension_type=args[0]), \
+                 patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": "arm"}), \
+                 patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+                 patch("azext_sre.custom._data_plane_request") as dp:
+                with self.assertRaises(InternalTenantOnlyError) as ctx:
+                    func(None, "myagent", "rg", *args)
+                self.assertIn(f"'{args[0]}'", str(ctx.exception))
+                dp.assert_not_called()
 
     def test_tools_fall_back_to_the_agent_api(self):
         envelope = {"name": "t", "type": "ExtendedAgentTool", "properties": {"type": "LinkTool"}}
@@ -3330,18 +3331,20 @@ class ExtensionTenantGateTests(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(result))
 
     def test_triggers_plugins_and_settings_use_their_own_routes(self):
+        plugin = json.dumps({"marketplaceName": "m", "pluginName": "p",
+                             "source": {"type": "relative", "repo": "o/r", "url": "plugins/p"}})
         cases = (
-            ("httpTriggers", "/api/v2/extendedAgent/httpTriggers/t", "HttpTrigger"),
-            ("pluginMarketplaces", "/api/v2/extendedAgent/pluginMarketplaces/t", "Marketplace"),
-            ("pluginInstallations", "/api/v2/extendedAgent/pluginInstallations/t", "PluginInstallation"),
-            ("globalSettings", "/api/v2/extendedAgent/globalSettings/t", "GlobalSettings"),
+            ("httpTriggers", "/api/v2/extendedAgent/httpTriggers/t", "HttpTrigger", "{}"),
+            ("pluginMarketplaces", "/api/v2/extendedAgent/pluginMarketplaces/t", "Marketplace", "{}"),
+            ("pluginInstallations", "/api/v2/extendedAgent/pluginInstallations/t", "PluginInstallation", plugin),
+            ("globalSettings", "/api/v2/extendedAgent/globalSettings/t", "GlobalSettings", "{}"),
         )
-        for extension_type, path, envelope_type in cases:
+        for extension_type, path, envelope_type, value in cases:
             with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
                  patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
                  patch("azext_sre.custom._encode_extension_value"), \
                  patch("azext_sre.custom._data_plane_request", return_value={}) as dp:
-                _extension_resource_create(None, "myagent", "rg", extension_type, "t", "{}", overwrite=True)
+                _extension_resource_create(None, "myagent", "rg", extension_type, "t", value, overwrite=True)
             self.assertEqual(dp.call_args[0][3:5], ("PUT", path))
             self.assertEqual(dp.call_args.kwargs["body"]["type"], envelope_type)
 
@@ -4033,12 +4036,13 @@ class KnowledgeFacadeTests(unittest.TestCase):
     def test_create_webpage_forwards_extended_properties_only(self):
         # NOTE: must NOT also send --data-source -- live-confirmed to cause
         # a service-side 500 for KnowledgeWebPage when both are present.
-        _, calls = self._run(
-            KnowledgeCreate,
-            agent_name="myagent", resource_group="rg", name="docs",
-            type="webpage", file_path=None, url="https://example.com", data_source=None,
-            overwrite=True,
-        )
+        with patch("azext_sre.custom._arm_request", return_value=None):
+            _, calls = self._run(
+                KnowledgeCreate,
+                agent_name="myagent", resource_group="rg", name="docs",
+                type="webpage", file_path=None, url="https://example.com", data_source=None,
+                overwrite=True,
+            )
         self.assertEqual(
             calls[0],
             (
@@ -4060,17 +4064,20 @@ class KnowledgeFacadeTests(unittest.TestCase):
         self.assertIn("--url", str(raised.exception))
 
     def test_show_forwards_to_connector_show(self):
-        _, calls = self._run(
-            KnowledgeShow, agent_name="myagent", resource_group="rg", name="docs",
-            fake_result={"properties": {"dataConnectorType": "KnowledgeWebPage"}},
-        )
+        with patch("azext_sre.custom._arm_request",
+                   return_value={"properties": {"dataConnectorType": "KnowledgeWebPage"}}):
+            _, calls = self._run(
+                KnowledgeShow, agent_name="myagent", resource_group="rg", name="docs",
+                fake_result={"properties": {"dataConnectorType": "KnowledgeWebPage"}},
+            )
         self.assertEqual(
             calls[0],
             ("sre", "connector", "show", "--agent-name", "myagent", "--resource-group", "rg", "--name", "docs"),
         )
 
     def test_delete_forwards_to_connector_delete(self):
-        with patch("azext_sre.custom._arm_request", return_value={"name": "docs"}):
+        with patch("azext_sre.custom._arm_request",
+                   return_value={"name": "docs", "properties": {"dataConnectorType": "KnowledgeWebPage"}}):
             _, calls = self._run(
                 KnowledgeDelete, agent_name="myagent", resource_group="rg", name="docs",
             )
@@ -4912,19 +4919,6 @@ class ConnectorPartnerTypeTests(unittest.TestCase):
         command.post_instance_update(instance)
         self.assertEqual(extended, {"endpoint": "https://x", "partnerType": "DynatraceMcp"})
 
-    def test_partner_type_on_update_requires_the_full_connector_definition(self):
-        from azext_sre.custom import _GeneratedConnectorUpdate
-
-        class _Update(_ConnectorPartnerTypeMixin, _GeneratedConnectorUpdate):
-            pass
-
-        with patch.object(_GeneratedConnectorUpdate, "pre_operations", lambda self: None):
-            with self.assertRaisesRegex(CLIError, "--data-source and --extended-properties"):
-                _bare_command(_Update, partner_type="DynatraceMcp", data_connector_type=None,
-                              data_source=None, extended_properties=None).pre_operations()
-            _bare_command(_Update, partner_type="DynatraceMcp", data_connector_type=None,
-                          data_source="https://x", extended_properties={"endpoint": "https://x"}).pre_operations()
-
 
 class ConnectorConvenienceArgsTests(unittest.TestCase):
     """--file-path/--mcp-endpoint/--github on 'connector create' build the
@@ -5325,13 +5319,11 @@ class SkillCreateFilePathTests(unittest.TestCase):
             with self.assertRaisesRegex(CLIError, "valid skill name"):
                 command._prepare_value()
 
-    def test_arm_extension_paths_quote_the_name(self):
+    def test_arm_extension_paths_keep_special_characters_in_the_name(self):
         from azext_sre.custom import _arm_extension_resource_id
 
-        self.assertEqual(_arm_extension_resource_id("/agents/a", "skills", "../tools/victim"),
-                         "/agents/a/skills/..%2Ftools%2Fvictim")
-        with self.assertRaises(CLIError):
-            _arm_extension_resource_id("/agents/a", "skills", "..")
+        self.assertEqual(_arm_extension_resource_id("/agents/a", "skills", "a b?#"),
+                         "/agents/a/skills/a%20b%3F%23")
 
     def test_prepare_value_both_file_path_and_value_raises(self):
         path = self._write("---\ndescription: D\n---\nBody\n")

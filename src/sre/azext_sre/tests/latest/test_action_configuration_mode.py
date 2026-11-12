@@ -38,8 +38,9 @@ class ActionModeCliTests(unittest.TestCase):
         stack.enter_context(patch("azure.cli.core.MainCommandsLoader._load_modules", return_value=[]))
         stack.enter_context(patch("azure.cli.core.util.handle_version_update"))
         stack.enter_context(patch("azure.cli.core.util.show_updates_available"))
+        # Below both azure-core's Session.request and send_raw_request's Session.send.
         self.http = stack.enter_context(patch(
-            "requests.sessions.Session.request",
+            "requests.adapters.HTTPAdapter.send",
             side_effect=AssertionError("Action-mode CLI tests must not use the network."),
         ))
         # A resolvable subscription lets 'agent create' reach its first side

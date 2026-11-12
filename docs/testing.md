@@ -23,6 +23,17 @@
    `test_action_configuration_mode.py` uses the same offline harness to show
    that `agent create`/`agent update` reject `--action-configuration` mode
    `ReadOnly` while arguments are parsed, before a managed identity is created.
+   `test_cli_connectors.py` runs connector and knowledge commands through the
+   same loader against a stateful fake ARM at `requests.adapters.HTTPAdapter.send`,
+   which sits below both the generated commands and `send_raw_request`, so it
+   records what each command wrote, read or deleted.
+   `test_cli_extensions.py` runs the `tool`, `skill`, `hook`, `instructions`,
+   `subagent`, `plugin` and `automation` commands through the same loader on
+   both routes (ARM and the agent's own API), against a stateful fake of both
+   APIs at the same adapter. The tests check what each command wrote or
+   deleted, that each noun touches only its own extension type, that commands
+   fall back to the agent's API when ARM refuses the tenant, and that
+   credentials stay out of output and `--debug` logs.
    `test_cli_agent_identity.py` runs the agent lifecycle, identity, wait,
    usage and network commands through the real parser against a stateful fake
    ARM. It fakes HTTP at `requests.adapters.HTTPAdapter.send`, which both the
@@ -30,7 +41,7 @@
    the hand-written requests), so tests can check what a command wrote, kept
    or deleted. Its secret tests set up Azure CLI's own console and `az.log`
    logging and count lines that contain a fake secret, including on a retried
-   request.
+   request. All these harnesses block the network at that adapter.
    The documented test dependencies include `msrest` and `azure-common`
    because Azure CLI's real error formatter imports them even for local
    argument-validation errors.

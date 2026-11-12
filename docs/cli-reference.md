@@ -20,7 +20,7 @@ Public surface: **24 groups** and **84 commands**.
 - The overall noun/verb shape (why `agent` isn't a wrapper for every other noun, why there's one dedicated noun per runbook-extension type instead of a generic `extension --type`) is a deliberate decision with alternatives considered -- see the [shape design doc](shape-design.md).
 - `network update` is hand-written against the real `2026-11-01-preview` api-version; there is no public Swagger for it yet. See the [networking guide](networking.md).
 - `--value` JSON documents (e.g. `tool create`, `skill create`, `agent settings update`) are validated and sent in the envelope required by the selected API. Each extension type has its own dedicated front-door noun (`tool`, `skill`, `hook`, `instructions`, `plugin marketplace`/`plugin install`, `repo connect`, `agent settings`); there is no generic `extension` escape hatch anymore. See the [operations guide](operations.md).
-- `connector list-secret` is the only command that can return connector secret material in plain text; everything else (`connector show`, `connector list`, `connector create`/`update` responses) redacts secret fields server-side.
+- `connector list-secret` is the only command that can return connector secret material in plain text; everything else (`connector show`, `connector list`, `connector create`/`update` responses) leaves secret fields out.
 
 ## Global options
 
@@ -517,10 +517,10 @@ Create an Agent Connector.
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--data-connector-type` | String | No |  |  | Connector type, by portal name (case-insensitive): Azure Data Explorer, Database query connector (user), Log Analytics Workspace, Application Insights, MonitorClient, MCP server, EV2, Azure DevOps AI Search, IcM connector, DGrep, Geneva Metrics, S360 connector. For knowledge sources use 'az sre knowledge create'. Set up Outlook, Teams and other managed connectors in the portal. |
-| `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: `https://cluster.kusto.windows.net/database`. |
+| `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: `https://cluster.kusto.windows.net/database`. On update, pass it again, or null for none. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
-| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. |
-| `--identity` | String | No |  |  | 'system' for the agent's system-assigned identity, or a user-assigned identity resource ID. If omitted, no identity is set. |
+| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. On update, this replaces all of them. |
+| `--identity` | String | No |  |  | 'system' for the agent's system-assigned identity, or a user-assigned identity resource ID. On create, leave it out for no identity; on update, pass it again, or null for none. |
 | `--overwrite` | Boolean | No | false | `false`, `true` | Replace an existing connector with the same name instead of failing. |
 | `--file-path` | String | No |  |  | Local file to ingest. For knowledge sources use 'az sre knowledge create'. |
 | `--mcp-endpoint` | String | No |  |  | For Mcp: the MCP server's HTTP endpoint URL. |
@@ -532,7 +532,7 @@ Create an Agent Connector.
 | `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
 | `--oauth-scopes` | String | No |  |  | For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. |
 | `--oauth-client-name` | String | No |  |  | For Mcp with --oauth-dcr: client name to register. Optional. |
-| `--partner-type` | String | No |  |  | For Mcp: the partner integration this server belongs to, for example DynatraceMcp. On update, also pass --data-source and --extended-properties, since the service doesn't return the endpoint or credentials. |
+| `--partner-type` | String | No |  |  | For Mcp: the partner integration this server belongs to, for example DynatraceMcp. |
 
 **Examples**
 
@@ -633,7 +633,7 @@ consentStatus (Consented/PendingConsent) is shown for EntraOAuth-backed Mcp conn
 
 Show a connector with its secrets in plain text.
 
-Unlike 'sre connector show'/'sre connector list', which redact secret fields server-side, this command returns them unredacted. HTTP request and response tracing is disabled for this command, including with --debug. Store the output securely and never commit it. The service only returns secrets to callers with an admin role on the agent; other callers get an authorization error.
+Unlike 'sre connector show' and 'sre connector list', which leave secret fields out, this command prints every secret the service returns. HTTP request and response tracing is disabled for this command, including with --debug. Store the output securely and never commit it. The service only returns secrets to callers with an admin role on the agent; other callers get an authorization error.
 
 **Syntax**
 
@@ -681,6 +681,8 @@ consentStatus is shown for EntraOAuth-backed Mcp connectors.
 
 Update an Agent Connector.
 
+An update sends the whole connector back, and the service never returns a connector's data source or identity, or an MCP connector's endpoint and credentials. So pass --data-source and --identity on every update (null for one the connector doesn't have), and pass all of an MCP connector's --extended-properties. To change a knowledge source, run 'az sre knowledge create' with --overwrite.
+
 **Syntax**
 
 `az sre connector update [--no-wait] [--add <value>] [--set <value>] [--remove <value>] [--force-string {true,t,yes,y,1,false,f,no,n,0}] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--partner-type <value>]`
@@ -696,25 +698,25 @@ Update an Agent Connector.
 | `-n`, `--name`, `--connector-name` | String | Yes |  |  | The name of the AgentConnector |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--data-connector-type` | String | No |  |  | Connector type, by portal name (case-insensitive): Azure Data Explorer, Database query connector (user), Log Analytics Workspace, Application Insights, MonitorClient, MCP server, EV2, Azure DevOps AI Search, IcM connector, DGrep, Geneva Metrics, S360 connector. For knowledge sources use 'az sre knowledge create'. Set up Outlook, Teams and other managed connectors in the portal. |
-| `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: `https://cluster.kusto.windows.net/database`. |
+| `--data-source` | String | No |  |  | Connection string or endpoint. For Kusto, include the database: `https://cluster.kusto.windows.net/database`. On update, pass it again, or null for none. |
 | `--endpoint` | String | No |  |  | Endpoint URL, used by endpoint-based connector types such as Mcp. |
-| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. |
-| `--identity` | String | No |  |  | 'system' for the agent's system-assigned identity, or a user-assigned identity resource ID. If omitted, no identity is set. |
-| `--partner-type` | String | No |  |  | For Mcp: the partner integration this server belongs to, for example DynatraceMcp. On update, also pass --data-source and --extended-properties, since the service doesn't return the endpoint or credentials. |
+| `--extended-properties` | Dictionary | No |  |  | Type-specific settings as JSON or shorthand. On update, this replaces all of them. |
+| `--identity` | String | No |  |  | 'system' for the agent's system-assigned identity, or a user-assigned identity resource ID. On create, leave it out for no identity; on update, pass it again, or null for none. |
+| `--partner-type` | String | No |  |  | For Mcp: the partner integration this server belongs to, for example DynatraceMcp. |
 
 **Examples**
 
-- Point a Kusto connector at a different database
+- Point a Kusto connector that has no identity at a different database
 
   ```bash
   az sre connector update -g myrg --agent-name myagent -n conn-kusto \
-  --data-connector-type "Azure Data Explorer" \
+  --data-source "https://mycluster.westus.kusto.windows.net/otherdb" --identity null
   ```
-- Mark an MCP connector as a Dynatrace integration. The service doesn't return the endpoint or token, so pass them again.
+- Mark an MCP connector as a Dynatrace integration
 
   ```bash
   az sre connector update -g myrg --agent-name myagent -n dynatrace --partner-type DynatraceMcp \
-  --data-source "$DT_MCP_URL" --extended-properties @dynatrace-mcp.json
+  --data-source "$DT_MCP_URL" --identity null --extended-properties "@dynatrace-mcp.json"
   ```
 
 ### `az sre connector wait`
@@ -1084,7 +1086,7 @@ Important: this doesn't clear the portal's "Custom instructions" box (see 'az sr
 
 **Examples**
 
-- Delete an agent's custom instructions
+- Delete a reusable prompt snippet
 
   ```bash
   az sre instructions delete -g myrg --agent-name myagent --name default
@@ -1107,7 +1109,7 @@ Important: these aren't the portal's "Custom instructions" box (see 'az sre inst
 
 **Examples**
 
-- List an agent's custom instructions entries
+- List an agent's reusable prompt snippets
 
   ```bash
   az sre instructions list -g myrg --agent-name myagent
@@ -1131,7 +1133,7 @@ Important: this isn't the portal's "Custom instructions" box (see 'az sre instru
 
 **Examples**
 
-- Show an agent's current custom instructions
+- Show a reusable prompt snippet
 
   ```bash
   az sre instructions show -g myrg --agent-name myagent --name default
@@ -1167,7 +1169,7 @@ Add a knowledge source (file or web page) to an SRE Agent.
 | `--file-path` | String | No |  |  | Local file to ingest. Required for --type file/text. |
 | `--url` | String | No |  |  | Web page URL to ingest. Required for --type webpage. Cannot be combined with --data-source. |
 | `--data-source` | String | No |  |  | Raw --data-source passthrough, for --type repository or any case --file-path/--url don't cover. |
-| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing knowledge source of the same name. |
+| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing knowledge source of the same name. Other connector types are never replaced. |
 
 **Examples**
 
@@ -1779,8 +1781,8 @@ Create or update a custom skill.
 | `--name`, `-n`, `--extension-name` | String | No |  |  | Name of this instance. |
 | `--value` | String | No |  |  | Skill configuration as a JSON document. Alternative to --file-path (specify exactly one of the two). |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
-| `--file-path` | String | No |  |  | Path to a SKILL.md-style file: an optional frontmatter block between '---' lines with 'name:' and 'description:' lines, followed by the skill's Markdown instructions. The frontmatter name is used when --name is omitted. Alternative to --value. |
-| `--tools` | List | No |  |  | Space-separated tool names this skill can use when active. Only used with --file-path; defaults to none. |
+| `--file-path` | String | No |  |  | Path to a SKILL.md-style file: an optional YAML frontmatter block between '---' lines with name, description and tools, followed by the skill's Markdown instructions. The frontmatter name is used when --name is omitted. Alternative to --value. |
+| `--tools` | List | No |  |  | Space-separated tool names this skill can use when active. Only used with --file-path; overrides the SKILL.md frontmatter's 'tools'. Defaults to none. |
 | `--description` | String | No |  |  | Skill description. Only used with --file-path; overrides the SKILL.md frontmatter's 'description:' line if both are given. |
 
 **Examples**
@@ -2245,7 +2247,7 @@ Delete an HTTP trigger.
 
 Call an HTTP trigger now, the same way an external webhook would.
 
-Uses your Azure CLI sign-in for the call, so you need data-plane access to the agent.
+Uses your Azure CLI sign-in for the call, so you need data-plane access to the agent. The call goes only to the agent's own endpoint, and redirects aren't followed.
 
 **Syntax**
 
@@ -2502,8 +2504,7 @@ Install a plugin from a connected marketplace.
 
   ```bash
   az sre plugin install create -g myrg --agent-name myagent --name datadog \
-  --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", \
-  "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}'
+  --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}'
   ```
 
 ### `az sre plugin install delete`
