@@ -32,6 +32,7 @@ from azure.cli.core.azclierror import CLIError, InvalidArgumentValueError, Resou
 from azure.cli.core.extension import DevExtension
 from azure.cli.core.mock import DummyCli
 from azure.core.exceptions import HttpResponseError, ResourceExistsError
+from azure.core.polling.base_polling import OperationFailed
 
 from azext_sre import SreCommandsLoader
 from azext_sre.custom import (
@@ -1505,6 +1506,8 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
         self.filter_error = None
         self.handler_error = None
         self.handler_path = "/api/v2/extendedAgent/incidentHandlers"
+        self.filter_path = "/api/v2/incidentManagement/incidentFilters"
+        self.agent_filter_deletes = []
         for replacement in (
             patch.object(AAZCommand, "_handler", lambda command, command_args: None),
             patch("azext_sre.custom._extension_resource_create", side_effect=self._arm_create),
@@ -1547,6 +1550,10 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
                        missing_ok=False, agent_url=None):
         if method == "GET" and path == self.handler_path:
             return copy.deepcopy(list(self.handlers.values()))
+        if method == "DELETE" and path.startswith(self.filter_path + "/"):
+            self.agent_filter_deletes.append(path.rsplit("/", 1)[-1])
+            self.filters.pop(path.rsplit("/", 1)[-1], None)
+            return {}
         if not path.startswith(self.handler_path + "/"):
             raise ResourceNotFoundError(path)
         name = path.rsplit("/", 1)[-1]
@@ -1579,10 +1586,11 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
             })
 
     @staticmethod
-    def _forbidden():
+    def _forbidden(code=None):
         response = Response()
         response.status_code = 403
-        response._content = b"Forbidden"
+        response._content = (json.dumps({"error": {"code": code, "message": "Denied"}}).encode()
+                             if code else b"Forbidden")
         return HTTPError("Forbidden", response=response)
 
     def test_azure_monitor_criteria_are_sent_and_merged_on_update(self):
@@ -1675,24 +1683,18 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
         self.assertEqual(shown["handlers"], [])
         self.assertIn("plan", self.filters)
 
-    def test_delete_falls_back_to_the_agent_api_when_arm_forbids_it(self):
-        from azext_sre.custom import ResponsePlanDelete
-        self._create(instructions=None)
-        with patch("azext_sre.custom._extension_resource_delete", side_effect=self._forbidden()), \
-             patch("azext_sre.custom._direct_extension_delete", return_value=None) as direct:
-            self._command(ResponsePlanDelete)
-        self.assertEqual(direct.call_args.args[1:], ("agent", "rg", "incidentFilters", "plan"))
-
     def test_delete_does_not_fall_back_on_other_arm_errors(self):
         from azext_sre.custom import ResponsePlanDelete
         self._create(instructions=None)
-        error = self._forbidden()
-        error.response.status_code = 500
-        with patch("azext_sre.custom._extension_resource_delete", side_effect=error), \
-             patch("azext_sre.custom._direct_extension_delete") as direct, \
-             self.assertRaises(HTTPError):
-            self._command(ResponsePlanDelete)
-        direct.assert_not_called()
+        server_error = self._forbidden()
+        server_error.response.status_code = 500
+        for error in (server_error, self._forbidden(), self._forbidden("RequestDisallowedByPolicy")):
+            with self.subTest(status=error.response.status_code, body=error.response.text), \
+                 patch("azext_sre.custom._extension_resource_delete", side_effect=error), \
+                 self.assertRaises(HTTPError):
+                self._command(ResponsePlanDelete)
+        self.assertEqual(self.agent_filter_deletes, [])
+        self.assertIn("plan", self.filters)
 
     def test_icm_plan_requires_an_incident_type_and_sends_the_portal_field(self):
         with patch("azext_sre.custom._require_first_party"):
@@ -1882,6 +1884,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
         command = _bare_command(ResponsePlanCreate, **base, max_investigation_attempts=2)
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._incident_resource_create", return_value={}) as create, \
+             patch("azext_sre.custom._data_plane_request", return_value=[]), \
              patch("azext_sre.custom._extension_resource_list", return_value={"value": []}):
             command._handler(None)
         flt = create.call_args.args[5]
@@ -1978,6 +1981,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
 
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._incident_resource_create", side_effect=fake_create), \
+             patch("azext_sre.custom._data_plane_request", return_value=[]), \
              patch("azext_sre.custom._extension_resource_list", return_value={"value": []}):
             result = command._handler(None)
         self.assertEqual(set(result), {"filter", "handler"})
@@ -1985,32 +1989,37 @@ class IncidentDataPlaneTests(unittest.TestCase):
         self.assertEqual((flt["handlingAgent"], flt["agentMode"], flt["isEnabled"]), ("responder", "review", True))
         self.assertEqual(created[1][1]["incidentFilterId"], "plan")
 
-    def _rejected_create(self, agent, subagent_exists):
+    def _rejected_create(self, agent, subagent_exists, subagent="responder"):
         from azext_sre.custom import ResponsePlanCreate
         command = _bare_command(
             ResponsePlanCreate, agent_name="a", resource_group="rg", extension_name="plan",
-            platform="AzMonitor", subagent="responder", priorities=None, title_contains=None,
+            platform="AzMonitor", subagent=subagent, priorities=None, title_contains=None,
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="review", disabled=None,
             instructions=None, processing_guide=None, overwrite=None)
         show = MagicMock() if subagent_exists else MagicMock(side_effect=ResourceNotFoundError("missing"))
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
-             patch("azext_sre.custom._incident_resource_create",
-                   side_effect=HttpResponseError("The extension configuration is invalid.")), \
+             patch("azext_sre.custom._incident_resource_create", side_effect=self.rejection), \
              patch("azext_sre.custom._cli_invoke", return_value=agent), \
              patch("azext_sre.custom._extension_resource_show", show):
             return command._handler(None)
+
+    @property
+    def rejection(self):
+        return self._http_error(400, '{"error":{"message":"The extension configuration is invalid."}}')
 
     def test_response_plan_rejection_names_missing_subagent(self):
         agent = {"properties": {"incidentManagementConfiguration": {"type": "AzMonitor"}}}
         with self.assertRaisesRegex(CLIError, "Subagent 'responder' doesn't exist") as ctx:
             self._rejected_create(agent, subagent_exists=False)
         self.assertNotIn("incident platform", str(ctx.exception))
+        self.assertIn("The extension configuration is invalid.", str(ctx.exception))
 
     def test_response_plan_rejection_keeps_service_error_when_cause_unknown(self):
         agent = {"properties": {"incidentManagementConfiguration": {"type": "AzMonitor"}}}
-        with self.assertRaisesRegex(HttpResponseError, "configuration is invalid"):
+        with self.assertRaises(HTTPError) as raised:
             self._rejected_create(agent, subagent_exists=True)
+        self.assertEqual(raised.exception.response.status_code, 400)
 
     def test_response_plan_rejects_bad_mode(self):
         from azext_sre.custom import ResponsePlanCreate
@@ -2032,13 +2041,13 @@ class IncidentDataPlaneTests(unittest.TestCase):
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="review", disabled=None,
             instructions=None, processing_guide=None, overwrite=None)
-        service_error = CLIError("Bad Request: The extension configuration is invalid.")
+        service_error = self.rejection
         for config, expect_hint in ((None, True), ({"type": "AzMonitor"}, False)):
             agent = {"properties": {"incidentManagementConfiguration": config}}
             with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
                  patch("azext_sre.custom._incident_resource_create", side_effect=service_error), \
                  patch("azext_sre.custom._cli_invoke", return_value=agent), \
-                 self.assertRaises(CLIError) as raised:
+                 self.assertRaises((CLIError, HTTPError)) as raised:
                 command._handler(None)
             message = str(raised.exception)
             if expect_hint:
@@ -2103,7 +2112,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
                  patch("azext_sre.custom.send_raw_request", side_effect=error):
                 if code == 404 and missing_ok:
                     self.assertIsNone(_data_plane_request(None, "agent", "rg", "GET", "/api/plan",
-                                                         missing_ok=True))
+                                                          missing_ok=True))
                 else:
                     with self.assertRaises(HTTPError):
                         _data_plane_request(None, "agent", "rg", "GET", "/api/plan", missing_ok=missing_ok)
@@ -3151,21 +3160,14 @@ class HttpTriggerInvokeTests(unittest.TestCase):
 
         command = _bare_command(AutomationHttpTriggerInvoke, agent_name="a", resource_group="rg",
                                 extension_name="hook", payload=payload)
-        response = SimpleNamespace(content=b"{}", json=lambda: {"success": True, "threadId": "t1"})
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._extension_resource_show",
                    return_value={"name": "hook", "properties": {"value": value}}), \
-             patch("azext_sre.custom.send_raw_request", return_value=response) as send:
-            return command._handler({}), send
-
-    def test_posts_the_payload_to_the_trigger_url_with_the_agent_audience(self):
-        url = "https://a--1.x.swedencentral.azuresre.ai/api/v1/httptriggers/trigger/hook"
-        result, send = self._invoke({"triggerUrl": url, "triggerEnabled": True}, payload='{"alert": "x"}')
-        self.assertEqual(result["threadId"], "t1")
-        args, kwargs = send.call_args
-        self.assertEqual(args[1:3], ("POST", url))
-        self.assertEqual(kwargs["body"], '{"alert": "x"}')
-        self.assertEqual(kwargs["resource"], "https://azuresre.dev")
+             patch("azext_sre.custom._post_to_agent_endpoint") as post:
+            try:
+                return command._handler({})
+            finally:
+                post.assert_not_called()
 
     def test_refuses_unexpected_hosts_and_bad_payloads(self):
         with self.assertRaisesRegex(CLIError, "unexpected"):
@@ -3214,8 +3216,8 @@ class ExtensionTypeEnumTests(unittest.TestCase):
 
 
 class ExtensionTenantGateTests(unittest.TestCase):
-    """The service rejects every agent extension call from a non-internal
-    tenant. The CLI should say that plainly."""
+    """ARM rejects every agent extension call from a non-internal tenant. The
+    CLI then uses the agent's own API, or says plainly that it has no route."""
 
     _AGENT = {"id": "/subscriptions/x/resourceGroups/rg/providers/Microsoft.App/agents/myagent"}
 
@@ -3283,19 +3285,27 @@ class ExtensionTenantGateTests(unittest.TestCase):
         )
         return HTTPError("400 Client Error", response=response)
 
-    def test_each_extension_operation_explains_the_tenant_gate(self):
+    def test_tenant_gate_is_explained_when_the_agent_api_has_no_route(self):
+        from azext_sre.custom import InternalTenantOnlyError
+
         calls = (
-            (_extension_resource_create, ("subagents", "t", '{"url": "https://github.com/a/b"}'), {"overwrite": True}),
-            (_extension_resource_show, ("subagents", "t"), {}),
-            (_extension_resource_list, ("subagents",), {}),
-            (_extension_resource_delete, ("subagents", "t"), {}),
+            (_extension_resource_create, ("incidentHandlers", "t", "{}")),
+            (_extension_resource_show, ("incidentHandlers", "t")),
+            (_extension_resource_list, ("incidentHandlers",)),
+            (_extension_resource_delete, ("incidentHandlers", "t")),
+            (_extension_resource_list, ("globalSettings",)),
+            (_extension_resource_delete, ("globalSettings", "t")),
         )
-        for func, args, kwargs in calls:
-            with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
-                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()):
-                with self.assertRaises(CLIError) as ctx:
-                    func(None, "myagent", "rg", *args, **kwargs)
-            self.assertIn("This tenant can't use 'subagents' yet", str(ctx.exception))
+        for func, args in calls:
+            with self.subTest(operation=func.__name__, extension_type=args[0]), \
+                 patch.dict("os.environ", {"AZSRE_EXTENSION_ROUTE": "arm"}), \
+                 patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
+                 patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
+                 patch("azext_sre.custom._data_plane_request") as dp:
+                with self.assertRaises(InternalTenantOnlyError) as ctx:
+                    func(None, "myagent", "rg", *args)
+                self.assertIn(f"'{args[0]}'", str(ctx.exception))
+                dp.assert_not_called()
 
     def test_tools_fall_back_to_the_agent_api(self):
         envelope = {"name": "t", "type": "ExtendedAgentTool", "properties": {"type": "LinkTool"}}
@@ -3343,18 +3353,20 @@ class ExtensionTenantGateTests(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(result))
 
     def test_triggers_plugins_and_settings_use_their_own_routes(self):
+        plugin = json.dumps({"marketplaceName": "m", "pluginName": "p",
+                             "source": {"type": "relative", "repo": "o/r", "url": "plugins/p"}})
         cases = (
-            ("httpTriggers", "/api/v2/extendedAgent/httpTriggers/t", "HttpTrigger"),
-            ("pluginMarketplaces", "/api/v2/extendedAgent/pluginMarketplaces/t", "Marketplace"),
-            ("pluginInstallations", "/api/v2/extendedAgent/pluginInstallations/t", "PluginInstallation"),
-            ("globalSettings", "/api/v2/extendedAgent/globalSettings/t", "GlobalSettings"),
+            ("httpTriggers", "/api/v2/extendedAgent/httpTriggers/t", "HttpTrigger", "{}"),
+            ("pluginMarketplaces", "/api/v2/extendedAgent/pluginMarketplaces/t", "Marketplace", "{}"),
+            ("pluginInstallations", "/api/v2/extendedAgent/pluginInstallations/t", "PluginInstallation", plugin),
+            ("globalSettings", "/api/v2/extendedAgent/globalSettings/t", "GlobalSettings", "{}"),
         )
-        for extension_type, path, envelope_type in cases:
+        for extension_type, path, envelope_type, value in cases:
             with patch("azext_sre.custom._cli_invoke", return_value=self._AGENT), \
                  patch("azext_sre.custom._arm_request", side_effect=self._gate_error()), \
                  patch("azext_sre.custom._encode_extension_value"), \
                  patch("azext_sre.custom._data_plane_request", return_value={}) as dp:
-                _extension_resource_create(None, "myagent", "rg", extension_type, "t", "{}", overwrite=True)
+                _extension_resource_create(None, "myagent", "rg", extension_type, "t", value, overwrite=True)
             self.assertEqual(dp.call_args[0][3:5], ("PUT", path))
             self.assertEqual(dp.call_args.kwargs["body"]["type"], envelope_type)
 
@@ -4591,7 +4603,7 @@ class GeneratedCommandNamingTests(unittest.TestCase):
         )
         self.assertEqual(packages, ["sre"])
         for base in (IdentityAssign, SupportedAgentModelList):
-            generated = base.__mro__[1]
+            generated = next(cls for cls in base.__mro__[1:] if cls.__module__.startswith("azext_sre.aaz."))
             self.assertTrue(generated.__module__.startswith("azext_sre.aaz.latest.sre."))
             self.assertEqual(generated.AZ_NAME, base.AZ_NAME)
 
@@ -4774,7 +4786,7 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
         pass
 
     def test_agent_icm_platform_blocked_outside_microsoft_tenants(self):
-        config = SimpleNamespace(type="Icm")
+        config = {"type": "Icm"}
         for tenant, blocked in (
                 ("e0a62563-74af-4081-8ae3-fb94b692e394", True),
                 (self.MICROSOFT_CORP_TENANT_ID, False),
@@ -4791,7 +4803,7 @@ class GenevaMetricsTenantGateTests(unittest.TestCase):
     def test_agent_non_icm_platform_is_never_blocked(self):
         command = _bare_command(
             self._TestIcmPlatformGate,
-            incident_management_configuration=SimpleNamespace(type="PagerDuty"))
+            incident_management_configuration={"type": "PagerDuty"})
         with patch("azext_sre.custom._resolve_signed_in_tenant_id", lambda cli_ctx: "e0a62563-74af-4081-8ae3-fb94b692e394"):
             command.pre_operations()
 
@@ -5329,13 +5341,11 @@ class SkillCreateFilePathTests(unittest.TestCase):
             with self.assertRaisesRegex(CLIError, "valid skill name"):
                 command._prepare_value()
 
-    def test_arm_extension_paths_quote_the_name(self):
+    def test_arm_extension_paths_keep_special_characters_in_the_name(self):
         from azext_sre.custom import _arm_extension_resource_id
 
-        self.assertEqual(_arm_extension_resource_id("/agents/a", "skills", "../tools/victim"),
-                         "/agents/a/skills/..%2Ftools%2Fvictim")
-        with self.assertRaises(CLIError):
-            _arm_extension_resource_id("/agents/a", "skills", "..")
+        self.assertEqual(_arm_extension_resource_id("/agents/a", "skills", "a b?#"),
+                         "/agents/a/skills/a%20b%3F%23")
 
     def test_prepare_value_both_file_path_and_value_raises(self):
         path = self._write("---\ndescription: D\n---\nBody\n")
@@ -6012,6 +6022,15 @@ class _FakePolling:
             raise self.error
 
 
+def _service_reported_failure_error(message):
+    """The error chain AAZ raises when the service reports the operation Failed."""
+    polling_error = HttpResponseError(message="Operation failed or canceled")
+    polling_error.__cause__ = OperationFailed("Operation failed or canceled")
+    error = CLIError(message)
+    error.__context__ = polling_error
+    return error
+
+
 class AutoIdentityCleanupTests(unittest.TestCase):
     """The identity auto-created for 'agent create' is deleted again if the
     agent itself is never created."""
@@ -6055,7 +6074,7 @@ class AutoIdentityCleanupTests(unittest.TestCase):
         self._assert_identity_deleted(command)
 
     def test_lro_failure_deletes_the_identity(self):
-        command = self._command(polling=_FakePolling(CLIError("provisioning failed")))
+        command = self._command(polling=_FakePolling(_service_reported_failure_error("provisioning failed")))
         with self.assertRaisesRegex(CLIError, "provisioning failed"):
             self._drive(command)
         self._assert_identity_deleted(command)
@@ -6086,10 +6105,11 @@ class AutoIdentityCleanupTests(unittest.TestCase):
         command.arm.assert_not_called()
 
     def test_cleanup_failure_warns_and_keeps_the_original_error(self):
-        command = self._command(polling=_FakePolling(CLIError("provisioning failed")))
+        command = self._command(polling=_FakePolling(_service_reported_failure_error("provisioning failed")))
         with self.assertRaisesRegex(CLIError, "provisioning failed"):
             self._drive(command, arm_side_effect=CLIError("delete failed"))
         message = command.log.warning.call_args[0][0] % command.log.warning.call_args[0][1:]
+        self.assertIn("could not be deleted (delete failed)", message)
         self.assertIn("az identity delete --ids " + self.IDENTITY_ID, message)
 
 

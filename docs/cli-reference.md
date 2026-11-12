@@ -397,7 +397,7 @@ Stop a running SRE Agent.
 
 Update an SRE Agent.
 
-PagerDuty and ServiceNow set the same agent property as the portal's Incidents > Connect an incident platform workflow, not the separate Connector Gateway used by Jira, Slack and SharePoint. The portal also saves which PagerDuty services or ServiceNow assignment group to index; set that in the portal. --connection-key is the PagerDuty REST API access key; --obo-user is the identity the agent acts under when resolving or commenting on incidents. ServiceNow uses Basic Auth: set --connection-url to the instance URL and --connection-key to the credentials. Azure Monitor must also be connected before a response plan can use it. A new agent has no incident platform set.
+PagerDuty and ServiceNow set the same agent property as the portal's Incidents > Connect an incident platform workflow, not the separate Connector Gateway used by Jira, Slack and SharePoint. The portal also saves which PagerDuty services or ServiceNow assignment group to index; set that in the portal. --connection-key is the PagerDuty REST API access key; --obo-user is the identity the agent acts under when resolving or commenting on incidents. ServiceNow uses Basic Auth: set --connection-url to the instance URL and --connection-key to the credentials. The connection key is a secret. Typed on the command line, it shows up in --debug output and shell history, so put the configuration in a JSON file and pass it with @file instead, for example a pagerduty.json holding `{"type": "PagerDuty", "connectionName": "pagerduty", "connectionKey": "<api-key>", "oboUser": "oncall@contoso.com"}`. Azure Monitor must also be connected before a response plan can use it. A new agent has no incident platform set.
 
 **Syntax**
 
@@ -437,28 +437,28 @@ PagerDuty and ServiceNow set the same agent property as the portal's Incidents >
   az sre agent update --name myagent --resource-group myrg \
   --incident-management-configuration "{type:AzMonitor,connection-name:azmonitor}"
   ```
-- Connect PagerDuty as the incident platform
+- Connect PagerDuty as the incident platform, reading the configuration and its key from a file
 
   ```bash
   az sre agent update --name myagent --resource-group myrg \
-  --incident-management-configuration "{type:PagerDuty,connection-name:pagerduty,connection-key:<api-key>,obo-user:oncall@contoso.com}"
+  --incident-management-configuration "@pagerduty.json"
   ```
 - Connect ServiceNow as the incident platform with Basic Auth
 
   ```bash
   az sre agent update --name myagent --resource-group myrg \
-  --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:https://contoso.service-now.com,connection-key:<credentials>}"
+  --incident-management-configuration "{type:ServiceNow,connection-name:servicenow,connection-url:'https://contoso.service-now.com',connection-key:<credentials>}"
   ```
 - Turn on preview feature flags from a file
 
   ```bash
   az sre agent update --name myagent --resource-group myrg \
-  --experimental-settings @experimental.json
+  --experimental-settings "@experimental.json"
   ```
 
 ### `az sre agent wait`
 
-Place the CLI in a waiting state until a condition is met.
+Wait for an SRE Agent to reach a desired state.
 
 **Syntax**
 
@@ -471,7 +471,7 @@ Place the CLI in a waiting state until a condition is met.
 
 **Examples**
 
-- Wait until the agent finishes provisioning
+- Wait until an agent created with --no-wait finishes provisioning
 
   ```bash
   az sre agent wait -g myrg --agent-name myagent --created
@@ -961,6 +961,12 @@ Remove a managed identity from an agent.
   ```bash
   az sre identity remove --agent-name myagent --resource-group myrg --system-assigned
   ```
+- Remove one user-assigned identity
+
+  ```bash
+  az sre identity remove --agent-name myagent --resource-group myrg \
+  --user-assigned "/subscriptions/.../resourceGroups/myrg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/myid"
+  ```
 
 ### `az sre identity show`
 
@@ -1080,7 +1086,7 @@ Important: this doesn't clear the portal's "Custom instructions" box (see 'az sr
 
 **Examples**
 
-- Delete an agent's custom instructions
+- Delete a reusable prompt snippet
 
   ```bash
   az sre instructions delete -g myrg --agent-name myagent --name default
@@ -1103,7 +1109,7 @@ Important: these aren't the portal's "Custom instructions" box (see 'az sre inst
 
 **Examples**
 
-- List an agent's custom instructions entries
+- List an agent's reusable prompt snippets
 
   ```bash
   az sre instructions list -g myrg --agent-name myagent
@@ -1127,7 +1133,7 @@ Important: this isn't the portal's "Custom instructions" box (see 'az sre instru
 
 **Examples**
 
-- Show an agent's current custom instructions
+- Show a reusable prompt snippet
 
   ```bash
   az sre instructions show -g myrg --agent-name myagent --name default
@@ -1569,7 +1575,7 @@ Routes matching incidents to a subagent. Connect the incident platform and creat
 | `--processing-guide` | List | No |  |  | Quoted step-by-step guidance for the subagent, one value per step. |
 | `--mode` | String | No | autonomous |  | Agent autonomy: autonomous (portal default) or review (agent proposes, you approve). |
 | `--disabled` | Boolean | No |  | `false`, `true` | Create the plan turned off. |
-| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing response plan. |
+| `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing response plan, or taking over instructions with the plan's name that aren't linked to a plan. |
 
 **Examples**
 
@@ -1710,7 +1716,7 @@ Show a response plan and its instructions.
 
 Update a response plan. Only the flags you pass change.
 
-Passing a list flag (for example --priority) replaces that whole list. Use 'enable' or 'disable' to turn a plan on or off.
+Passing a list flag (for example --priority) replaces that whole list. Pass an empty value, such as --title-contains="" or --instructions="", to remove a criterion or the instructions. Use 'enable' or 'disable' to turn a plan on or off.
 
 **Syntax**
 
@@ -1753,6 +1759,12 @@ Passing a list flag (for example --priority) replaces that whole list. Use 'enab
   az sre response-plan update -g myrg --agent-name myagent -n sev1-api \
   --subagent other-responder --priority Sev0 Sev1
   ```
+- Match every severity again and drop the title filter
+
+  ```bash
+  az sre response-plan update -g myrg --agent-name myagent -n sev1-api \
+  --priority="" --title-contains=""
+  ```
 
 ## `az sre skill`
 
@@ -1782,8 +1794,8 @@ Create or update a custom skill.
 | `--name`, `-n`, `--extension-name` | String | No |  |  | Name of this instance. |
 | `--value` | String | No |  |  | Skill configuration as a JSON document. Alternative to --file-path (specify exactly one of the two). |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
-| `--file-path` | String | No |  |  | Path to a SKILL.md-style file: an optional frontmatter block between '---' lines with 'name:' and 'description:' lines, followed by the skill's Markdown instructions. The frontmatter name is used when --name is omitted. Alternative to --value. |
-| `--tools` | List | No |  |  | Space-separated tool names this skill can use when active. Only used with --file-path; defaults to none. |
+| `--file-path` | String | No |  |  | Path to a SKILL.md-style file: an optional YAML frontmatter block between '---' lines with name, description and tools, followed by the skill's Markdown instructions. The frontmatter name is used when --name is omitted. Alternative to --value. |
+| `--tools` | List | No |  |  | Space-separated tool names this skill can use when active. Only used with --file-path; overrides the SKILL.md frontmatter's 'tools'. Defaults to none. |
 | `--description` | String | No |  |  | Skill description. Only used with --file-path; overrides the SKILL.md frontmatter's 'description:' line if both are given. |
 
 **Examples**
@@ -2248,7 +2260,7 @@ Delete an HTTP trigger.
 
 Call an HTTP trigger now, the same way an external webhook would.
 
-Uses your Azure CLI sign-in for the call, so you need data-plane access to the agent.
+Uses your Azure CLI sign-in for the call, so you need data-plane access to the agent. The call goes only to the agent's own endpoint, and redirects aren't followed.
 
 **Syntax**
 
@@ -2505,8 +2517,7 @@ Install a plugin from a connected marketplace.
 
   ```bash
   az sre plugin install create -g myrg --agent-name myagent --name datadog \
-  --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", \
-  "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}'
+  --value '{"marketplaceName": "contoso-plugins", "pluginName": "datadog", "source": {"type": "relative", "repo": "contoso/sre-plugins", "url": "plugins/datadog"}}'
   ```
 
 ### `az sre plugin install delete`

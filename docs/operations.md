@@ -31,6 +31,23 @@ az sre identity remove -g myrg --agent-name myagent --system-assigned
 `identity remove` is correctly rejected by the server if it would leave the
 agent with zero identities (`ManagedIdentityRequired`).
 
+`identity assign` and `identity remove` send a PATCH that carries only the
+`identity` block, so the rest of the agent (App Insights link, incident
+platform and its key, unit limit, feature flags, networking) is left as it
+is. A removed user-assigned identity is sent as `null`; when none remain, the
+`type` alone drops them, as `az vm identity remove` does. The identity block is
+computed by the extension, not by the generated merge: in azure-cli-core 2.92
+that merge removes every user-assigned identity when `identity remove
+--user-assigned` names just one. Both commands need `--system-assigned`,
+`--user-assigned` or both, and `identity remove` fails before sending anything
+if a named identity isn't on the agent. The PATCH was verified offline against
+the ARM PATCH rules, not yet against the live service.
+
+`agent wait`, `identity wait` and `connector wait` fail with
+"Wait operation timed-out after N seconds" when `--timeout` passes. Earlier
+they printed `{}` and exited 0, because azure-cli-core returns the timeout
+error instead of raising it.
+
 **Default when neither `--mi-system-assigned` nor `--mi-user-assigned` is
 passed to `agent create`**: matches the Azure Portal's own default by
 auto-creating a new `Microsoft.ManagedIdentity/userAssignedIdentities`
@@ -41,6 +58,22 @@ confirmed against the portal's own ARM template
 `--mi-system-assigned`/`--mi-user-assigned` in `--help`, not just a runtime
 warning — found during a help-only live walkthrough of the CLI where this
 side effect was discoverable only after running the command.
+
+`agent create` fails with "already exists" if the agent name is taken, before
+it creates an identity or sends anything else. The create is a PUT, which
+replaces the agent: it would attach a new identity in place of the old one
+and clear settings the PUT leaves out, such as the App Insights link and the
+unit limit. Use `agent update` to change an existing agent. If the existing
+agent is Failed or Canceled, the error also offers deleting it first, since
+an agent left by a create whose identity was rolled back can't be repaired
+with `agent update`. If the agent create fails, the identity made for it is
+deleted only when the service rejected the request or reported the operation
+Failed or Canceled. After any other failure (a status poll error, or a 404
+when reading the agent right after success) the agent may exist and use the
+identity, so the command keeps it and says whether the agent exists. If
+`--experimental-settings` or `--monthly-unit-limit` can't be applied after the
+agent is created, the error says the agent was created and to retry with
+`agent update`.
 
 ### `agent create`/`agent update` -- Properties/Identity args live-verification
 
@@ -58,9 +91,9 @@ inspection). Status:
 | `--upgrade-channel` | Live-verified | `Preview`/`Stable` both accepted. |
 | `--action-configuration` | Live-verified; one real enum/server mismatch found, now rejected client-side | `identity` must be the literal string `"system"` (not a resource ID) to reference the agent's own system-assigned identity, or a user-assigned identity's resource ID. **The generated `mode` enum (from Swagger) lists `Autonomous`/`ReadOnly`/`Review`, but the live service only accepts `Autonomous`/`Review` -- `ReadOnly` is rejected with `(InvalidActionMode)`.** `agent create`/`agent update` drop `ReadOnly` from the `mode` choices (`_ActionModeArgMixin` in `custom.py`; generated code untouched), so it fails while arguments are parsed, with an error naming the supported values -- before `agent create` auto-creates a managed identity or anything is sent. Raw generic updates (`--set properties.actionConfiguration.mode=...`) are not checked client-side. Remove the mixin if the service starts accepting `ReadOnly`. |
 | `--knowledge-graph-configuration` | Live-verified | Same `identity: "system"` convention as `--action-configuration`. |
-| `--log-configuration` | Live-verified, with a real identity-assign interaction bug found | `applicationInsightsConfiguration.connectionString` is write-only (never echoed back on `agent show`), same pattern as connector `extendedProperties`/`dataSource`. `agent update` and `network update` handle this: when the agent already has an App Insights link and you don't pass `--log-configuration`, they send a PATCH without `logConfiguration`, so the existing link is kept (a PUT that omits it would clear the link). **Known gotcha**: if an agent has `--log-configuration` set, a subsequent `sre identity assign`/`sre identity remove` call will fail with `(InvalidApplicationInsightsConfiguration) The AppId and ConnectionString fields must be provided together` -- these are generated GET-merge-PUT commands, and the GET can never recover the write-only `connectionString`, so the merged PUT re-submits `appId` alone. Not fixable at the CLI layer without either (a) silently dropping the user's existing log configuration as a side effect of an unrelated identity change (worse), or (b) a service-side change. **Workaround**: re-apply `--log-configuration` with the same `app-id`/`connection-string` immediately after any `identity assign`/`identity remove` call on an agent that has one configured. The same risk likely applies to `--incident-management-configuration`'s `connection-key` (also a write-only/password field), though not independently reproduced. |
+| `--log-configuration` | Live-verified, with a real identity-assign interaction bug found | `applicationInsightsConfiguration.connectionString` is write-only (never echoed back on `agent show`), same pattern as connector `extendedProperties`/`dataSource`. `agent update` and `network update` handle this: when the agent already has an App Insights link and you don't pass `--log-configuration`, they send a PATCH without `logConfiguration`, so the existing link is kept (a PUT that omits it would clear the link). Because a PATCH merges, `agent update` adds `null` for whatever the update removed (a property set to `null`, a `--remove`d property, a field missing from a replaced object), so it removes what a PUT would, and `--tags null` sends an empty tag map. Whether the service's PATCH merges or replaces `tags` hasn't been checked live. `sre identity assign`/`sre identity remove` used to fail on such an agent with `(InvalidApplicationInsightsConfiguration) The AppId and ConnectionString fields must be provided together` (live-recorded): they were generated GET-merge-PUT commands, and the GET can never recover the write-only `connectionString`, so the merged PUT re-submitted `appId` alone. They now PATCH only the `identity` block (see the identity section above), so the link isn't sent at all; no workaround is needed. A plain `agent update` PUT (an agent without App Insights) still re-sends `incidentManagementConfiguration` without the write-only `connection-key`; whether the service then clears the key hasn't been checked live. The connection string and the connection key are kept out of `--debug` output and `az.log`: the `agent create`/`agent update` write is sent with HTTP trace logging off, including retries. Typed on the command line, they still show up in the `--debug` argument echo and shell history, so the commands warn; pass the configuration as `@file` instead. |
 | `--incident-management-configuration` | Live-verified, with a real validation message found | `connection-url` must be omitted for production IcM connections (it's auto-wired via the Agent Space proxy); if set for testing it must be an `https://*.microsofticm.com` URL -- any other host is rejected with `(InvalidIcmConnectionUrl)` and a clear, actionable error message. |
-| `--experimental-settings` | Live-verified | Preview feature flags (`properties.experimentalSettings`), e.g. `{"EnableWorkspaceTools": true}`. Not in the generated schema, so the CLI applies it with a PATCH (after provisioning on `create`, which therefore rejects `--no-wait`). PATCH merges keys into the existing map; a PUT carrying the property would replace it and drop service-set flags such as `EnableConnectorsV2`. |
+| `--experimental-settings` | Live-verified | Preview feature flags (`properties.experimentalSettings`), e.g. `{"EnableWorkspaceTools": true}`. Not in the generated schema, so the CLI applies it with a PATCH (after provisioning on `create`, which therefore rejects `--no-wait`). PATCH merges keys into the existing map; a PUT carrying the property would replace it and drop service-set flags such as `EnableConnectorsV2`. `agent show` and `agent update` add `experimentalSettings` and `monthlyAgentUnitLimit` to their output from the service's response, since the generated schema would drop them. |
 | `--agent-identity` | Not independently tested | Requires `initial-sponsor-group-id`, a real tenant-specific AAD "sponsor group" GUID used for agent-identity/Teams-user provisioning -- out of scope without guidance from the SRE Agent team on which group is valid to use in this tenant. |
 
 ## RBAC
@@ -754,7 +787,7 @@ hatch: every extension type now has a dedicated front-door noun (`tool`,
 scheduled-task`/`http-trigger`, `response-plan`). The one remaining
 generic command group, `az sre managed-resource`, is unrelated RBAC
 plumbing, not an extension-type front door. Status as of the last
-live-verification pass (12 of 15 extension types confirmed live):
+live-verification pass (13 of 15 extension types confirmed live):
 
 | Extension type | Confirmed shape | Status |
 | --- | --- | --- |
@@ -764,12 +797,27 @@ live-verification pass (12 of 15 extension types confirmed live):
 | `tools` (`tool`), `skills` (`skill`), `hooks` (`hook`), `repositories` (`repo connect`) | Confirmed | Live-verified end to end (PUT + GET round-trip against a real agent) |
 | `incidentFilters` (`response-plan`), `incidentHandlers` (`response-plan`) | Filter: `{name,type:"IncidentFilter",properties:{...}}`; handler: flat JSON with `id` | Filter operations use ARM, including enable/disable; linked handler operations use the agent's v2 API because the deployed ARM handler proxy returns 404. Read back both halves when verifying a plan; configuration persistence alone does not prove real alert ingestion. |
 | `githubAuths`, `azureDevOpsAuths` (both wired up for you by `repo connect`) | Shape-confirmed from authoritative source | Live-create rejected by real credential/token validation on the service side, not a shape defect |
-| `subagents` | No model found | Believed server-managed / Agent-Canvas-only, not CLI-creatable |
+| `subagents` (`subagent`) | `{"instructions": "<at least 50 characters>", "handoffDescription": "<string>"}` plus optional `tools`/`mcpTools`/`commonTools`/`allowedSkills`/`allowParallelToolCalls`/`hooks` | Create, show, list and delete live-verified through ARM (2026-11-05). On tenants that ARM refuses, the CLI uses the agent's `/api/v2/extendedAgent/agents` route; create, show and list on that route have been used live, delete not yet |
 
 A universal constraint applies to every extension type: the decoded
 `--value` must be a JSON **object** at the root. A bare JSON array is
 always rejected with `"request body contains an invalid or unrecognized
 property"`.
+
+Every extension name goes into the request URL, so the CLI refuses a name
+that is empty, only dots, or contains `/`, `\` or control characters before
+it sends anything. On the agent's own API an empty name or `.` would address
+the whole collection.
+
+### Credentials in tool and plugin values
+
+A plugin marketplace's `credentials.pat`, an HttpClientTool's auth headers
+(such as `Authorization` or an API key) and a plugin install's
+`source.credentials.pat` are secrets. `show`, `list` and `create` for `tool`,
+`plugin marketplace` and `plugin install` print them as `******` and keep the
+service's replies out of `--debug` and the Azure CLI log file. Don't paste
+that output back as `--value`: `create` refuses a value that still has
+`******` in a credential field, so the mask can't replace the real secret.
 
 ### Non-Microsoft tenants
 
@@ -778,15 +826,17 @@ non-Microsoft tenants with "This feature is restricted to internal tenants
 only". When that happens, these commands retry on the agent's own API, the
 same one the Azure SRE portal uses:
 
-`tool`, `skill`, `hook`, `instructions`, `automation scheduled-task`,
+`tool`, `skill`, `hook`, `instructions`, `subagent`, `automation scheduled-task`,
 `automation http-trigger`, `plugin marketplace`, `plugin install`,
 `agent settings`, `response-plan`, `repo connect` and its GitHub / Azure DevOps
-credentials.
+credentials. On that API, sub-agents are `agents`
+(`/api/v2/extendedAgent/agents`).
 
 Changing anything through the agent's API needs the **SRE Agent Author** or
 **SRE Agent Administrator** role on the agent. `agent settings` can be shown and
-updated but not listed or deleted this way. Other types (for example
-`subagents`) still show a plain "not available for this tenant" message.
+updated but not listed or deleted this way. A request the agent's API has no
+route for fails with a message that ARM refused the tenant and points to the
+Azure SRE Agent portal.
 
 The CLI asks the agent once (`GET /api/v1/feature/status`) whether it is a
 Microsoft first-party agent, and remembers the answer for 24 hours in
@@ -1213,7 +1263,11 @@ Noun-specific commands include:
   `isEnabled` field on scheduled tasks.
 - `az sre automation http-trigger create/show/list/delete/invoke` -- run the
   agent from an inbound webhook call. `invoke` POSTs to the trigger's
-  `triggerUrl` with your Azure CLI token, which is handy for testing.
+  `triggerUrl` with your Azure CLI token, which is handy for testing. The
+  token goes only to the agent's own endpoint: a `triggerUrl` on another host
+  is refused, and a redirect fails the command instead of being followed. If
+  the trigger answers with something other than JSON, `invoke` prints the
+  status code and body instead of failing, because the trigger has already run.
 - `az sre response-plan create/show/list/delete/enable/disable` -- match
   incoming incidents (by platform/title/team/etc.) and route matches to
   a handling agent (portal: Incidents > "Triggers & response plans", a
@@ -1253,6 +1307,33 @@ before anything is saved. If the instructions write fails after the filter
 was saved, the command fails and names the saved filter fields; re-run it
 with only `--instructions` or `--processing-guide` to retry.
 
+`--instructions` and `--processing-guide` change every handler linked to the
+plan and keep the handler's other fields, such as `tools` set in the portal.
+`create --overwrite` does the same. A plan without instructions gets a new
+handler whose `id` is the plan name. If a handler with that `id` belongs to
+another plan, or the agent has no handler API (it answers with a web page),
+`create` and `update` fail before anything is saved. If a handler with that
+`id` isn't linked to any plan (its `incidentFilterId` is missing, null or
+empty), `create --overwrite` and `update` take it over: they link it to the
+plan, apply the new fields, keep its other fields and warn. `create` without
+`--overwrite` fails before anything is saved. Once linked, `delete` removes
+it. An empty value, such as `--title-contains=""` or `--instructions=""`,
+removes that criterion or clears the instructions. Write it with `=`:
+PowerShell drops a separate `""` argument.
+
+`response-plan delete` deletes the filter first and the linked handlers after
+it, so a failure part-way never leaves an active plan without its
+instructions; running the delete again removes leftover handlers. Until then,
+a `create` with the same name and no `--instructions` or `--processing-guide`
+warns that the new plan uses the leftover handlers. When ARM
+refuses the filter delete with `AuthorizationFailed` (SRE Agent Administrator
+has the agent's delete permission but not the ARM delete action), the CLI
+warns and deletes the filter through the agent's own API. Any other ARM
+refusal, such as Azure Policy (`RequestDisallowedByPolicy`) or a deny
+assignment, fails the command. If the agent's API doesn't delete the plan
+either, including a 404 for a plan ARM still lists, the command fails and
+shows both errors.
+
 Earlier filter ARM requests returned "The extension configuration is invalid".
 Live testing showed the filter ARM routes work. The failures came from agents with
 no incident platform configured, or a `handlingAgent` that did not exist, with
@@ -1267,27 +1348,20 @@ Configure `incidentManagementConfiguration.type` to match the filter's
 Azure Monitor, so run
 `az sre agent update --incident-management-configuration '{type:AzMonitor,connection-name:azmonitor}'`
 before creating an Azure Monitor plan. For Azure Monitor, PagerDuty, and ServiceNow,
-set `handlingAgent` to an existing subagent name. When the service rejects
-a plan, `response-plan create` checks both and names the one that failed. The plural
+set `handlingAgent` to an existing subagent name, or `meta_agent` for the main
+agent. When the service rejects a plan's settings (HTTP 400),
+`response-plan create` checks both, names the one that failed and adds the
+service's own message. Permission and server errors are shown unchanged. The plural
 `handlingAgents` field is IcM-specific. Both create commands refuse to
 replace existing resources unless `--overwrite` is supplied.
 Creating and reading configuration does not prove that a real alert has
 triggered an investigation; that requires a separate incident-flow test.
 
-**Intentionally not wrapped (yet):**
-- `subagents` -- **confirmed not buildable this way**: the portal's real
-  "Create a custom agent" dialog bypasses the ARM extensions proxy
-  entirely. Switching its UI to YAML view shows it PUTs a raw
-  `kubectl apply`-style YAML document (`kind: AgentConfiguration`,
-  snake_case fields like `system_prompt`/`agent_type`) directly to
-  `sreagent-runtime`'s `Agent.Web` `PUT api/v1/extendedAgent/apply` --
-  a data-plane-only endpoint this ARM-only CLI never reaches. A live
-  test confirmed `az sre extension create --extension-type subagents`
-  *does* reach the data plane (via the ARM-proxied `ExtendedAgentView`
-  v2 route), but is rejected -- consistent with that being the wrong,
-  unsupported schema for subagent creation. Use the portal or `srectl`
-  to create subagents instead; this is permanently out of scope for
-  `az sre automation`, not merely deferred.
+Sub-agents have their own group, `az sre subagent create/show/list/delete`.
+It sends the JSON shape that `--value` describes, through ARM or, on tenants
+that ARM refuses, the agent's `/api/v2/extendedAgent/agents` route. The
+portal's "Create a custom agent" dialog uses a YAML document and
+`PUT /api/v1/extendedAgent/apply` instead.
 
 **Confirmed out of scope entirely (not ARM resources):** the portal's
 Release triggers, S360 triggers, and Incident Retrospective Response
@@ -1367,6 +1441,10 @@ az sre endpoint show -g myrg -n myagent
 az sre usage list -g myrg -n myagent
 az sre agent list-models -l eastus2
 ```
+
+`usage list` returns the usage items as a list and follows `nextLink`, so
+`-o table` shows them. Its `usages` and `dailyusages` routes aren't in the
+2026-01-01 API specification, and their item shape hasn't been checked live.
 
 `endpoint show` saves the endpoint to `~/.azure/sreAgentConnections.json` for
 data-plane tools, keyed `<subscription-id>/<resource-group>/<agent-name>`, so

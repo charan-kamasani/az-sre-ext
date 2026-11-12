@@ -43,6 +43,20 @@ az sre network show -g myrg --agent-name myagent --query sandboxConfiguration > 
 az sre network update -g myrg --agent-name myagent --sandbox-configuration @sandbox.json
 ```
 
+Because fields set to `null` are ignored, `network update` can't clear a
+setting such as an HTTP proxy or the VNet subnet. A `--vnet-configuration` or
+`--sandbox-configuration` value that sets nothing once nulls are dropped (for
+example `"{egress:{http-proxy:null}}"` or `"{}"`) fails before anything is sent,
+instead of sending an empty PATCH and exiting 0. An empty list does count: it
+replaces the stored list.
+
+Proxy URLs can carry credentials, so `network update` keeps its request and
+response bodies out of `--debug` output and `az.log`. A value typed on the
+command line still shows up in the `--debug` argument echo and shell history,
+so the command warns when a proxy URL with credentials was typed inline; pass
+`--sandbox-configuration @file` instead. `network show` prints proxy URLs as
+stored.
+
 ## Configure VNet injection
 
 Use a dedicated subnet prepared for this agent, delegated to

@@ -103,17 +103,26 @@ def connector_show_table_format(result):
     return _connector_row(result)
 
 
+def _priority_text(priorities):
+    """IcM stores priorities as numbers, and ARM may echo an unset list as null."""
+    if isinstance(priorities, list):
+        return ", ".join(str(p) for p in priorities if p is not None) or "All"
+    return str(priorities) if priorities not in (None, "") else "All"
+
+
 def response_plan_list_table_format(result):
     """Curated columns for 'sre response-plan list' -o table (mirrors the portal grid)."""
     rows = []
     for item in result:
-        props = item.get("properties") or {} if isinstance(item, dict) else {}
+        item = item if isinstance(item, dict) else {}
+        props = item.get("properties")
+        props = props if isinstance(props, dict) else {}
         rows.append(OrderedDict([
             ("Name", item.get("name")),
             ("Enabled", props.get("isEnabled")),
             ("Platform", props.get("incidentPlatform")),
             ("Subagent", props.get("handlingAgent")),
-            ("Priority", ", ".join(props.get("priorities") or []) or "All"),
+            ("Priority", _priority_text(props.get("priorities"))),
             ("Mode", props.get("agentMode")),
         ]))
     return rows
