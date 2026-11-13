@@ -4646,7 +4646,10 @@ def _validate_common_prompts_shape(parsed):
 # "Configured" const (lines 32-37) -- the control-plane team's own test
 # payload that is base64-encoded, PUT, decoded server-side, and asserted
 # byte-for-byte equal on GET/list. All fields are optional (the test also
-# exercises "{}" as valid), so we only type-check fields if present.
+# exercises "{}" as valid), so we only type-check fields that are set. The
+# service returns null for unset ones, such as approvalExpirationInMinutes
+# when approval expiry is off, and 'agent settings show' output must be
+# accepted back as it is.
 def _validate_global_settings_shape(parsed):
     if not isinstance(parsed, dict):
         raise CLIError(
@@ -4660,7 +4663,7 @@ def _validate_global_settings_shape(parsed):
         if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
             raise CLIError(f"{path}.{key} must be a JSON array of strings.")
 
-    if "toolPermissions" in parsed:
+    if parsed.get("toolPermissions") is not None:
         tp = parsed["toolPermissions"]
         if not isinstance(tp, dict):
             raise CLIError("--value.toolPermissions must be a JSON object with 'allow'/'ask'/'deny' arrays.")
@@ -4684,7 +4687,7 @@ def _validate_global_settings_shape(parsed):
             )
 
     def _require_name_enabled_list(obj, key):
-        if key not in obj:
+        if obj.get(key) is None:
             return
         value = obj[key]
         if not isinstance(value, list):
@@ -4698,16 +4701,17 @@ def _validate_global_settings_shape(parsed):
     _require_name_enabled_list(parsed, "toolStatuses")
     _require_name_enabled_list(parsed, "skillStatuses")
 
-    if "customInstructions" in parsed and not isinstance(parsed["customInstructions"], str):
+    if parsed.get("customInstructions") is not None and not isinstance(parsed["customInstructions"], str):
         raise CLIError("--value.customInstructions must be a string.")
 
-    if "approvalExpirationSetting" in parsed:
-        aes = parsed["approvalExpirationSetting"]
+    aes = parsed.get("approvalExpirationSetting")
+    if aes is not None:
         if not isinstance(aes, dict):
             raise CLIError("--value.approvalExpirationSetting must be a JSON object.")
-        if "enabled" in aes and not isinstance(aes["enabled"], bool):
+        if aes.get("enabled") is not None and not isinstance(aes["enabled"], bool):
             raise CLIError("--value.approvalExpirationSetting.enabled must be a boolean.")
-        if "approvalExpirationInMinutes" in aes and not isinstance(aes["approvalExpirationInMinutes"], (int, float)):
+        minutes = aes.get("approvalExpirationInMinutes")
+        if minutes is not None and not isinstance(minutes, (int, float)):
             raise CLIError("--value.approvalExpirationSetting.approvalExpirationInMinutes must be a number.")
 
 

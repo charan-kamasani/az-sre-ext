@@ -1320,6 +1320,14 @@ class GlobalSettingsShapeValidationTests(unittest.TestCase):
             _encode_extension_value(raw, "globalSettings")
         self.assertIn("approvalExpirationInMinutes must be a number", str(raised.exception))
 
+    def test_accepts_null_for_unset_fields(self):
+        raw = json.dumps({
+            "toolPermissions": None, "toolStatuses": None, "skillStatuses": None, "customInstructions": None,
+            "approvalExpirationSetting": {"enabled": None, "approvalExpirationInMinutes": None},
+        })
+        encoded = _encode_extension_value(raw, "globalSettings")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
 
 class PluginMarketplacesShapeValidationTests(unittest.TestCase):
     """--extension-type pluginMarketplaces' inner shape is confirmed via

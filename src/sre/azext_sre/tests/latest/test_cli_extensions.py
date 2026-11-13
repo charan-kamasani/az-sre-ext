@@ -66,7 +66,7 @@ NOUNS = {
                          {"agentPrompt": "Investigate the alert"}),
 }
 DIRECT_ROUTES = {noun.direct_route: noun for noun in NOUNS.values() if noun.direct_route}
-ARM_TYPES = {noun.extension_type for noun in NOUNS.values()}
+ARM_TYPES = {noun.extension_type for noun in NOUNS.values()} | {"globalSettings"}
 PLUGIN_NOUNS = ("plugin marketplace", "plugin install")
 
 Request = namedtuple("Request", "method host path query body auth")
@@ -677,6 +677,19 @@ class ExtensionCommandCliTests(unittest.TestCase):
         code, _, _ = self._az(*self._command("tool", "list"), route="arm")
         self.assertNotEqual(code, 0)
         self.assertEqual({r.host for r in self.service.requests}, {ARM_HOST})
+
+    def test_settings_show_output_can_be_sent_back_with_settings_update(self):
+        # What 'agent settings show' returned live with approval expiry turned off.
+        shown = {"approvalExpirationSetting": {"approvalExpirationInMinutes": None, "enabled": False},
+                 "customInstructions": "", "skillStatuses": [], "toolStatuses": [],
+                 "toolPermissions": {"allow": [], "ask": [], "deny": []}}
+        self.service.store[("globalSettings", "default")] = copy.deepcopy(shown)
+        target = ("-g", "rg", "--agent-name", "myagent")
+        code, out, err = self._az("agent", "settings", "show", *target, "--query", "properties.value")
+        self.assertEqual(code, 0, err)
+        code, _, err = self._az("agent", "settings", "update", *target, "--value", "@" + self._write("s.json", out))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.service.store[("globalSettings", "default")], shown)
 
 
 def _bash_command_lines(text):
