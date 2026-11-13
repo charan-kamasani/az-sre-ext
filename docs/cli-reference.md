@@ -1396,7 +1396,7 @@ Configures VNet injection and outbound egress for the agent's own sandboxed tool
 | Verb | Exact syntax |
 | --- | --- |
 | `show` | `az sre network show --name <value> --resource-group <value>` |
-| `update` | `az sre network update --name <value> --resource-group <value> [--vnet-configuration <json-or-@file>] [--sandbox-configuration <json-or-@file>]` |
+| `update` | `az sre network update --name <value> --resource-group <value> [--vnet-configuration <json-or-@file>] [--sandbox-configuration <json-or-@file>] [--replace-allowed-hosts {false,true}]` |
 
 ### `az sre network show`
 
@@ -1425,9 +1425,11 @@ Show VNet injection and sandbox egress settings (preview).
 
 Configure VNet injection and sandbox egress (preview).
 
+Hosts in allowed-hosts are added to the agent's current allowed hosts, which start with the service's defaults. Pass --replace-allowed-hosts to replace the list instead. Other lists you pass, such as allowed-registries, replace the stored list.
+
 **Syntax**
 
-`az sre network update --name <value> --resource-group <value> [--vnet-configuration <json-or-@file>] [--sandbox-configuration <json-or-@file>]`
+`az sre network update --name <value> --resource-group <value> [--vnet-configuration <json-or-@file>] [--sandbox-configuration <json-or-@file>] [--replace-allowed-hosts {false,true}]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -1435,13 +1437,20 @@ Configure VNet injection and sandbox egress (preview).
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--vnet-configuration` | Object | No |  |  | VNet injection for the agent itself. Shorthand JSON, e.g. --vnet-configuration "{subnet-resource-id:/subscriptions/.../subnets/mysubnet}". |
 | `--sandbox-configuration` | Object | No |  |  | Sandbox egress and packages. Shorthand, e.g. "{egress:{mode:Limited,allowed-hosts:[example.com]}}". |
+| `--replace-allowed-hosts` | Boolean | No |  | `false`, `true` | Replace the agent's allowed hosts with the allowed-hosts list instead of adding to them. A warning names the hosts this removes, which can include the service's defaults. |
 
 **Examples**
 
-- Limit the agent's sandbox egress to one allowed host
+- Allow the agent's sandbox to reach one more host
 
   ```bash
   az sre network update --name myagent --resource-group myrg \
+  --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}"
+  ```
+- Replace the allowed hosts, including the service's defaults, with one host
+
+  ```bash
+  az sre network update --name myagent --resource-group myrg --replace-allowed-hosts \
   --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}"
   ```
 

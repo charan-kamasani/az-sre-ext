@@ -4242,8 +4242,17 @@ class AccessList(AAZCommand):
 class UpdateNetwork(AAZCommand):
     """Configure VNet injection and sandbox egress (preview).
 
-    :example: Limit the agent's sandbox egress to one allowed host
+    Hosts in allowed-hosts are added to the agent's current allowed hosts,
+    which start with the service's defaults. Pass --replace-allowed-hosts to
+    replace the list instead. Other lists you pass, such as allowed-registries,
+    replace the stored list.
+
+    :example: Allow the agent's sandbox to reach one more host
         az sre network update --name myagent --resource-group myrg \\
+            --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}"
+
+    :example: Replace the allowed hosts, including the service's defaults, with one host
+        az sre network update --name myagent --resource-group myrg --replace-allowed-hosts \\
             --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}"
     """
 
@@ -4310,7 +4319,8 @@ class UpdateNetwork(AAZCommand):
         )
         egress.allowed_hosts = AAZListArg(
             nullable=True, options=["allowed-hosts"],
-            help="Hosts the sandbox is allowed to reach when in Limited mode.",
+            help="Hosts to add to the ones the sandbox can reach in Limited mode. "
+            "With --replace-allowed-hosts, the complete list.",
         )
         egress.allowed_hosts.Element = AAZStrArg()
         egress.allowed_registries = AAZListArg(
@@ -4343,6 +4353,12 @@ class UpdateNetwork(AAZCommand):
         )
         egress.http_proxy.no_proxy.Element = AAZStrArg()
 
+        schema.replace_allowed_hosts = AAZBoolArg(
+            options=["--replace-allowed-hosts"],
+            help="Replace the agent's allowed hosts with the allowed-hosts list instead of adding to them. "
+            "A warning names the hosts this removes, which can include the service's defaults.",
+        )
+
         cls._args_schema = schema
         return schema
 
@@ -4352,6 +4368,7 @@ class UpdateNetwork(AAZCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         vnet_configuration = _arg_value(self.ctx.args.vnet_configuration)
         sandbox_configuration = _arg_value(self.ctx.args.sandbox_configuration)
+        replace_hosts = bool(_arg_value(self.ctx.args.replace_allowed_hosts))
 
         if vnet_configuration is None and sandbox_configuration is None:
             raise CLIError(
@@ -4375,6 +4392,10 @@ class UpdateNetwork(AAZCommand):
                 raise CLIError(
                     f"{flag} has nothing to set. Fields set to null are ignored, so this command "
                     "can't clear a setting.")
+        egress = (properties.get("sandboxConfiguration") or {}).get("egress")
+        new_hosts = egress.get("allowedHosts") if isinstance(egress, dict) else None
+        if replace_hosts and new_hosts is None:
+            raise CLIError("--replace-allowed-hosts needs an allowed-hosts list in --sandbox-configuration.")
         proxy = ((sandbox_configuration or {}).get("egress") or {}).get("http_proxy") or {}
         if any("@" in urlparse(url).netloc for url in (proxy.get("http_url"), proxy.get("https_url"))
                if isinstance(url, str)):
@@ -4386,6 +4407,9 @@ class UpdateNetwork(AAZCommand):
         # service sends back, so keep the bodies out of --debug and az.log.
         with _no_http_trace():
             resource_id = _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
+            if new_hosts is not None:
+                current = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION)
+                egress["allowedHosts"] = _allowed_hosts_to_send(current, new_hosts, replace_hosts)
             updated = _arm_request(
                 self.cli_ctx, "PATCH", resource_id, NETWORK_API_VERSION, body={"properties": properties},
             )
@@ -4397,9 +4421,35 @@ class UpdateNetwork(AAZCommand):
         return _network_view(updated)
 
 
+def _allowed_hosts_to_send(agent, hosts, replace):
+    """The egress allowedHosts list to PATCH, which replaces the stored list.
+
+    The hosts are added to the agent's current ones, which start with the
+    service's defaults, unless replace is set. Then the hosts it drops are named.
+    """
+    properties = agent.get("properties") if isinstance(agent, dict) else None
+    sandbox = properties.get("sandboxConfiguration") if isinstance(properties, dict) else None
+    egress = sandbox.get("egress") if isinstance(sandbox, dict) else None
+    current = egress.get("allowedHosts") if isinstance(egress, dict) else None
+    current = [host for host in current if isinstance(host, str)] if isinstance(current, list) else []
+    if replace:
+        kept = {host.lower() for host in hosts}
+        dropped = [host for host in current if host.lower() not in kept]
+        if dropped:
+            logger.warning("--replace-allowed-hosts removed these hosts from the agent's allowed hosts: %s",
+                           ", ".join(dropped))
+        return hosts
+    merged, seen = [], set()
+    for host in current + hosts:
+        if host.lower() not in seen:
+            seen.add(host.lower())
+            merged.append(host)
+    return merged
+
+
 def _has_network_setting(value):
     """True if a null-free network configuration still sets something. A list
-    counts, even an empty one: it replaces the stored list."""
+    counts, even an empty one."""
     if isinstance(value, dict):
         return any(_has_network_setting(item) for item in value.values())
     return value is not None

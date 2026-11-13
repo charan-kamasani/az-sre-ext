@@ -4146,7 +4146,7 @@ class UpdateNetworkMergeTests(unittest.TestCase):
         command = _bare_command(
             UpdateNetwork,
             name="myagent", resource_group="rg",
-            vnet_configuration=None, sandbox_configuration=None,
+            vnet_configuration=None, sandbox_configuration=None, replace_allowed_hosts=None,
         )
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None):
             with self.assertRaises(CLIError):
@@ -4157,7 +4157,7 @@ class UpdateNetworkMergeTests(unittest.TestCase):
             UpdateNetwork,
             name="myagent", resource_group="rg",
             vnet_configuration=None,
-            sandbox_configuration={"egress": {"mode": "Limited"}},
+            sandbox_configuration={"egress": {"mode": "Limited"}}, replace_allowed_hosts=None,
         )
         # Reads redact the connection string; writing this back fails with
         # InvalidApplicationInsightsConfiguration.
@@ -4200,6 +4200,7 @@ class UpdateNetworkMergeTests(unittest.TestCase):
             UpdateNetwork,
             name="myagent", resource_group="rg",
             vnet_configuration={"subnet_resource_id": "/subnets/s"}, sandbox_configuration=None,
+            replace_allowed_hosts=None,
         )
         current = {"id": self._AGENT["id"], "properties": {"vnetConfiguration": {"subnetResourceId": "/subnets/s"}}}
         methods = []

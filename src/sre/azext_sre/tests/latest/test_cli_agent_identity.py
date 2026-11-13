@@ -756,6 +756,35 @@ class NetworkUpdateTests(AgentCliTestCase):
                 self.assertIn("--sandbox-configuration has nothing to set", errors)
                 self.assertEqual(self.arm.writes(), [])
 
+    DEFAULT_HOSTS = ["management.azure.com", "api.loganalytics.io", "learn.microsoft.com"]
+
+    def _add_limited_agent(self):
+        self.arm.add_agent(properties={"sandboxConfiguration": {"egress": {
+            "mode": "Limited", "allowedHosts": list(self.DEFAULT_HOSTS), "allowedRegistries": ["pypi"]}}})
+
+    def test_allowed_hosts_are_added_to_the_current_list(self):
+        self._add_limited_agent()
+        code, output, errors = self.invoke(
+            "sre", "network", "update", "-g", "rg", "-n", "myagent",
+            "--sandbox-configuration", "{egress:{mode:Limited,allowed-hosts:[example.com,LEARN.microsoft.com]}}")
+        self.assertEqual(code, 0, errors)
+        expected = self.DEFAULT_HOSTS + ["example.com"]
+        egress = self.arm.agent()["properties"]["sandboxConfiguration"]["egress"]
+        self.assertEqual(egress["allowedHosts"], expected)
+        self.assertEqual(egress["allowedRegistries"], ["pypi"])
+        self.assertEqual(json.loads(output)["sandboxConfiguration"]["egress"]["allowedHosts"], expected)
+
+    def test_replacing_the_allowed_hosts_names_the_hosts_it_drops(self):
+        self._add_limited_agent()
+        code, _, errors = self.invoke(
+            "sre", "network", "update", "-g", "rg", "-n", "myagent", "--replace-allowed-hosts",
+            "--sandbox-configuration", "{egress:{allowed-hosts:[example.com,api.loganalytics.io]}}")
+        self.assertEqual(code, 0, errors)
+        egress = self.arm.agent()["properties"]["sandboxConfiguration"]["egress"]
+        self.assertEqual(egress["allowedHosts"], ["example.com", "api.loganalytics.io"])
+        self.assertIn("management.azure.com, learn.microsoft.com", errors)
+        self.assertNotIn("api.loganalytics.io", errors)
+
 
 def _examples(command):
     """Each ':example:' command in a command's help, as an argument list without 'az'."""
