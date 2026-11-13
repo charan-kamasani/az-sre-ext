@@ -6270,9 +6270,10 @@ class ConnectorUpdateMcpArgsTests(unittest.TestCase):
             return self.value
 
     @classmethod
-    def _instance(cls, connector_type, extended_properties=None):
+    def _instance(cls, connector_type, extended_properties=None, data_source="https://mcp.contoso.com/mcp"):
         return SimpleNamespace(properties=SimpleNamespace(
             data_connector_type=cls._Value(connector_type),
+            data_source=cls._Value(data_source),
             extended_properties=cls._Value(extended_properties)))
 
     def _update(self, command, instance):

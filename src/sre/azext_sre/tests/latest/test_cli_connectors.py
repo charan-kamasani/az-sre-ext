@@ -495,6 +495,68 @@ class ConnectorCliTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIsNone(self.arm.connector("mcp-http"))
 
+    def test_auth_in_extended_properties_alone_is_saved_on_update_like_create(self):
+        settings = '{"authType": "BearerToken", "bearerToken": "json-token"}'
+        code, _, logs = self._create_mcp("mcp-json", "--extended-properties", settings)
+        self.assertEqual(code, 0, logs.errors)
+        self.assertEqual(self.arm.connector("mcp-json")["properties"]["extendedProperties"]["bearerToken"],
+                         "json-token")
+
+        self._add_mcp_bearer_connector()
+        code, _, logs = self._update_mcp("mcp1", "--extended-properties", settings)
+        self.assertEqual(code, 0, logs.errors)
+        self.assertEqual(self.arm.connector("mcp1")["properties"]["extendedProperties"], {
+            "transport": "Http", "endpoint": "https://mcp.contoso.com/mcp", "partnerType": "DynatraceMcp",
+            "team": "sre", "authType": "BearerToken", "bearerToken": "json-token"})
+
+        self.arm.requests.clear()
+        code, _, logs = self._update_mcp("mcp1", "--extended-properties", settings, "--clear-auth")
+        self.assertNotEqual(code, 0)
+        self.assertIn("not both", logs.errors)
+        self.assertEqual(self.arm.sent("PUT"), [])
+
+    def test_auth_from_any_source_is_never_saved_for_a_non_https_endpoint(self):
+        token_file = self._file("tok.txt", "fake-secret")
+        settings = '{"transport": "Http", "endpoint": "http://evil.example/mcp", ' \
+                   '"authType": "BearerToken", "bearerToken": "fake-secret"}'
+        code, _, logs = self._run("sre", "connector", "create", "-g", "rg", "--agent-name", "myagent",
+                                  "-n", "mcp-raw", "--data-connector-type", "Mcp",
+                                  "--data-source", "http://evil.example/mcp", "--extended-properties", settings)
+        self.assertNotEqual(code, 0)
+        self.assertIn("https://", logs.errors)
+        self.assertIsNone(self.arm.connector("mcp-raw"))
+
+        self._add_mcp_bearer_connector()
+        stored = copy.deepcopy(self.arm.connector("mcp1"))
+        for setting in ("properties.dataSource=http://evil.example/mcp",
+                        "properties.extendedProperties.endpoint=http://evil.example/mcp"):
+            with self.subTest(setting=setting):
+                self.arm.requests.clear()
+                code, _, logs = self._run(
+                    "sre", "connector", "update", "-g", "rg", "--agent-name", "myagent", "-n", "mcp1",
+                    "--identity", UAMI_ID, "--extended-properties", '{"endpoint": "https://mcp.contoso.com/mcp"}',
+                    "--bearer-token-file", token_file, "--set", setting)
+                self.assertNotEqual(code, 0)
+                self.assertIn("https://", logs.errors)
+                self.assertEqual(self.arm.sent("PUT"), [])
+                self.assertEqual(self.arm.connector("mcp1"), stored)
+
+        # Nathan's repros, with --mcp-endpoint: a --set dataSource is refused, and a --set endpoint
+        # is replaced by --mcp-endpoint, so the token only ever goes to https.
+        self.arm.requests.clear()
+        code, _, logs = self._update_mcp("mcp1", "--bearer-token-file", token_file,
+                                         "--set", "properties.dataSource=http://evil.example/mcp")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.arm.sent("PUT"), [])
+        self.assertEqual(self.arm.connector("mcp1"), stored)
+
+        code, _, logs = self._update_mcp("mcp1", "--bearer-token-file", token_file,
+                                         "--set", "properties.extendedProperties.endpoint=http://evil.example/mcp")
+        self.assertEqual(code, 0, logs.errors)
+        properties = self.arm.connector("mcp1")["properties"]
+        self.assertEqual(properties["extendedProperties"]["endpoint"], "https://mcp.contoso.com/mcp")
+        self.assertEqual(properties["dataSource"], "https://mcp.contoso.com/mcp")
+
     def test_mi_token_scope_alone_is_refused(self):
         self._add_mcp_bearer_connector()
         stored = copy.deepcopy(self.arm.connector("mcp1"))

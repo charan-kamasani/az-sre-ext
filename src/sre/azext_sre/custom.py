@@ -1931,6 +1931,13 @@ def _validate_authenticated_endpoint(*endpoints):
             _validate_mcp_endpoint(endpoint, "The MCP endpoint")
 
 
+def _check_final_auth_endpoint(extended_properties, data_source):
+    """Run on the payload about to be sent: if it carries auth, from a flag,
+    --extended-properties or --set, its endpoint and data source must be https."""
+    if isinstance(extended_properties, dict) and any(extended_properties.get(key) for key in _MCP_AUTH_KEYS):
+        _validate_authenticated_endpoint(extended_properties.get("endpoint"), data_source)
+
+
 class _BearerTokenFileFormat(AAZFileArgTextFormat):
     """Reads --bearer-token-file as UTF-8 text, so the path is all Azure CLI
     sees and logs. Surrounding whitespace, such as a trailing newline, is
@@ -2218,6 +2225,8 @@ class _ConnectorConvenienceArgsMixin:
             _validate_authenticated_endpoint(auth_properties.get("endpoint"),
                                              _arg_value(getattr(args, "data_source", None)))
             args.extended_properties = auth_properties
+        _check_final_auth_endpoint(_arg_value(getattr(args, "extended_properties", None)),
+                                   _arg_value(getattr(args, "data_source", None)))
 
         super().pre_operations()
 
@@ -2345,8 +2354,10 @@ class _ConnectorUpdateMcpArgsMixin:
     The service never returns an MCP connector's endpoint or bearer token, so
     when these flags are used the update must pass the endpoint again, along
     with the full auth to use for it (or --clear-auth). The auth comes only
-    from this command's flags and --extended-properties; no stored auth value,
-    armScope or OAuth options included, is reused. Other stored
+    from this command's flags and --extended-properties; auth given only in
+    --extended-properties is sent as given, as on create. No stored auth value,
+    armScope or OAuth options included, is reused. Whatever auth is sent, its
+    endpoint and data source must be https, including after --set. Other stored
     extendedProperties are kept. Errors if the stored connector isn't Mcp."""
 
     _mcp_flags_used = False
@@ -2388,9 +2399,15 @@ class _ConnectorUpdateMcpArgsMixin:
             args.data_source = mcp_endpoint
             endpoint_properties = {"transport": "Http", "endpoint": mcp_endpoint}
         auth_overlay = _mcp_auth_properties(args, {**given, "endpoint": mcp_endpoint or given.get("endpoint")})
+        if auth_overlay is None:
+            # Auth typed into --extended-properties on this command is sent as
+            # given, as on create. Stored auth is still never reused.
+            given_auth = {key: value for key, value in given.items() if key in _MCP_AUTH_KEYS}
+            auth_overlay = given_auth or None
         clear_auth = bool(_arg_value(getattr(args, "clear_auth", None)))
         if clear_auth and auth_overlay is not None:
-            raise MutuallyExclusiveArgumentError("Use either --clear-auth or an auth flag, not both.")
+            raise MutuallyExclusiveArgumentError(
+                "Use either --clear-auth or auth (an auth flag or auth in --extended-properties), not both.")
         if auth_overlay is None and not clear_auth and (
                 _arg_value(getattr(args, "managed_identity_auth", None)) is False
                 or _arg_value(getattr(args, "oauth_dcr", None)) is False):
@@ -2410,8 +2427,9 @@ class _ConnectorUpdateMcpArgsMixin:
                 # sends stored auth (an ARM token, say) to it unasked.
                 raise RequiredArgumentMissingError(
                     "Pass the auth to use with this endpoint: --bearer-token-file, --managed-identity-auth "
-                    "true or --oauth-dcr true. To save it without auth, add --clear-auth. Stored auth isn't "
-                    "reused, because the service never returns the endpoint it was set up for. Nothing was sent.")
+                    "true, --oauth-dcr true or auth in --extended-properties. To save it without auth, add "
+                    "--clear-auth. Stored auth isn't reused, because the service never returns the endpoint "
+                    "it was set up for. Nothing was sent.")
             if auth_overlay is not None:
                 _validate_authenticated_endpoint(mcp_endpoint or given.get("endpoint"),
                                                  _arg_value(getattr(args, "data_source", None)))
@@ -2447,12 +2465,15 @@ class _ConnectorUpdateMcpArgsMixin:
         # what was passed in --extended-properties and --partner-type.
         merged = {**(self._original_extended_properties or {}),
                   **(current if isinstance(current, dict) else {})}
-        # pre_operations made sure an auth flag or --clear-auth was passed, and
-        # built the whole auth from this command, so no stored auth key survives.
+        # pre_operations made sure auth or --clear-auth was passed, and built
+        # the whole auth from this command, so no stored auth key survives.
         for key in _MCP_AUTH_KEYS:
             merged.pop(key, None)
         merged.update(self._mcp_endpoint_properties or {})
         merged.update(self._mcp_auth_overlay or {})
+        # --set is applied after pre_operations, so check what will be sent.
+        _check_final_auth_endpoint(
+            merged, properties.data_source.to_serialized_data() if has_value(properties.data_source) else None)
         properties.extended_properties = merged
 
 
