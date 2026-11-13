@@ -305,6 +305,13 @@ class ConnectorCliTests(unittest.TestCase):
         for name in ("appi", "appi2"):
             self.assertIn("Application Insights", rows[name])
 
+    def test_connector_list_takes_the_agent_name_as_n(self):
+        for flag in ("-n", "--name", "--agent-name"):
+            with self.subTest(flag):
+                code, output, logs = self._run("sre", "connector", "list", "-g", "rg", flag, "myagent")
+                self.assertEqual(code, 0, logs.errors)
+                self.assertEqual(sorted(item["name"] for item in json.loads(output)), ["docs", "kusto-prod"])
+
     def test_knowledge_commands_leave_other_connectors_alone(self):
         target = ["-g", "rg", "--agent-name", "myagent"]
         kusto = copy.deepcopy(self.arm.connector("kusto-prod"))

@@ -498,7 +498,7 @@ Connect an SRE Agent to an external data source it can query or act on.
 | --- | --- |
 | `create` | `az sre connector create [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--overwrite {false,true}] [--file-path <value>] [--mcp-endpoint <value>] [--github {false,true}] [--tool-access {false,true}] [--bearer-token <value>] [--managed-identity-auth {false,true}] [--mi-token-scope <value>] [--oauth-dcr {false,true}] [--oauth-scopes <value>] [--oauth-client-name <value>] [--partner-type <value>]` |
 | `delete` | `az sre connector delete [--no-wait] --agent-name <value> --name <value> --resource-group <value> [--yes]` |
-| `list` | `az sre connector list [--next-token <value>] [--max-items <value>] --agent-name <value> --resource-group <value>` |
+| `list` | `az sre connector list [--next-token <value>] [--max-items <value>] --name <value> --resource-group <value>` |
 | `list-secret` | `az sre connector list-secret --agent-name <value> --name <value> --resource-group <value>` |
 | `show` | `az sre connector show --agent-name <value> --name <value> --resource-group <value>` |
 | `update` | `az sre connector update [--no-wait] [--add <value>] [--set <value>] [--remove <value>] [--force-string {true,t,yes,y,1,false,f,no,n,0}] --agent-name <value> --name <value> --resource-group <value> [--data-connector-type <value>] [--data-source <value>] [--endpoint <value>] [--extended-properties <json-or-@file>] [--identity <value>] [--partner-type <value>]` |
@@ -614,13 +614,13 @@ consentStatus (Consented/PendingConsent) is shown for EntraOAuth-backed Mcp conn
 
 **Syntax**
 
-`az sre connector list [--next-token <value>] [--max-items <value>] --agent-name <value> --resource-group <value>`
+`az sre connector list [--next-token <value>] [--max-items <value>] --name <value> --resource-group <value>`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
 | `--next-token` | String | No |  |  | Token to specify where to start paginating. This is the token value from a previously truncated response. |
 | `--max-items` | String | No |  |  | Total number of items to return in the command's output. If the total number of items available is more than the value specified, a token is provided in the command's output. To resume pagination, provide the token value in `--next-token` argument of a subsequent command. |
-| `--agent-name` | String | Yes |  |  | The name of the Agent |
+| `-n`, `--name`, `--agent-name` | String | Yes |  |  | The name of the Agent |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 
 **Examples**

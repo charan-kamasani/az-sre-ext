@@ -2570,6 +2570,15 @@ class ConnectorList(_GeneratedConnectorList):
 
     _args_schema = None
 
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        # Like the other list commands, which take the agent's name as -n/--name too.
+        schema.agent_name._options = ["-n", "--name", "--agent-name"]
+        return schema
+
     EMPTY_GUIDANCE = (
         "No connectors found. Add one with 'az sre connector create "
         "--data-connector-type Mcp --github true' (or --mcp-endpoint/"
