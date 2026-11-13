@@ -1781,11 +1781,11 @@ def _connector_access_reminder(connector):
 # Mapped below since the correlation is strong, but flagged here for a
 # future live create+inspect test to fully confirm.
 #
-# Unresolved ambiguity: the portal shows exactly one "Application Insights"
-# card, but the wire-type allowlist has two distinct accepted values,
-# 'AppInsights' and 'ApplicationInsights'. Which one that card actually
-# persists as has not been confirmed by an actual create-and-inspect test,
-# so neither is mapped here yet -- do not guess.
+# Application Insights: the service accepts two wire values, 'AppInsights'
+# (what this CLI creates for the portal name "Application Insights") and
+# 'ApplicationInsights'. Which one the portal's single "Application Insights"
+# card persists hasn't been confirmed by a create-and-inspect test, but both
+# are Application Insights connectors, so both are labeled that way here.
 #
 # The 4 Knowledge* types are confirmed NOT reachable through this same
 # "Connectors" picker at all (empty search, absent from the full catalog
@@ -1819,6 +1819,8 @@ CONNECTOR_TYPE_PORTAL_NAMES = {
     "Icm": "IcM connector",
     "Dgrep": "DGrep",
     "LogAnalytics": "Log Analytics Workspace",
+    "AppInsights": "Application Insights",
+    "ApplicationInsights": "Application Insights",
     "Ev2Mcp": "EV2",
     "GenevaMetrics": "Geneva Metrics",
     "S360": "S360 connector",

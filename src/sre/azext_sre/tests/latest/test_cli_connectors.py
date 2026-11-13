@@ -295,6 +295,16 @@ class ConnectorCliTests(unittest.TestCase):
                 self.assertEqual(code, 0, logs.errors)
                 self.assertEqual("--type text" in logs.warnings, warned, logs.warnings)
 
+    def test_connector_table_shows_app_insights_by_its_portal_name(self):
+        for name, wire_type in (("appi", "AppInsights"), ("appi2", "ApplicationInsights")):
+            self.arm.add_connector(name, dataConnectorType=wire_type, dataSource="https://api.applicationinsights.io")
+        code, output, logs = self._run(
+            "sre", "connector", "list", "-g", "rg", "--agent-name", "myagent", "-o", "table")
+        self.assertEqual(code, 0, logs.errors)
+        rows = {line.split()[0]: line for line in output.splitlines()[2:] if line.strip()}
+        for name in ("appi", "appi2"):
+            self.assertIn("Application Insights", rows[name])
+
     def test_knowledge_commands_leave_other_connectors_alone(self):
         target = ["-g", "rg", "--agent-name", "myagent"]
         kusto = copy.deepcopy(self.arm.connector("kusto-prod"))
