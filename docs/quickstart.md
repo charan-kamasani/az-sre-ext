@@ -56,7 +56,8 @@ az sre agent create \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
   --name "$AGENT" \
-  --location "$LOCATION"
+  --location "$LOCATION" \
+  --grant-access-to-me admin
 
 az sre agent show \
   --subscription "$SUBSCRIPTION_ID" \
@@ -86,25 +87,8 @@ Connecting Azure Data Explorer takes two steps: create the connector, then give 
 agent's identity access to the database. Until the second step is done, queries fail
 with a permission error.
 
-1. Create the connector:
-
-   ```bash
-   az sre connector create \
-     --subscription "$SUBSCRIPTION_ID" \
-     --resource-group "$RG" \
-     --agent-name "$AGENT" \
-     --name adx \
-     --data-connector-type "Azure Data Explorer" \
-     --tool-access true
-   ```
-
-   `--name` is a label you choose. "Azure Data Explorer" is the portal's name for the
-   type; the service stores it as `KustoClient`, so that's what `connector show` returns.
-   This connector can query any cluster the agent's identity has access to, so it doesn't
-   take a cluster URL. `--tool-access true` lets the main agent use its query tools.
-
-   To pin the connector to one cluster and database instead, use the `Kusto` type and
-   create one connector per cluster:
+1. Create a `Kusto` connector that names the cluster and database. Create one per
+   database the agent should query:
 
    ```bash
    az sre connector create \
@@ -116,7 +100,14 @@ with a permission error.
      --data-source "https://<cluster>.<region>.kusto.windows.net/<database>"
    ```
 
-2. Get the app ID of the identity the connector queries with. A connector created
+   `--name` is a label you choose.
+
+   You might also see an "Azure Data Explorer" type, which the service stores as
+   `KustoClient`. It doesn't connect to a cluster. It only sets which identity Kusto
+   queries use, and it stays at **Connecting** in the portal. On its own it doesn't let
+   the agent query anything, so you don't need it for this walkthrough.
+
+2. Get the principal ID of the identity the connector queries with. A connector created
    without `--identity` uses the agent's **system-assigned** identity. That's the one
    that worked in a live test; granting the user-assigned identity instead creates the
    grant but queries still fail.
@@ -128,28 +119,45 @@ with a permission error.
      --name "$AGENT" \
      --query identity.principalId \
      --output tsv)
-
-   az ad sp show --id "$PRINCIPAL_ID" --query appId --output tsv
    ```
 
-3. Ask a database admin to run this in Azure Data Explorer, using the app ID from
-   step 2:
+3. Grant that identity Viewer on the database. This needs the `kusto` extension
+   (`az extension add --name kusto`) and permission to manage the cluster in Azure:
+
+   ```bash
+   az kusto database-principal-assignment create \
+     --cluster-name <cluster> \
+     --resource-group <cluster-resource-group> \
+     --database-name <database> \
+     --principal-assignment-name "$AGENT-viewer" \
+     --principal-id "$PRINCIPAL_ID" \
+     --principal-type App \
+     --role Viewer \
+     --tenant-id "$(az account show --query tenantId --output tsv)"
+   ```
+
+   Repeat it for each database the agent should query.
+
+   If the cluster belongs to another team, ask one of its database admins to run this
+   in Azure Data Explorer instead. They'll need the identity's app ID, which
+   `az ad sp show --id "$PRINCIPAL_ID" --query appId --output tsv` returns:
 
    ```kusto
    .add database <database> viewers ('aadapp=<app-id>')
    ```
 
-   Repeat it for each database the agent should query. To check the grant, run
-   `.show database <database> principals`.
+   Either way, `.show database <database> principals` lists the grant.
 
 4. Check that it works by asking the agent in the portal chat:
 
-   > Using the adx connector, run `.show tables` on the `<database>` database and list
-   > what you find.
+   > Run `.show tables` on the `<database>` database at
+   > `https://<cluster>.<region>.kusto.windows.net` and list what you find.
 
    A list of table names means the setup is complete. If you get an error like
    `Principal 'aadapp=<app-id>;<tenant-id>' is not authorized to read database`, that
-   `<app-id>` is the identity the agent actually used. Grant that one in step 3.
+   `<app-id>` is the identity the agent actually used. Run
+   `az ad sp show --id <app-id> --query id --output tsv` to get its principal ID and
+   grant that one in step 3.
 
 For more about the connector, see
 [Connect Kusto](https://learn.microsoft.com/azure/sre-agent/kusto-connector).
