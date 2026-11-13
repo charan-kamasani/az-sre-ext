@@ -221,7 +221,7 @@ Create an SRE Agent.
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--system-assigned`, `--mi-system-assigned` | String | No |  |  | Enable the system-assigned identity. Default: a user-assigned identity is created and both are enabled. |
 | `--user-assigned`, `--mi-user-assigned` | List | No |  |  | User-assigned identities to attach. |
-| `--action-configuration` | Object | No |  |  | Configuration for action |
+| `--action-configuration` | Object | No |  |  | What the agent may do and how. Without identity, actions run as the agent's user-assigned identity (the one created for it, or the one given with --mi-user-assigned), or as "system" when it has only a system-assigned identity. |
 | `--agent-identity` | Object | No |  |  | Agent identity configuration for accessing resources |
 | `--default-model` | Object | No |  |  | Default AI model configuration for the agent |
 | `--incident-management-configuration`, `--incident-config` | Object | No |  |  | Incident management configurations |

@@ -5557,6 +5557,7 @@ class DefaultSystemIdentityTests(unittest.TestCase):
         args = {
             "mi_system_assigned": AAZUndefined,
             "mi_user_assigned": AAZUndefined,
+            "action_configuration": AAZUndefined,
             "agent_name": "myagent",
             "resource_group": "myrg",
             "location": "eastus2",
@@ -6041,6 +6042,7 @@ class AutoIdentityCleanupTests(unittest.TestCase):
 
     def _command(self, polling=None, **extra_args):
         args = {"mi_system_assigned": AAZUndefined, "mi_user_assigned": AAZUndefined,
+                "action_configuration": AAZUndefined,
                 "agent_name": "myagent", "resource_group": "rg", "location": "eastus2"}
         args.update(extra_args)
         command = _bare_command(_TestIdentityCleanup, **args)

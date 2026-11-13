@@ -254,6 +254,11 @@ class FakeArm:
             return 400, _error(
                 "ManagedIdentityRequired",
                 "At least one managed identity (SystemAssigned or UserAssigned) must be assigned to the agent."), None
+        action = (agent.get("properties") or {}).get("actionConfiguration")
+        if isinstance(action, dict) and not action.get("identity"):
+            return 400, _error(
+                "InvalidIdentity", f"The identity value '{action.get('identity') or ''}' of 'ActionConfiguration' "
+                "is invalid."), None
         app_insights = ((agent.get("properties") or {}).get("logConfiguration") or {}).get(
             "applicationInsightsConfiguration")
         if isinstance(app_insights, dict) and (
@@ -605,6 +610,36 @@ class AgentCreateTests(AgentCliTestCase):
         self.assertIn("az sre agent update --name myagent --resource-group rg", errors)
         self.assertIsNotNone(self.arm.agent())
         self.assertEqual(len(self._identities()), 1)
+
+    ACTIONS = ("--action-configuration", "{access-level:Low,mode:Review}")
+
+    def test_action_configuration_without_an_identity_gets_the_agents_user_assigned_identity(self):
+        uami = self.arm.add_identity("actions")
+        for label, extra in (("identity the command creates", ()),
+                             ("one --mi-user-assigned", ("--mi-user-assigned", uami))):
+            with self.subTest(label):
+                self.arm.resources = {k: v for k, v in self.arm.resources.items() if "/agents/" not in k}
+                code, _, errors = self.invoke(*self.CREATE, *self.ACTIONS, *extra, "-o", "none")
+                self.assertEqual(code, 0, errors)
+                agent = self.arm.agent()
+                self.assertEqual([agent["properties"]["actionConfiguration"]["identity"]],
+                                 list(agent["identity"]["userAssignedIdentities"]))
+        self.arm.resources = {k: v for k, v in self.arm.resources.items() if "/agents/" not in k}
+        code, _, errors = self.invoke(*self.CREATE, *self.ACTIONS, "--mi-system-assigned", "-o", "none")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.arm.agent()["properties"]["actionConfiguration"]["identity"], "system")
+
+    def test_action_identity_is_not_guessed_among_several_user_assigned_identities(self):
+        first, second = self.arm.add_identity("first"), self.arm.add_identity("second")
+        code, _, errors = self.invoke(*self.CREATE, *self.ACTIONS, "--mi-user-assigned", first, second)
+        self.assertNotEqual(code, 0)
+        self.assertIn("--action-configuration", errors)
+        self.assertEqual(self.arm.writes(), [])
+        code, _, errors = self.invoke(
+            *self.CREATE, "--action-configuration", f"{{access-level:Low,mode:Review,identity:{second}}}",
+            "--mi-user-assigned", first, second, "-o", "none")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.arm.agent()["properties"]["actionConfiguration"]["identity"], second)
 
 
 class AgentLifecycleTests(AgentCliTestCase):

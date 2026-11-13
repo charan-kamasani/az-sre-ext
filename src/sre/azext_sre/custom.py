@@ -968,6 +968,13 @@ class _DefaultSystemIdentityMixin:
         user_assigned = getattr(args, "mi_user_assigned", None)
         has_system = has_value(system_assigned)
         has_user = has_value(user_assigned) and len(user_assigned) > 0
+        fill_action_identity = has_value(args.action_configuration) and not has_value(
+            args.action_configuration.identity)
+        if fill_action_identity and has_user and len(user_assigned) > 1:
+            raise InvalidArgumentValueError(
+                "--action-configuration has no identity, and the agent gets more than one user-assigned "
+                "identity. Add the one its actions run as, for example --action-configuration "
+                "\"{identity:RESOURCE_ID,access-level:Low,mode:Review}\".")
         if not has_system and not has_user:
             agent_name = _arg_value(args.agent_name)
             resource_group = _arg_value(args.resource_group)
@@ -986,6 +993,12 @@ class _DefaultSystemIdentityMixin:
                 "--mi-user-assigned explicitly to override.",
                 identity_id.rsplit("/", 1)[-1],
             )
+        identities = _arg_value(args.mi_user_assigned) or []
+        system = str(_arg_value(args.mi_system_assigned) or "").strip().lower() not in ("", "false")
+        if fill_action_identity and (len(identities) == 1 or (system and not identities)):
+            # The service rejects an action configuration without an identity. The
+            # portal uses the identity it creates; "system" is the system-assigned one.
+            args.action_configuration.identity = identities[0] if identities else "system"
         super().pre_operations()
 
 
@@ -1316,6 +1329,11 @@ class Create(  # pylint: disable=too-many-ancestors
         )
         schema.log_configuration._help["short-summary"] = (
             "Application Insights link for traces. Without it, a warning is shown and trace view is unavailable."
+        )
+        schema.action_configuration._help["short-summary"] = (
+            "What the agent may do and how. Without identity, actions run as the agent's user-assigned identity "
+            "(the one created for it, or the one given with --mi-user-assigned), or as \"system\" when it has "
+            "only a system-assigned identity."
         )
         _add_experimental_settings_arg(schema)
         cls._args_schema = schema

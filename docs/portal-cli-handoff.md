@@ -111,7 +111,8 @@ the labels below.
   identities (`properties.knowledgeGraphConfiguration.identity` and
   `properties.actionConfiguration.identity`) to the user-assigned identity it creates.
   `az sre agent create` also creates a user-assigned identity, but sets neither unless you pass
-  `--knowledge-graph-configuration` and `--action-configuration`.
+  `--knowledge-graph-configuration` and `--action-configuration`. An `--action-configuration`
+  without `identity` gets the user-assigned identity the command creates.
 - **Azure resource access.** When you add a subscription, resource group or management group,
   the portal assigns roles to the agent's identity and also adds the scope to the agent's
   managed resources (`properties.knowledgeGraphConfiguration.managedResources`).
