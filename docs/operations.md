@@ -274,10 +274,10 @@ typed into a flag (`--github-token`, `--bearer-token`, `--value`) shows up there
 Read it from a file instead (`--bearer-token-file token.txt`, `--value @tool.json`),
 or for `repo connect` use `GITHUB_TOKEN` or the browser sign-in. The CLI warns
 when `--github-token` or `--bearer-token` is typed directly. `--bearer-token`
-refuses values that start with `@`; use `--bearer-token-file`, which reads the
-file itself so Azure CLI only sees the path. Avoid `--debug` on
-other commands against real data: it can print secrets in request and response
-bodies.
+refuses values that start with `@`; use `--bearer-token-file`, which takes the
+path without `@` and reads the file itself so Azure CLI only sees the path.
+Avoid `--debug` on other commands against real data: it can print secrets in
+request and response bodies.
 
 `--data-connector-type` also accepts the product's own friendly names
 (`"Azure Data Explorer"`, `"MCP server"`, `"Log Analytics Workspace"`, etc. — see

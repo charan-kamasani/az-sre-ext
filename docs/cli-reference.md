@@ -529,7 +529,7 @@ Create an Agent Connector.
 | `--github` | Boolean | No |  | `false`, `true` | For Mcp: connect the public GitHub Copilot MCP server (`https://api.githubcopilot.com/mcp/`). |
 | `--tool-access` | Boolean | No |  | `false`, `true` | For KustoClient: let the agent use query tools from this connector (portal 'Allow agent to use query tools'). |
 | `--bearer-token` | String | No |  |  | For Mcp: static bearer token, PAT or API key sent with every request. It shows up in shell history, so prefer --bearer-token-file. |
-| `--bearer-token-file` | String | No |  |  | For Mcp: path to a file that holds the bearer token, PAT or API key. Surrounding whitespace, such as a trailing newline, is removed. |
+| `--bearer-token-file` | String | No |  |  | For Mcp: path, without a leading @, to a file that holds the bearer token, PAT or API key. Surrounding whitespace, such as a trailing newline, is removed. |
 | `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one. |
 | `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth true: token scope to request. Default: `https://management.azure.com/.default`. On update, a stored scope isn't reused, so pass it again. |
 | `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
@@ -708,7 +708,7 @@ An update sends the whole connector back, and the service never returns a connec
 | `--partner-type` | String | No |  |  | For Mcp: the partner integration this server belongs to, for example DynatraceMcp. |
 | `--mcp-endpoint` | String | No |  |  | For Mcp: the MCP server's HTTP endpoint URL. With the auth flags, pass the endpoint here or in --extended-properties; the service never returns it. |
 | `--bearer-token` | String | No |  |  | For Mcp: static bearer token, PAT or API key sent with every request. It shows up in shell history, so prefer --bearer-token-file. |
-| `--bearer-token-file` | String | No |  |  | For Mcp: path to a file that holds the bearer token, PAT or API key. Surrounding whitespace, such as a trailing newline, is removed. |
+| `--bearer-token-file` | String | No |  |  | For Mcp: path, without a leading @, to a file that holds the bearer token, PAT or API key. Surrounding whitespace, such as a trailing newline, is removed. |
 | `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one. |
 | `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth true: token scope to request. Default: `https://management.azure.com/.default`. On update, a stored scope isn't reused, so pass it again. |
 | `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
