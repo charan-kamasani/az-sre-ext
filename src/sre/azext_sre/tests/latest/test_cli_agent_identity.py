@@ -692,6 +692,16 @@ class AgentLifecycleTests(AgentCliTestCase):
         self.assertEqual(code, 0, errors)
         self.assertEqual(json.loads(output)["properties"]["powerState"], "Running")
 
+    def test_start_or_stop_conflict_shows_the_services_reason(self):
+        self.arm.add_agent()
+        for verb in ("start", "stop"):
+            with self.subTest(verb):
+                # The service answers with a bare JSON string, not an ARM error object.
+                self.arm.inject("POST", rf"/agents/myagent/{verb}$", 409, "Agent lifecycle or power policy changed.")
+                code, _, errors = self.invoke("sre", "agent", verb, "-g", "rg", "-n", "myagent")
+                self.assertNotEqual(code, 0)
+                self.assertIn("Agent lifecycle or power policy changed.", errors)
+
     def test_wait_commands_fail_when_they_time_out(self):
         self.arm.add_agent()
         for command in (

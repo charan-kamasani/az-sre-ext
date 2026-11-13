@@ -3831,6 +3831,42 @@ class _EmptyOperationResultMixin:
         return super()._output(*args, **kwargs)
 
 
+def _service_error_text(response):
+    """The service's own message in an error response: a bare JSON string, an
+    ARM error's message, or the raw text."""
+    text = response.text() or ""
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return text.strip()
+    if isinstance(body, str):
+        return body
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict) and isinstance(error.get("message"), str):
+        return error["message"]
+    return text.strip()
+
+
+class _LifecycleConflictMixin:
+    """Explains the 409 that 'agent start' or 'agent stop' gets while an earlier
+    start or stop is still finishing.
+
+    The service's reason is a bare JSON string ("Agent lifecycle or power policy
+    changed."), not an ARM error, so Azure CLI only printed "Operation returned an
+    invalid status 'Conflict'". A retry about 30 seconds later works.
+    """
+
+    _VERB = None
+
+    def on_error(self, response):
+        if response.status_code == 409:
+            reason = _service_error_text(response) or "Conflict."
+            raise CLIError(
+                f"Couldn't {self._VERB} agent '{_arg_value(self.ctx.args.agent_name)}': {reason} "
+                "If it was just started or stopped, try again in about 30 seconds.")
+        return super().on_error(response)
+
+
 @register_command("sre agent start")
 class Start(_EmptyOperationResultMixin, _GeneratedStart):
     """Start a stopped SRE Agent.
@@ -3838,6 +3874,9 @@ class Start(_EmptyOperationResultMixin, _GeneratedStart):
     :example: Start a stopped agent
         az sre agent start --name myagent --resource-group myrg
     """
+
+    class AgentsStart(_LifecycleConflictMixin, _GeneratedStart.AgentsStart):
+        _VERB = "start"
 
 
 @register_command("sre agent stop")
@@ -3847,6 +3886,9 @@ class Stop(_EmptyOperationResultMixin, _GeneratedStop):
     :example: Stop a running agent
         az sre agent stop --name myagent --resource-group myrg
     """
+
+    class AgentsStop(_LifecycleConflictMixin, _GeneratedStop.AgentsStop):
+        _VERB = "stop"
 
 
 @register_command("sre agent wait")
