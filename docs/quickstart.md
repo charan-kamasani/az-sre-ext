@@ -100,14 +100,11 @@ with a permission error.
      --data-source "https://<cluster>.<region>.kusto.windows.net/<database>"
    ```
 
-   `--name` is a label you choose. The portal shows this connector as "Azure Data
-   Explorer".
+   `--name` is a label you choose. Use `Kusto` here, not `"Azure Data Explorer"`; see
+   [Kusto and KustoClient](#kusto-and-kustoclient) for why.
 
-   The CLI also accepts `--data-connector-type "Azure Data Explorer"`, but that creates
-   a different connector, stored as `KustoClient`. It doesn't name a cluster. It only
-   sets which identity Kusto queries use, and on its own it stays at **Connecting** and
-   the agent can't query anything. The portal's Azure Data Explorer wizard creates both
-   kinds together; with the CLI, the `Kusto` connector above is the one you need.
+   In the portal, under **Connectors**, it shows up with the service "Azure Data
+   Explorer" and the status **Connected**.
 
 2. Get the principal ID of the identity the connector queries with. A connector created
    without `--identity` uses the agent's **system-assigned** identity. That's the one
@@ -160,6 +157,24 @@ with a permission error.
    `<app-id>` is the identity the agent actually used. Run
    `az ad sp show --id <app-id> --query id --output tsv` to get its principal ID and
    grant that one in step 3.
+
+### Kusto and KustoClient
+
+The portal labels two different connector types "Azure Data Explorer":
+
+| Type | What it holds | Needed? |
+| --- | --- | --- |
+| `Kusto` | The cluster and database to query. | Yes. The agent gets its Kusto query tools only when at least one `Kusto` connector exists. |
+| `KustoClient` | Settings for those query tools: the default identity, whether to sign in with a managed identity, and which tools need your approval before they run. | No. Without it, the agent queries with its system-assigned identity and runs queries without asking. |
+
+`--data-connector-type "Azure Data Explorer"` creates a `KustoClient`. On its own, it
+stays at **Connecting** and the agent can't query anything. The portal's Azure Data
+Explorer wizard creates a `KustoClient` from its first step and a `Kusto` connector for
+each cluster you add.
+
+Create a `KustoClient` only when you want to change one of those settings, for
+example to make queries run as a user-assigned identity. If you do, grant that
+identity in step 3 instead.
 
 For more about the connector, see
 [Connect Kusto](https://learn.microsoft.com/azure/sre-agent/kusto-connector).
