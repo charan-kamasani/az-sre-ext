@@ -5,34 +5,37 @@ and a data source, share it, let it monitor your Azure resources, add a custom s
 route incidents to it. The first steps repeat the [README quick start](../README.md#quick-start),
 so you can follow this page on its own.
 
-The examples use bash. In PowerShell, set variables as `$RG = "my-rg"` and end
-continued lines with a backtick (`` ` ``). Flags that take JSON need extra care on Windows;
-see [JSON quoting on Windows](operations.md#windows-powershell-json-quoting).
+The examples use bash. If you use PowerShell, see
+[JSON quoting on Windows](operations.md#windows-powershell-json-quoting).
 
 ## Prerequisites
 
-Check these before you start. Creating the agent only needs the first three rows. The
-later steps fail with permission errors if the rest are missing, and the error doesn't
-always say which permission.
-
-| You need | For | How to check |
-| --- | --- | --- |
-| [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or later | Everything | `az version` |
-| The `sre` extension | Everything | `az extension show --name sre`. To install it, see the [README](../README.md#install). |
-| Owner, or Contributor plus User Access Administrator, on the subscription or resource group for the agent | [Creating the agent](#create-the-agent) and [sharing it](#share-the-agent) | `az role assignment list --assignee "$(az ad signed-in-user show --query id -o tsv)" --all -o table` |
-| Owner or User Access Administrator on each subscription or resource group the agent should monitor | [Letting it monitor resources](#let-the-agent-monitor-your-azure-resources) | Same command |
-| Admin on the Azure Data Explorer database | [Connecting a data source](#connect-a-data-source) | Ask the database admin |
-| A GitHub account that can read the repository | [Connecting a repository](#connect-a-repository) | Open the repository in your browser |
-
 These requirements match the portal's; see
 [Create and set up Azure SRE Agent](https://learn.microsoft.com/azure/sre-agent/create-and-set-up#prerequisites).
+To list your Azure roles, run
+`az role assignment list --assignee "$(az ad signed-in-user show --query id -o tsv)" --all -o table`.
 
-The agent works through its own managed identity, not yours. `az sre agent create` makes
-a user-assigned identity for it and turns on a system-assigned one too. Every data source
-the agent reads needs its own grant to that identity. Creating a connector doesn't give
-the agent access.
+### Required
 
-## Set up your context
+| You need                                                                                                  | How to check                                                                           |
+| --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 2.75.0 or later                      | `az version`                                                                           |
+| The `sre` extension                                                                                       | `az extension show --name sre`. To install it, see the [README](../README.md#install). |
+| Owner, or Contributor plus User Access Administrator, on the subscription or resource group for the agent | Role list above                                                                        |
+
+### Optional
+
+Only needed for the step listed. Without them, that step fails with a permission error,
+and the error doesn't always say which permission is missing.
+
+| You need                                                                                           | For                                                                         | How to check                           |
+| -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- | -------------------------------------- |
+| A GitHub account that can read the repository                                                      | [Connecting a repository](#connect-a-repository)                            | Open the repository in a browser       |
+| Contributor or Owner on the Azure Data Explorer cluster, to grant access with the Azure CLI        | [Connecting a data source](#connect-a-data-source)                          | Role list above                        |
+| Admin on the Azure Data Explorer database, to grant access with a KQL command instead              | [Connecting a data source](#connect-a-data-source)                          | `.show database <database> principals` |
+| Owner or User Access Administrator on each subscription or resource group the agent should monitor | [Letting it monitor resources](#let-the-agent-monitor-your-azure-resources) | Role list above                        |
+
+## Sign in and set variables
 
 ```bash
 az login
@@ -58,7 +61,14 @@ az sre agent create \
   --name "$AGENT" \
   --location "$LOCATION" \
   --grant-access-to-me admin
+```
 
+`az sre agent create` gives the agent a user-assigned managed identity and turns on a
+system-assigned one too. The agent works through these identities, not yours, so every
+data source it reads needs its own grant to one of them. Creating a connector doesn't
+give the agent access.
+
+```bash
 az sre agent show \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
@@ -83,10 +93,6 @@ az sre repo connect \
 
 ## Connect a data source
 
-Connecting Azure Data Explorer takes two steps: create the connector, then give the
-agent's identity access to the database. Until the second step is done, queries fail
-with a permission error.
-
 1. Create a `Kusto` connector that names the cluster and database. Create one per
    database the agent should query:
 
@@ -100,16 +106,19 @@ with a permission error.
      --data-source "https://<cluster>.<region>.kusto.windows.net/<database>"
    ```
 
-   `--name` is a label you choose.
+   - `--name` is a label you choose.
+   - `--data-connector-type Kusto` connects Azure Data Explorer through the agent's
+     managed identity.
+   - `--data-source` is the cluster URL followed by the database name.
 
    In the portal, under **Connectors**, it shows up as "Azure Data Explorer" with the
    status **Connected** right away. That only means the connector was saved. Queries
    fail with a permission error until you grant access in step 3.
 
-2. Get the principal ID of the identity the connector queries with. A connector created
-   without `--identity` uses the agent's **system-assigned** identity. That's the one
-   that worked in a live test; granting the user-assigned identity instead creates the
-   grant but queries still fail.
+2. Get the principal ID and tenant of the identity the connector queries with. A
+   connector created without `--identity` uses the agent's **system-assigned** identity.
+   That's the one that worked in a live test; granting the user-assigned identity instead
+   creates the grant but queries still fail.
 
    ```bash
    PRINCIPAL_ID=$(az sre agent show \
@@ -118,13 +127,24 @@ with a permission error.
      --name "$AGENT" \
      --query identity.principalId \
      --output tsv)
+
+   PRINCIPAL_TENANT_ID=$(az sre agent show \
+     --subscription "$SUBSCRIPTION_ID" \
+     --resource-group "$RG" \
+     --name "$AGENT" \
+     --query identity.tenantId \
+     --output tsv)
    ```
 
 3. Grant that identity Viewer on the database. This needs the `kusto` extension
-   (`az extension add --name kusto`) and permission to manage the cluster in Azure:
+   (`az extension add --name kusto`) and Contributor or Owner on the cluster in Azure.
+   The cluster can be in a different subscription from the agent, so set it explicitly:
 
    ```bash
+   CLUSTER_SUBSCRIPTION_ID="<cluster-subscription-id>"
+
    az kusto database-principal-assignment create \
+     --subscription "$CLUSTER_SUBSCRIPTION_ID" \
      --cluster-name <cluster> \
      --resource-group <cluster-resource-group> \
      --database-name <database> \
@@ -132,13 +152,13 @@ with a permission error.
      --principal-id "$PRINCIPAL_ID" \
      --principal-type App \
      --role Viewer \
-     --tenant-id "$(az account show --query tenantId --output tsv)"
+     --tenant-id "$PRINCIPAL_TENANT_ID"
    ```
 
    Repeat it for each database the agent should query.
 
-   If the cluster belongs to another team, ask one of its database admins to run this
-   in Azure Data Explorer instead. They'll need the identity's app ID, which
+   Without Azure access to the cluster, a database Admin can grant it in Azure Data
+   Explorer instead. They'll need the identity's app ID, which
    `az ad sp show --id "$PRINCIPAL_ID" --query appId --output tsv` returns:
 
    ```kusto
