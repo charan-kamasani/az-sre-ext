@@ -28,7 +28,10 @@ from requests import HTTPError, Response
 
 from azure.cli.core import get_default_cli
 from azure.cli.core.aaz import AAZCommand, AAZUndefined
-from azure.cli.core.azclierror import CLIError, InvalidArgumentValueError, ResourceNotFoundError
+from azure.cli.core.aaz.exceptions import AAZInvalidArgValueError
+from azure.cli.core.azclierror import (
+    CLIError, InvalidArgumentValueError, MutuallyExclusiveArgumentError, RequiredArgumentMissingError,
+    ResourceNotFoundError)
 from azure.cli.core.extension import DevExtension
 from azure.cli.core.mock import DummyCli
 from azure.core.exceptions import HttpResponseError, ResourceExistsError
@@ -48,7 +51,9 @@ from azext_sre.custom import (
     ConnectorCreate,
     ConnectorUpdate,
     ConnectorList,
+    _BearerTokenFileFormat,
     _ConnectorPartnerTypeMixin,
+    _ConnectorUpdateMcpArgsMixin,
     GrantAccess,
     RevokeAccess,
     ManagedResourceGrant,
@@ -5031,18 +5036,12 @@ class ConnectorConvenienceArgsTests(unittest.TestCase):
             {"authType": "AzureARM", "armScope": "https://management.azure.com/.default"},
         )
 
-    def test_mi_token_scope_implies_managed_identity_auth(self):
-        # --mi-token-scope alone (without --managed-identity-auth true) still
-        # triggers the AzureARM auth type, matching the help text's "implied
-        # by --mi-token-scope if that is passed alone".
-        args = self._run(
-            data_connector_type="Mcp",
-            mi_token_scope="api://myserver/.default",
-        )
-        self.assertEqual(
-            args.extended_properties,
-            {"authType": "AzureARM", "armScope": "api://myserver/.default"},
-        )
+    def test_mi_token_scope_requires_managed_identity_auth(self):
+        for managed_identity_auth in (None, False):
+            with self.subTest(managed_identity_auth=managed_identity_auth), \
+                    self.assertRaisesRegex(RequiredArgumentMissingError, "--managed-identity-auth true"):
+                self._run(data_connector_type="Mcp", mi_token_scope="api://myserver/.default",
+                          managed_identity_auth=managed_identity_auth)
 
     def test_oauth_dcr_builds_spec_oauth_with_scopes_and_client_name(self):
         args = self._run(
@@ -6180,6 +6179,169 @@ class McpEndpointSafetyTests(unittest.TestCase):
         _, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", managed_identity_auth=True,
                            mi_token_scope="api://contoso-mcp/.default")
         log.warning.assert_not_called()
+
+    def test_malformed_endpoint_is_rejected(self):
+        for endpoint in ("https://exa mple/mcp", "https://example.com/%%", "https://example.com/a%zz",
+                         "https://", "https:///mcp", "https://example.com:99999/"):
+            with self.subTest(endpoint=endpoint), self.assertRaises(InvalidArgumentValueError):
+                self._run(mcp_endpoint=endpoint)
+
+    def test_well_formed_endpoints_are_accepted(self):
+        for endpoint in ("https://mcp.contoso.com:8443/v1/mcp?x=1", "https://10.0.0.4/mcp",
+                         "https://example.com/a%20b", "https://[::1]/mcp", "https://localhost:8443/mcp",
+                         "https://exa_mple.com/mcp", "https://bücher.example/mcp"):
+            with self.subTest(endpoint=endpoint):
+                self.assertEqual(self._run(mcp_endpoint=endpoint)[0].data_source, endpoint)
+
+    def test_bearer_token_starting_with_at_is_rejected_without_echo(self):
+        # Azure CLI leaves '@path' as typed when it can't read the file.
+        for token in ("@C:\\nope.txt", "@secret-value"):
+            with self.subTest(token=token), self.assertRaises(InvalidArgumentValueError) as raised:
+                self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token=token)
+            self.assertIn("--bearer-token-file", str(raised.exception))
+            self.assertNotIn(token[1:], str(raised.exception))
+
+    def test_bearer_token_file_contents_starting_with_at_are_accepted(self):
+        args, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token_file="@secret")
+        self.assertEqual(args.extended_properties["bearerToken"], "@secret")
+        log.warning.assert_not_called()
+
+    def test_literal_bearer_token_warns_to_use_the_file_flag(self):
+        args, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="secret")
+        self.assertEqual(args.extended_properties["bearerToken"], "secret")
+        self.assertIn("--bearer-token-file", log.warning.call_args[0][0])
+
+    def test_empty_bearer_token_is_rejected(self):
+        for name in ("bearer_token", "bearer_token_file"):
+            for token in ("", "  "):
+                with self.subTest(name=name, token=token), \
+                        self.assertRaisesRegex(InvalidArgumentValueError, "empty"):
+                    self._run(mcp_endpoint="https://mcp.contoso.com/mcp", **{name: token})
+
+    def test_bearer_token_and_file_together_are_rejected(self):
+        with self.assertRaisesRegex(MutuallyExclusiveArgumentError, "not both"):
+            self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="a", bearer_token_file="b")
+
+    def test_bearer_token_file_format_strips_bom_and_newline_and_hides_contents(self):
+        fmt = _BearerTokenFileFormat()
+        handle = tempfile.NamedTemporaryFile(mode="wb", suffix=".txt", delete=False)
+        self.addCleanup(lambda: os.remove(handle.name))
+        handle.write("\ufefftoken-123\r\n".encode("utf-8"))
+        handle.close()
+        self.assertEqual(fmt.read_file(handle.name), "token-123")
+        with open(handle.name, "wb") as raw:
+            raw.write(b"\xffsecret\xfe")
+        with self.assertRaises(AAZInvalidArgValueError) as raised:
+            fmt.read_file(handle.name)
+        self.assertIn(handle.name, str(raised.exception))
+        self.assertNotIn("secret", str(raised.exception).replace(handle.name, ""))
+
+
+class ConnectorUpdateMcpArgsTests(unittest.TestCase):
+    """'connector update' takes create's Mcp endpoint and auth flags."""
+
+    class _Base:
+        def pre_operations(self):
+            pass
+
+        def pre_instance_update(self, instance):
+            pass
+
+        def post_instance_update(self, instance):
+            pass
+
+    class _Command(_ConnectorUpdateMcpArgsMixin, _Base):
+        pass
+
+    def _run(self, **extra_args):
+        args = {"data_connector_type": None, "mcp_endpoint": None, "data_source": None,
+                "extended_properties": None}
+        args.update(extra_args)
+        command = _bare_command(self._Command, **args)
+        with patch("azext_sre.custom.logger") as fake_logger:
+            command.pre_operations()
+        return command, fake_logger
+
+    class _Value:
+        def __init__(self, value):
+            self.value = value
+
+        def to_serialized_data(self):
+            return self.value
+
+    @classmethod
+    def _instance(cls, connector_type, extended_properties=None, data_source="https://mcp.contoso.com/mcp"):
+        return SimpleNamespace(properties=SimpleNamespace(
+            data_connector_type=cls._Value(connector_type),
+            data_source=cls._Value(data_source),
+            extended_properties=cls._Value(extended_properties)))
+
+    def _update(self, command, instance):
+        with patch("azext_sre.custom.has_value", lambda value: getattr(value, "value", None) is not None), \
+                patch("azext_sre.custom.logger") as fake_logger:
+            command.pre_instance_update(instance)
+            command.post_instance_update(instance)
+        return instance.properties.extended_properties, fake_logger
+
+    def test_bearer_token_rotation_keeps_other_settings(self):
+        command, log = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token_file="new-token")
+        self.assertEqual(command.ctx.args.data_source, "https://mcp.contoso.com/mcp")
+        self.assertIsNone(command.ctx.args.extended_properties)
+        log.warning.assert_not_called()
+        stored = {"transport": "Http", "authType": "BearerToken", "partnerType": "DynatraceMcp", "x": 1}
+        merged, _ = self._update(command, self._instance("Mcp", stored))
+        self.assertEqual(merged, {**stored, "endpoint": "https://mcp.contoso.com/mcp", "bearerToken": "new-token"})
+
+    def test_auth_flag_without_an_endpoint_is_rejected(self):
+        with self.assertRaisesRegex(CLIError, "--mcp-endpoint"):
+            self._run(bearer_token="new-token")
+
+    def test_endpoint_from_extended_properties_is_enough(self):
+        command, _ = self._run(bearer_token="new-token",
+                               extended_properties={"transport": "Http", "endpoint": "https://x.contoso.com"})
+        self.assertEqual(command._mcp_auth_overlay["bearerToken"], "new-token")
+
+    def test_endpoint_without_auth_is_rejected(self):
+        with self.assertRaisesRegex(RequiredArgumentMissingError, "--clear-auth"):
+            self._run(mcp_endpoint="https://mcp.contoso.com/mcp")
+
+    def test_clear_auth_removes_the_stored_auth(self):
+        command, _ = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", clear_auth=True)
+        stored = {"transport": "Http", "authType": "AzureARM", "armScope": "api://x/.default", "partnerType": "P"}
+        merged, _ = self._update(command, self._instance("Mcp", stored))
+        self.assertEqual(merged, {"transport": "Http", "endpoint": "https://mcp.contoso.com/mcp", "partnerType": "P"})
+
+    def test_clear_auth_with_an_auth_flag_or_false_alone_is_rejected(self):
+        with self.assertRaises(MutuallyExclusiveArgumentError):
+            self._run(mcp_endpoint="https://mcp.contoso.com/mcp", clear_auth=True, bearer_token="t")
+        for flag in ("managed_identity_auth", "oauth_dcr"):
+            with self.subTest(flag=flag), self.assertRaisesRegex(InvalidArgumentValueError, "--clear-auth"):
+                self._run(mcp_endpoint="https://mcp.contoso.com/mcp", **{flag: False})
+
+    def test_missing_token_file_and_malformed_endpoint_are_rejected(self):
+        with self.assertRaises(InvalidArgumentValueError):
+            self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="@nope.txt")
+        with self.assertRaises(InvalidArgumentValueError):
+            self._run(mcp_endpoint="https://exa mple/mcp", bearer_token="t")
+
+    def test_non_mcp_connector_is_rejected(self):
+        with self.assertRaisesRegex(CLIError, "Mcp"):
+            self._run(data_connector_type="Kusto", mcp_endpoint="https://mcp.contoso.com/mcp")
+        command, _ = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", bearer_token="t")
+        with self.assertRaisesRegex(CLIError, "Mcp"):
+            self._update(command, self._instance("KustoClient"))
+
+    def test_without_mcp_flags_nothing_changes(self):
+        command, _ = self._run(data_source="https://cluster.kusto.windows.net/db")
+        self.assertIsNone(command.ctx.args.extended_properties)
+        instance = self._instance("KustoClient")
+        self.assertIsNone(self._update(command, instance)[0].value)
+
+    def test_update_schema_has_the_flags(self):
+        schema = ConnectorUpdate._build_arguments_schema()
+        for name in ("mcp_endpoint", "bearer_token", "bearer_token_file", "managed_identity_auth", "mi_token_scope",
+                     "oauth_dcr", "oauth_scopes", "oauth_client_name", "clear_auth"):
+            self.assertTrue(hasattr(schema, name), name)
 
 
 class Utf8BomFileTests(unittest.TestCase):

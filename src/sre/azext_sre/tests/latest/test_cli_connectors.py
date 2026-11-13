@@ -162,7 +162,7 @@ class ConnectorCliTests(unittest.TestCase):
         root.setLevel(logging.DEBUG)
         cli.setLevel(logging.DEBUG)
         try:
-            with redirect_stdout(output), redirect_stderr(errors), \
+            with redirect_stdout(output), redirect_stderr(errors), patch("sys.argv", ["az", *arguments]), \
                     patch.object(root, "handlers", [capture]), patch.object(cli, "handlers", [capture]):
                 code = get_default_cli().invoke(list(arguments), out_file=output)
         except SystemExit as ex:
@@ -334,6 +334,282 @@ class ConnectorCliTests(unittest.TestCase):
         self.assertEqual(code, 0, logs.errors)
         self.assertEqual(self.arm.connector("mcp-oauth")["properties"]["extendedProperties"]["authType"], "SpecOAuth")
         self.assertIn(f"https://portal.azure.com/#@/resource{AGENT_ID}/connectors/mcp-oauth/overview", logs.warnings)
+
+    def _add_mcp_bearer_connector(self, name="mcp1"):
+        self.arm.add_connector(name, dataConnectorType="Mcp", dataSource="https://mcp.contoso.com/mcp",
+                               identity=UAMI_ID, extendedProperties={
+                                   "transport": "Http", "endpoint": "https://mcp.contoso.com/mcp",
+                                   "authType": "BearerToken", "bearerToken": "old-token",
+                                   "partnerType": "DynatraceMcp", "team": "sre"})
+
+    def _update_mcp(self, name, *arguments):
+        return self._run("sre", "connector", "update", "-g", "rg", "--agent-name", "myagent", "-n", name,
+                         "--identity", UAMI_ID, "--mcp-endpoint", "https://mcp.contoso.com/mcp", *arguments)
+
+    def _create_mcp(self, name, *arguments):
+        return self._run("sre", "connector", "create", "-g", "rg", "--agent-name", "myagent", "-n", name,
+                         "--data-connector-type", "Mcp", "--mcp-endpoint", "https://mcp.contoso.com/mcp", *arguments)
+
+    def test_bearer_token_file_stays_out_of_output_and_logs(self):
+        # Contents starting with '@' would be read again as a path, and logged, if they went through @file.
+        for name, contents in (("mcp-bt", "fake-secret-123\n"), ("mcp-at", "@fake_secret_123")):
+            with self.subTest(contents=contents):
+                token_file = self._file("token.txt", contents)
+                code, output, logs = self._create_mcp(name, "--bearer-token-file", token_file, "--debug")
+                self.assertEqual(code, 0, logs.errors)
+                self.assertEqual(self.arm.connector(name)["properties"]["extendedProperties"]["bearerToken"],
+                                 contents.strip())
+                self.assertNotIn("fake", output + logs.everything)
+                self.assertNotIn("--bearer-token puts", logs.warnings)
+
+    def test_literal_bearer_token_warns_and_rejects_at(self):
+        code, _, logs = self._create_mcp("mcp-lit", "--bearer-token", "literal-token")
+        self.assertEqual(code, 0, logs.errors)
+        self.assertIn("--bearer-token-file", logs.warnings)
+
+        for token in ("@" + os.path.join(self.files, "nope.txt"), "@fake-secret-value"):
+            with self.subTest(token=token):
+                self.arm.requests.clear()
+                code, _, logs = self._create_mcp("mcp-bad", "--bearer-token", token)
+                self.assertNotEqual(code, 0)
+                self.assertIn("--bearer-token-file", logs.errors)
+                self.assertNotIn("fake-secret-value", logs.errors)
+                self.assertEqual(self.arm.sent("PUT"), [])
+
+    def test_bearer_token_errors_never_show_the_value(self):
+        missing = os.path.join(self.files, "nope.txt")
+        empty = self._file("empty.txt", "\n")
+        both = ["--bearer-token-file", self._file("t.txt", "fake-secret"), "--bearer-token", "fake-secret"]
+        for arguments, expected in ((["--bearer-token-file", missing], "nope.txt"),
+                                    (["--bearer-token-file", empty], "empty"),
+                                    (both, "not both")):
+            with self.subTest(arguments=arguments):
+                self.arm.requests.clear()
+                code, _, logs = self._create_mcp("mcp-bad", *arguments)
+                self.assertNotEqual(code, 0)
+                self.assertIn(expected, logs.errors)
+                self.assertNotIn("fake-secret", logs.errors)
+                self.assertEqual(self.arm.sent("PUT"), [])
+        self.assertIsNone(self.arm.connector("mcp-bad"))
+
+        self._add_mcp_bearer_connector()
+        stored = copy.deepcopy(self.arm.connector("mcp1"))
+        self.arm.requests.clear()
+        code, _, logs = self._update_mcp("mcp1", "--bearer-token-file", empty)
+        self.assertNotEqual(code, 0)
+        self.assertIn("empty", logs.errors)
+        self.assertEqual(self.arm.sent("PUT"), [])
+        self.assertEqual(self.arm.connector("mcp1"), stored)
+
+    def test_token_rotation_keeps_the_connectors_other_settings(self):
+        self._add_mcp_bearer_connector()
+        token_file = self._file("token.txt", "new-token")
+        code, _, logs = self._update_mcp(
+            "mcp1", "--bearer-token-file", token_file,
+            "--extended-properties", '{"headers": {"X-Team": "sre"}}', "--debug")
+        self.assertEqual(code, 0, logs.errors)
+        self.assertNotIn("new-token", logs.everything)
+        self.assertEqual(self.arm.connector("mcp1")["properties"], {
+            "dataConnectorType": "Mcp", "dataSource": "https://mcp.contoso.com/mcp", "identity": UAMI_ID,
+            "extendedProperties": {
+                "transport": "Http", "endpoint": "https://mcp.contoso.com/mcp", "authType": "BearerToken",
+                "bearerToken": "new-token", "partnerType": "DynatraceMcp", "team": "sre",
+                "headers": {"X-Team": "sre"}},
+            "provisioningState": "Succeeded",
+        })
+
+    def test_switching_auth_on_update_drops_the_old_token(self):
+        for arguments, auth in ((["--managed-identity-auth", "true", "--mi-token-scope", "api://mcp/.default"],
+                                 {"authType": "AzureARM", "armScope": "api://mcp/.default"}),
+                                (["--oauth-dcr", "true"], {"authType": "SpecOAuth"})):
+            with self.subTest(arguments=arguments):
+                self._add_mcp_bearer_connector()
+                code, _, logs = self._update_mcp("mcp1", *arguments)
+                self.assertEqual(code, 0, logs.errors)
+                self.assertEqual(self.arm.connector("mcp1")["properties"]["extendedProperties"], {
+                    "transport": "Http", "endpoint": "https://mcp.contoso.com/mcp",
+                    "partnerType": "DynatraceMcp", "team": "sre", **auth})
+
+    def test_managed_identity_update_never_reuses_the_stored_scope(self):
+        # The endpoint is always sent again and may be new, so the old audience isn't reused.
+        self._add_mcp_bearer_connector()
+        code, _, logs = self._update_mcp("mcp1", "--managed-identity-auth", "true",
+                                         "--mi-token-scope", "api://mcp/.default")
+        self.assertEqual(code, 0, logs.errors)
+        code, _, logs = self._run("sre", "connector", "update", "-g", "rg", "--agent-name", "myagent",
+                                  "-n", "mcp1", "--identity", UAMI_ID,
+                                  "--mcp-endpoint", "https://new.example.net/mcp", "--managed-identity-auth", "true")
+        self.assertEqual(code, 0, logs.errors)
+        self.assertEqual(self.arm.connector("mcp1")["properties"]["extendedProperties"]["armScope"],
+                         "https://management.azure.com/.default")
+        self.assertIn("new.example.net", logs.warnings)
+
+    def test_auth_options_in_extended_properties_are_honored(self):
+        for arguments, expected in (
+                (["--managed-identity-auth", "true", "--extended-properties", '{"armScope": "api://contoso/.default"}'],
+                 {"authType": "AzureARM", "armScope": "api://contoso/.default"}),
+                (["--oauth-dcr", "true", "--extended-properties", '{"scopes": "api.read", "dcrClientName": "My App"}'],
+                 {"authType": "SpecOAuth", "scopes": "api.read", "dcrClientName": "My App"}),
+                (["--oauth-dcr", "true", "--oauth-scopes", "flag.read",
+                  "--extended-properties", '{"scopes": "api.read"}'],
+                 {"authType": "SpecOAuth", "scopes": "flag.read"})):
+            with self.subTest(arguments=arguments):
+                self._add_mcp_bearer_connector()
+                code, _, logs = self._update_mcp("mcp1", *arguments)
+                self.assertEqual(code, 0, logs.errors)
+                self.assertNotIn("management.azure.com", logs.warnings)
+                self.assertEqual(self.arm.connector("mcp1")["properties"]["extendedProperties"], {
+                    "transport": "Http", "endpoint": "https://mcp.contoso.com/mcp",
+                    "partnerType": "DynatraceMcp", "team": "sre", **expected})
+
+    def test_oauth_update_drops_the_stored_oauth_options(self):
+        self._add_mcp_bearer_connector()
+        code, _, logs = self._update_mcp("mcp1", "--oauth-dcr", "true", "--oauth-scopes", "read,write",
+                                         "--oauth-client-name", "sre")
+        self.assertEqual(code, 0, logs.errors)
+        code, _, logs = self._update_mcp("mcp1", "--oauth-dcr", "true")
+        self.assertEqual(code, 0, logs.errors)
+        extended = self.arm.connector("mcp1")["properties"]["extendedProperties"]
+        self.assertEqual(extended["authType"], "SpecOAuth")
+        self.assertNotIn("scopes", extended)
+        self.assertNotIn("dcrClientName", extended)
+
+    def test_credentials_are_never_saved_for_a_non_https_endpoint(self):
+        token_file = self._file("tok.txt", "fake-secret")
+        self._add_mcp_bearer_connector()
+        stored = copy.deepcopy(self.arm.connector("mcp1"))
+        self.arm.requests.clear()
+        code, _, logs = self._run("sre", "connector", "update", "-g", "rg", "--agent-name", "myagent", "-n", "mcp1",
+                                  "--data-source", "http://evil.example/mcp",
+                                  "--extended-properties", '{"endpoint": "http://evil.example/mcp"}',
+                                  "--bearer-token-file", token_file)
+        self.assertNotEqual(code, 0)
+        self.assertIn("https://", logs.errors)
+        self.assertEqual(self.arm.sent("PUT"), [])
+        self.assertEqual(self.arm.connector("mcp1"), stored)
+
+        code, _, logs = self._run("sre", "connector", "create", "-g", "rg", "--agent-name", "myagent", "-n", "mcp-http",
+                                  "--data-connector-type", "Mcp", "--data-source", "http://evil.example/mcp",
+                                  "--extended-properties", '{"transport": "Http", "endpoint": "http://evil.example/mcp"}',
+                                  "--bearer-token-file", token_file)
+        self.assertNotEqual(code, 0)
+        self.assertIsNone(self.arm.connector("mcp-http"))
+
+    def test_auth_in_extended_properties_alone_is_saved_on_update_like_create(self):
+        settings = '{"authType": "BearerToken", "bearerToken": "json-token"}'
+        code, _, logs = self._create_mcp("mcp-json", "--extended-properties", settings)
+        self.assertEqual(code, 0, logs.errors)
+        self.assertEqual(self.arm.connector("mcp-json")["properties"]["extendedProperties"]["bearerToken"],
+                         "json-token")
+
+        self._add_mcp_bearer_connector()
+        code, _, logs = self._update_mcp("mcp1", "--extended-properties", settings)
+        self.assertEqual(code, 0, logs.errors)
+        self.assertEqual(self.arm.connector("mcp1")["properties"]["extendedProperties"], {
+            "transport": "Http", "endpoint": "https://mcp.contoso.com/mcp", "partnerType": "DynatraceMcp",
+            "team": "sre", "authType": "BearerToken", "bearerToken": "json-token"})
+
+        self.arm.requests.clear()
+        code, _, logs = self._update_mcp("mcp1", "--extended-properties", settings, "--clear-auth")
+        self.assertNotEqual(code, 0)
+        self.assertIn("not both", logs.errors)
+        self.assertEqual(self.arm.sent("PUT"), [])
+
+    def test_auth_from_any_source_is_never_saved_for_a_non_https_endpoint(self):
+        token_file = self._file("tok.txt", "fake-secret")
+        settings = '{"transport": "Http", "endpoint": "http://evil.example/mcp", ' \
+                   '"authType": "BearerToken", "bearerToken": "fake-secret"}'
+        code, _, logs = self._run("sre", "connector", "create", "-g", "rg", "--agent-name", "myagent",
+                                  "-n", "mcp-raw", "--data-connector-type", "Mcp",
+                                  "--data-source", "http://evil.example/mcp", "--extended-properties", settings)
+        self.assertNotEqual(code, 0)
+        self.assertIn("https://", logs.errors)
+        self.assertIsNone(self.arm.connector("mcp-raw"))
+
+        self._add_mcp_bearer_connector()
+        stored = copy.deepcopy(self.arm.connector("mcp1"))
+        for setting in ("properties.dataSource=http://evil.example/mcp",
+                        "properties.extendedProperties.endpoint=http://evil.example/mcp"):
+            with self.subTest(setting=setting):
+                self.arm.requests.clear()
+                code, _, logs = self._run(
+                    "sre", "connector", "update", "-g", "rg", "--agent-name", "myagent", "-n", "mcp1",
+                    "--identity", UAMI_ID, "--extended-properties", '{"endpoint": "https://mcp.contoso.com/mcp"}',
+                    "--bearer-token-file", token_file, "--set", setting)
+                self.assertNotEqual(code, 0)
+                self.assertIn("https://", logs.errors)
+                self.assertEqual(self.arm.sent("PUT"), [])
+                self.assertEqual(self.arm.connector("mcp1"), stored)
+
+        # Nathan's repros, with --mcp-endpoint: a --set dataSource is refused, and a --set endpoint
+        # is replaced by --mcp-endpoint, so the token only ever goes to https.
+        self.arm.requests.clear()
+        code, _, logs = self._update_mcp("mcp1", "--bearer-token-file", token_file,
+                                         "--set", "properties.dataSource=http://evil.example/mcp")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.arm.sent("PUT"), [])
+        self.assertEqual(self.arm.connector("mcp1"), stored)
+
+        code, _, logs = self._update_mcp("mcp1", "--bearer-token-file", token_file,
+                                         "--set", "properties.extendedProperties.endpoint=http://evil.example/mcp")
+        self.assertEqual(code, 0, logs.errors)
+        properties = self.arm.connector("mcp1")["properties"]
+        self.assertEqual(properties["extendedProperties"]["endpoint"], "https://mcp.contoso.com/mcp")
+        self.assertEqual(properties["dataSource"], "https://mcp.contoso.com/mcp")
+
+    def test_mi_token_scope_alone_is_refused(self):
+        self._add_mcp_bearer_connector()
+        stored = copy.deepcopy(self.arm.connector("mcp1"))
+        for arguments in (["--mi-token-scope", "api://mcp/.default"],
+                          ["--mi-token-scope", "api://mcp/.default", "--managed-identity-auth", "false"]):
+            with self.subTest(arguments=arguments):
+                self.arm.requests.clear()
+                code, _, logs = self._update_mcp("mcp1", *arguments)
+                self.assertNotEqual(code, 0)
+                self.assertIn("--managed-identity-auth true", logs.errors)
+                self.assertEqual(self.arm.sent("PUT"), [])
+                self.assertEqual(self.arm.connector("mcp1"), stored)
+
+    def test_bearer_token_file_expands_home(self):
+        self._file("token.txt", "home-token")
+        with patch.dict(os.environ, {"HOME": self.files, "USERPROFILE": self.files}):
+            code, _, logs = self._create_mcp("mcp-home", "--bearer-token-file", os.path.join("~", "token.txt"))
+        self.assertEqual(code, 0, logs.errors)
+        self.assertEqual(self.arm.connector("mcp-home")["properties"]["extendedProperties"]["bearerToken"],
+                         "home-token")
+
+    def test_endpoint_change_without_the_auth_is_refused(self):
+        self._add_mcp_bearer_connector()
+        code, _, logs = self._update_mcp("mcp1", "--managed-identity-auth", "true",
+                                         "--mi-token-scope", "api://mcp/.default")
+        self.assertEqual(code, 0, logs.errors)
+        stored = copy.deepcopy(self.arm.connector("mcp1"))
+        self.arm.requests.clear()
+        code, _, logs = self._update_mcp("mcp1")
+        self.assertNotEqual(code, 0)
+        self.assertIn("--clear-auth", logs.errors)
+        self.assertEqual(self.arm.sent("GET") + self.arm.sent("PUT"), [])
+        self.assertEqual(self.arm.connector("mcp1"), stored)
+
+    def test_clear_auth_saves_the_connector_without_auth(self):
+        self._add_mcp_bearer_connector()
+        code, _, logs = self._update_mcp("mcp1", "--clear-auth")
+        self.assertEqual(code, 0, logs.errors)
+        self.assertEqual(self.arm.connector("mcp1")["properties"]["extendedProperties"], {
+            "transport": "Http", "endpoint": "https://mcp.contoso.com/mcp",
+            "partnerType": "DynatraceMcp", "team": "sre"})
+
+    def test_mcp_flags_do_not_convert_another_connector(self):
+        stored = copy.deepcopy(self.arm.connector("kusto-prod"))
+        token_file = self._file("token.txt", "t")
+        for arguments in ([], ["--data-connector-type", "Mcp"]):
+            with self.subTest(arguments=arguments):
+                self.arm.requests.clear()
+                code, _, logs = self._update_mcp("kusto-prod", "--bearer-token-file", token_file, *arguments)
+                self.assertNotEqual(code, 0)
+                self.assertIn("only apply to Mcp connectors", logs.errors)
+                self.assertEqual(self.arm.sent("PUT"), [])
+                self.assertEqual(self.arm.connector("kusto-prod"), stored)
 
 
 if __name__ == "__main__":
