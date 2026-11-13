@@ -531,8 +531,8 @@ Create an Agent Connector.
 | `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one. |
 | `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth true: token scope to request. Default: `https://management.azure.com/.default`. On update, a stored scope isn't reused, so pass it again. |
 | `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
-| `--oauth-scopes` | String | No |  |  | For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. |
-| `--oauth-client-name` | String | No |  |  | For Mcp with --oauth-dcr: client name to register. Optional. |
+| `--oauth-scopes` | String | No |  |  | For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. On update, stored scopes aren't reused, so pass them again. |
+| `--oauth-client-name` | String | No |  |  | For Mcp with --oauth-dcr: client name to register. Optional. On update, a stored client name isn't reused, so pass it again. |
 | `--partner-type` | String | No |  |  | For Mcp: the partner integration this server belongs to, for example DynatraceMcp. |
 
 **Examples**
@@ -710,8 +710,8 @@ An update sends the whole connector back, and the service never returns a connec
 | `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one. |
 | `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth true: token scope to request. Default: `https://management.azure.com/.default`. On update, a stored scope isn't reused, so pass it again. |
 | `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
-| `--oauth-scopes` | String | No |  |  | For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. |
-| `--oauth-client-name` | String | No |  |  | For Mcp with --oauth-dcr: client name to register. Optional. |
+| `--oauth-scopes` | String | No |  |  | For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. On update, stored scopes aren't reused, so pass them again. |
+| `--oauth-client-name` | String | No |  |  | For Mcp with --oauth-dcr: client name to register. Optional. On update, a stored client name isn't reused, so pass it again. |
 | `--clear-auth` | Boolean | No |  | `false`, `true` | For Mcp: remove the connector's auth and save it without any. Needs the endpoint, like the auth flags. |
 
 **Examples**

@@ -1992,12 +1992,14 @@ def _add_mcp_auth_args(schema):
     schema.oauth_scopes = AAZStrArg(
         options=["--oauth-scopes"],
         arg_group="MCP",
-        help="For Mcp with --oauth-dcr: comma-separated OAuth scopes to request.",
+        help="For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. On update, "
+             "stored scopes aren't reused, so pass them again.",
     )
     schema.oauth_client_name = AAZStrArg(
         options=["--oauth-client-name"],
         arg_group="MCP",
-        help="For Mcp with --oauth-dcr: client name to register. Optional.",
+        help="For Mcp with --oauth-dcr: client name to register. Optional. On update, a stored "
+             "client name isn't reused, so pass it again.",
     )
 
 
