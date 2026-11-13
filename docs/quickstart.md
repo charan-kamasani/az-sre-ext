@@ -13,7 +13,9 @@ The examples use bash. If you use PowerShell, see
 These requirements match the portal's; see
 [Create and set up Azure SRE Agent](https://learn.microsoft.com/azure/sre-agent/create-and-set-up#prerequisites).
 To list your Azure roles, run
-`az role assignment list --assignee "$(az ad signed-in-user show --query id -o tsv)" --all -o table`.
+`az role assignment list --assignee "$(az ad signed-in-user show --query id -o tsv)" --all --include-groups -o table`.
+It covers roles you get through a group, but only in the current subscription; for a
+cluster in another subscription, add `--subscription <cluster-subscription-id>`.
 
 ### Required
 
@@ -310,6 +312,25 @@ IcM works only on Microsoft first-party agents; see
 > This permanently deletes the resource group and everything in it, including the agent.
 > Confirm the variables before running it. It does not delete the repository or the
 > Azure Data Explorer cluster.
+
+Deleting the resource group doesn't remove the database grant from
+[Connect a data source](#connect-a-data-source), because it lives on the cluster. Remove it
+first:
+
+```bash
+az kusto database-principal-assignment delete \
+  --subscription "$CLUSTER_SUBSCRIPTION_ID" \
+  --cluster-name <cluster> \
+  --resource-group <cluster-resource-group> \
+  --database-name <database> \
+  --principal-assignment-name "$AGENT-viewer" \
+  --yes
+```
+
+If you granted access with the KQL command instead, run
+`.drop database <database> viewers ('aadapp=<app-id>')`.
+
+Then delete the resource group:
 
 ```bash
 printf 'Deleting subscription=%s resource-group=%s\n' \
