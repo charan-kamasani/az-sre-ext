@@ -631,7 +631,7 @@ Learn: [Create scheduled tasks](https://learn.microsoft.com/azure/sre-agent/crea
 | Step | Label | How |
 | --- | --- | --- |
 | Open Automation and create a scheduled task: name, task details, frequency, time of day | CLI | `az sre automation scheduled-task create`, below. |
-| Leave the response subagent, model tier and autonomy level at their defaults | CLI | Leave those fields out. To hand the task to a subagent, add `"agent": "<subagent>"`. |
+| Leave the response subagent, model tier and autonomy level at their defaults | CLI | Leave those fields out. To hand the task to a subagent, add `"agent": "<subagent>"`. Without `agentMode` the task runs autonomously, even when the agent runs in review mode; add `"agentMode": "review"` to have its actions wait for approval. |
 | Message grouping for updates | Portal | To change it from the default, use Automation > Edit. The CLI's task fields don't include it. |
 | Weekly, monthly or custom cron schedules | CLI | `cronExpression`, always in UTC. |
 | Limit how long it runs with Repeat until or a run limit | CLI | `endTime` (an ISO 8601 date-time) or `maxExecutions`. |

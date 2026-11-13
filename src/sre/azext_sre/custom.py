@@ -6426,16 +6426,21 @@ class _AutomationScheduledTaskGroup(AAZCommandGroup):
 class AutomationScheduledTaskCreate(_PinnedExtensionCreate):
     """Create or update a scheduled task.
 
-    :example: Run the agent on a timer against a prompt
+    Without agentMode, the service runs the task in autonomous mode, even when the
+    agent itself runs in review mode. Set agentMode in --value, for example to
+    "review", so the task's actions wait for approval.
+
+    :example: Run the agent on a timer against a prompt, in review mode
         az sre automation scheduled-task create -g myrg --agent-name myagent --name daily-digest \\
-            --value '{"cronExpression": "0 9 * * 1-5", "agentPrompt": "Summarize overnight alerts"}'
+            --value '{"cronExpression": "0 9 * * 1-5", "agentPrompt": "Summarize overnight alerts", "agentMode": "review"}'
     """
 
     _EXTENSION_TYPE = "scheduledTasks"
     _args_schema = None
     _VALUE_HELP = (
         "Task configuration as JSON. Fields: cronExpression, agentPrompt, description, agent, threadId, startTime, endTime, maxExecutions, "
-        "agentMode (readonly, review or autonomous), and isEnabled or status (Active or Paused)."
+        "agentMode (readonly, review or autonomous; the service uses autonomous if it's left out), "
+        "and isEnabled or status (Active or Paused)."
     )
 
 

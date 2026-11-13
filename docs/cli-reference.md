@@ -2369,6 +2369,8 @@ Runs the agent against a prompt, optionally bounded to a time window or a maximu
 
 Create or update a scheduled task.
 
+Without agentMode, the service runs the task in autonomous mode, even when the agent itself runs in review mode. Set agentMode in --value, for example to "review", so the task's actions wait for approval.
+
 **Syntax**
 
 `az sre automation scheduled-task create --agent-name <value> --resource-group <value> --name <value> --value <value> [--overwrite {false,true}]`
@@ -2378,16 +2380,16 @@ Create or update a scheduled task.
 | `--agent-name` | String | Yes |  |  | Name of the SRE Agent. |
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of this instance. |
-| `--value` | String | Yes |  |  | Task configuration as JSON. Fields: cronExpression, agentPrompt, description, agent, threadId, startTime, endTime, maxExecutions, agentMode (readonly, review or autonomous), and isEnabled or status (Active or Paused). |
+| `--value` | String | Yes |  |  | Task configuration as JSON. Fields: cronExpression, agentPrompt, description, agent, threadId, startTime, endTime, maxExecutions, agentMode (readonly, review or autonomous; the service uses autonomous if it's left out), and isEnabled or status (Active or Paused). |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing one of the same name. Without this flag, creation refuses to overwrite an existing instance. |
 
 **Examples**
 
-- Run the agent on a timer against a prompt
+- Run the agent on a timer against a prompt, in review mode
 
   ```bash
   az sre automation scheduled-task create -g myrg --agent-name myagent --name daily-digest \
-  --value '{"cronExpression": "0 9 * * 1-5", "agentPrompt": "Summarize overnight alerts"}'
+  --value '{"cronExpression": "0 9 * * 1-5", "agentPrompt": "Summarize overnight alerts", "agentMode": "review"}'
   ```
 
 ### `az sre automation scheduled-task delete`
