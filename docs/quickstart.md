@@ -100,12 +100,14 @@ with a permission error.
      --data-source "https://<cluster>.<region>.kusto.windows.net/<database>"
    ```
 
-   `--name` is a label you choose.
+   `--name` is a label you choose. The portal shows this connector as "Azure Data
+   Explorer".
 
-   You might also see an "Azure Data Explorer" type, which the service stores as
-   `KustoClient`. It doesn't connect to a cluster. It only sets which identity Kusto
-   queries use, and it stays at **Connecting** in the portal. On its own it doesn't let
-   the agent query anything, so you don't need it for this walkthrough.
+   The CLI also accepts `--data-connector-type "Azure Data Explorer"`, but that creates
+   a different connector, stored as `KustoClient`. It doesn't name a cluster. It only
+   sets which identity Kusto queries use, and on its own it stays at **Connecting** and
+   the agent can't query anything. The portal's Azure Data Explorer wizard creates both
+   kinds together; with the CLI, the `Kusto` connector above is the one you need.
 
 2. Get the principal ID of the identity the connector queries with. A connector created
    without `--identity` uses the agent's **system-assigned** identity. That's the one
