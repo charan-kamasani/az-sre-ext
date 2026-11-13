@@ -724,6 +724,30 @@ class ExtensionCommandCliTests(unittest.TestCase):
                 self.assertEqual(code, 0, err)
                 self.assertEqual(self.service.store[("scheduledTasks", "t1")]["agentMode"], "Autonomous")
 
+    def test_skill_create_attaches_additional_files(self):
+        folder = os.path.join(self.config_dir, "compliance")
+        os.makedirs(os.path.join(folder, "refs"))
+        skill_md = self._write(os.path.join("compliance", "SKILL.md"),
+                               "---\nname: compliance\ndescription: Check deployments\n---\nSee detection.md.\n")
+        detection = self._write(os.path.join("compliance", "detection.md"), "# Detection\n")
+        query = self._write(os.path.join("compliance", "refs", "query.kql"), "AzureActivity\n")
+        for route in ("arm", "direct"):
+            with self.subTest(route=route):
+                self._reset()
+                code, _, err = self._az(*self._command(
+                    "skill", "create", "--file-path", skill_md, "--additional-file", detection,
+                    "--additional-file", query), route=route)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(self.service.store[("skills", "compliance")]["additionalFiles"], [
+                    {"filePath": "detection.md", "content": "# Detection\n"},
+                    {"filePath": "refs/query.kql", "content": "AzureActivity\n"}])
+        self._reset()
+        code, _, err = self._az(*self._command(
+            "skill", "create", "-n", "s", "--value", '{"description": "x"}', "--additional-file", detection))
+        self.assertNotEqual(code, 0)
+        self.assertIn("--additional-file", err)
+        self.assertEqual(self._puts(), [])
+
 
 def _bash_command_lines(text):
     """Split an example into command lines the way bash reads them: a

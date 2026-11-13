@@ -6305,6 +6305,33 @@ def _skill_md_tools(tools):
     raise CLIError("The SKILL.md frontmatter 'tools' must be a list of tool names, or pass --tools.")
 
 
+def _skill_additional_files(skill_md_path, paths):
+    """A skill's additionalFiles, in the shape the service stores from --value:
+    each file's text, named by its path from the SKILL.md folder, or by its file
+    name when it's outside that folder."""
+    folder = os.path.dirname(os.path.abspath(skill_md_path))
+    files = []
+    for path in paths:
+        if not os.path.isfile(path):
+            raise CLIError(f"--additional-file '{path}' does not exist.")
+        try:
+            name = os.path.relpath(os.path.abspath(path), folder)
+        except ValueError:  # another drive
+            name = os.path.basename(path)
+        if name.startswith(os.pardir):
+            name = os.path.basename(path)
+        name = name.replace(os.sep, "/")
+        if any(item["filePath"] == name for item in files):
+            raise CLIError(f"More than one --additional-file is named '{name}'.")
+        try:
+            with open(path, "r", encoding="utf-8-sig") as handle:
+                content = handle.read()
+        except UnicodeDecodeError:
+            raise CLIError(f"--additional-file '{path}' isn't UTF-8 text.") from None
+        files.append({"filePath": name, "content": content})
+    return files
+
+
 # ---- sre tool (portal: Extensions > Tools > Custom tools) ----
 @register_command_group("sre tool")
 class _ToolGroup(AAZCommandGroup):
@@ -7659,6 +7686,10 @@ class SkillCreate(_PinnedExtensionCreate):
     :example: Name the skill from the SKILL.md frontmatter 'name:' line
         az sre skill create --agent-name myagent --resource-group myrg --file-path SKILL.md
 
+    :example: Create a skill from a SKILL.md file and a reference file next to it
+        az sre skill create --agent-name myagent --resource-group myrg \\
+            --file-path compliance/SKILL.md --additional-file compliance/detection.md
+
     :example: Create a skill from a raw JSON value
         az sre skill create --agent-name myagent --resource-group myrg --name my-skill \\
             --value '{"description": "...", "tools": [], "skillContent": "# My skill\\n..."}'
@@ -7704,6 +7735,14 @@ class SkillCreate(_PinnedExtensionCreate):
             help="Skill description. Only used with --file-path; overrides "
             "the SKILL.md frontmatter's 'description:' line if both are given.",
         )
+        schema.additional_files = AAZListArg(
+            options=["--additional-files"], singular_options=["--additional-file"],
+            arg_group="Skill builder",
+            help="Other text files the skill uses, such as a reference next to SKILL.md. Repeat --additional-file "
+            "for each, or list them after --additional-files. They're sent as additionalFiles, named by their "
+            "path from the SKILL.md folder. Only used with --file-path.",
+        )
+        schema.additional_files.Element = AAZStrArg()
         cls._args_schema = schema
         return schema
 
@@ -7711,10 +7750,14 @@ class SkillCreate(_PinnedExtensionCreate):
         args = self.ctx.args
         file_path = _arg_value(getattr(args, "file_path", None))
         explicit_value = _arg_value(getattr(args, "value", None))
+        additional_files = _arg_value(getattr(args, "additional_files", None))
         if file_path and explicit_value:
             raise CLIError("Specify either --file-path or --value, not both.")
         if not file_path and not explicit_value:
             raise CLIError("Specify either --file-path or --value.")
+        if additional_files and not file_path:
+            raise CLIError("--additional-file is only used with --file-path. With --value, put the files in "
+                           "its additionalFiles list as {\"filePath\": ..., \"content\": ...} objects.")
         name = _arg_value(getattr(args, "extension_name", None))
         if not file_path:
             if not name:
@@ -7745,9 +7788,10 @@ class SkillCreate(_PinnedExtensionCreate):
         if not isinstance(description, str):
             raise CLIError("The SKILL.md frontmatter description must be text. Quote it, or pass --description.")
         tools = _arg_value(getattr(args, "tools", None)) or _skill_md_tools(frontmatter.get("tools"))
-        args.value = json.dumps(
-            {"description": description.strip(), "tools": list(tools), "skillContent": content}
-        )
+        value = {"description": description.strip(), "tools": list(tools), "skillContent": content}
+        if additional_files:
+            value["additionalFiles"] = _skill_additional_files(file_path, additional_files)
+        args.value = json.dumps(value)
 
 
 @register_command("sre skill show")

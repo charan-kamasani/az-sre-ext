@@ -1787,7 +1787,7 @@ Built-in skills are toggled on/off separately, not created here; use 'sre skill 
 
 | Verb | Exact syntax |
 | --- | --- |
-| `create` | `az sre skill create --agent-name <value> --resource-group <value> [--name <value>] [--value <value>] [--overwrite {false,true}] [--file-path <value>] [--tools <json-or-@file>] [--description <value>]` |
+| `create` | `az sre skill create --agent-name <value> --resource-group <value> [--name <value>] [--value <value>] [--overwrite {false,true}] [--file-path <value>] [--tools <json-or-@file>] [--description <value>] [--additional-files <json-or-@file>]` |
 | `delete` | `az sre skill delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
 | `list` | `az sre skill list --name <value> --resource-group <value>` |
 | `show` | `az sre skill show --agent-name <value> --resource-group <value> --name <value>` |
@@ -1798,7 +1798,7 @@ Create or update a custom skill.
 
 **Syntax**
 
-`az sre skill create --agent-name <value> --resource-group <value> [--name <value>] [--value <value>] [--overwrite {false,true}] [--file-path <value>] [--tools <json-or-@file>] [--description <value>]`
+`az sre skill create --agent-name <value> --resource-group <value> [--name <value>] [--value <value>] [--overwrite {false,true}] [--file-path <value>] [--tools <json-or-@file>] [--description <value>] [--additional-files <json-or-@file>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -1810,6 +1810,7 @@ Create or update a custom skill.
 | `--file-path` | String | No |  |  | Path to a SKILL.md-style file: an optional YAML frontmatter block between '---' lines with name, description and tools, followed by the skill's Markdown instructions. The frontmatter name is used when --name is omitted. Alternative to --value. |
 | `--tools` | List | No |  |  | Space-separated tool names this skill can use when active. Only used with --file-path; overrides the SKILL.md frontmatter's 'tools'. Defaults to none. |
 | `--description` | String | No |  |  | Skill description. Only used with --file-path; overrides the SKILL.md frontmatter's 'description:' line if both are given. |
+| `--additional-files` | List | No |  |  | Other text files the skill uses, such as a reference next to SKILL.md. Repeat --additional-file for each, or list them after --additional-files. They're sent as additionalFiles, named by their path from the SKILL.md folder. Only used with --file-path. |
 
 **Examples**
 
@@ -1823,6 +1824,12 @@ Create or update a custom skill.
 
   ```bash
   az sre skill create --agent-name myagent --resource-group myrg --file-path SKILL.md
+  ```
+- Create a skill from a SKILL.md file and a reference file next to it
+
+  ```bash
+  az sre skill create --agent-name myagent --resource-group myrg \
+  --file-path compliance/SKILL.md --additional-file compliance/detection.md
   ```
 - Create a skill from a raw JSON value
 
