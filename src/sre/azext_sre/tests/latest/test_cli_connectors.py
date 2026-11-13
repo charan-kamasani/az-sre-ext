@@ -469,15 +469,26 @@ class ConnectorCliTests(unittest.TestCase):
         self.assertEqual(self.arm.connector("mcp-home")["properties"]["extendedProperties"]["bearerToken"],
                          "home-token")
 
-    def test_endpoint_change_without_the_token_is_refused(self):
+    def test_endpoint_change_without_the_auth_is_refused(self):
         self._add_mcp_bearer_connector()
+        code, _, logs = self._update_mcp("mcp1", "--managed-identity-auth", "true",
+                                         "--mi-token-scope", "api://mcp/.default")
+        self.assertEqual(code, 0, logs.errors)
         stored = copy.deepcopy(self.arm.connector("mcp1"))
         self.arm.requests.clear()
         code, _, logs = self._update_mcp("mcp1")
         self.assertNotEqual(code, 0)
-        self.assertIn("--bearer-token-file", logs.errors)
-        self.assertEqual(self.arm.sent("PUT"), [])
+        self.assertIn("--clear-auth", logs.errors)
+        self.assertEqual(self.arm.sent("GET") + self.arm.sent("PUT"), [])
         self.assertEqual(self.arm.connector("mcp1"), stored)
+
+    def test_clear_auth_saves_the_connector_without_auth(self):
+        self._add_mcp_bearer_connector()
+        code, _, logs = self._update_mcp("mcp1", "--clear-auth")
+        self.assertEqual(code, 0, logs.errors)
+        self.assertEqual(self.arm.connector("mcp1")["properties"]["extendedProperties"], {
+            "transport": "Http", "endpoint": "https://mcp.contoso.com/mcp",
+            "partnerType": "DynatraceMcp", "team": "sre"})
 
     def test_mcp_flags_do_not_convert_another_connector(self):
         stored = copy.deepcopy(self.arm.connector("kusto-prod"))

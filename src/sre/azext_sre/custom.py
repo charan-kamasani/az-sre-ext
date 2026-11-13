@@ -2330,11 +2330,11 @@ class _ConnectorUpdateMcpArgsMixin:
     """Adds create's --mcp-endpoint and MCP auth flags to 'connector update'.
 
     The service never returns an MCP connector's endpoint or bearer token, so
-    when these flags are used the update must pass the endpoint again. The stored
-    extendedProperties are kept, and the auth fields are replaced only when an
-    auth flag is passed. A stored armScope is kept unless --mi-token-scope is
-    passed. Errors if the stored connector isn't Mcp, or if it uses a bearer
-    token that wasn't passed again."""
+    when these flags are used the update must pass the endpoint again, along
+    with the full auth to use for it (or --clear-auth); stored auth is never
+    reused for a new endpoint. Other stored extendedProperties are kept, and a
+    stored armScope is kept unless --mi-token-scope is passed. Errors if the
+    stored connector isn't Mcp."""
 
     _mcp_flags_used = False
 
@@ -2350,6 +2350,12 @@ class _ConnectorUpdateMcpArgsMixin:
                  "here or in --extended-properties; the service never returns it.",
         )
         _add_mcp_auth_args(schema)
+        schema.clear_auth = AAZBoolArg(
+            options=["--clear-auth"],
+            arg_group="MCP",
+            help="For Mcp: remove the connector's auth and save it without any. Needs the endpoint, "
+                 "like the auth flags.",
+        )
         return schema
 
     _mcp_endpoint_properties = None
@@ -2370,7 +2376,16 @@ class _ConnectorUpdateMcpArgsMixin:
             endpoint_properties = {"transport": "Http", "endpoint": mcp_endpoint}
         auth_overlay = _mcp_auth_properties(args, {"endpoint": mcp_endpoint or given.get("endpoint")},
                                             warn_arm_scope=False)
-        if mcp_endpoint or auth_overlay is not None:
+        clear_auth = bool(_arg_value(getattr(args, "clear_auth", None)))
+        if clear_auth and auth_overlay is not None:
+            raise MutuallyExclusiveArgumentError("Use either --clear-auth or an auth flag, not both.")
+        if auth_overlay is None and not clear_auth and (
+                _arg_value(getattr(args, "managed_identity_auth", None)) is False
+                or _arg_value(getattr(args, "oauth_dcr", None)) is False):
+            raise InvalidArgumentValueError(
+                "Passing false doesn't remove auth. To save the connector without auth, use --clear-auth "
+                "with --mcp-endpoint. Nothing was sent.")
+        if mcp_endpoint or auth_overlay is not None or clear_auth:
             connector_type = _arg_value(getattr(args, "data_connector_type", None))
             if connector_type is not None and connector_type != "Mcp":
                 raise CLIError("--mcp-endpoint and the MCP auth flags only apply to Mcp connectors.")
@@ -2378,6 +2393,13 @@ class _ConnectorUpdateMcpArgsMixin:
                 raise CLIError(
                     "Pass --mcp-endpoint too. The service never returns an MCP connector's "
                     "endpoint, so the update has to send it again.")
+            if auth_overlay is None and not clear_auth:
+                # The CLI can't tell whether the endpoint changed, so it never
+                # sends stored auth (an ARM token, say) to it unasked.
+                raise RequiredArgumentMissingError(
+                    "Pass the auth to use with this endpoint: --bearer-token-file, --managed-identity-auth "
+                    "true or --oauth-dcr true. To save it without auth, add --clear-auth. Stored auth isn't "
+                    "reused, because the service never returns the endpoint it was set up for. Nothing was sent.")
             if auth_overlay is not None:
                 auth_overlay.pop("endpoint", None)
             self._mcp_endpoint_properties = endpoint_properties
@@ -2420,20 +2442,11 @@ class _ConnectorUpdateMcpArgsMixin:
             else:
                 _warn_arm_scope((self._mcp_endpoint_properties or {}).get("endpoint")
                                 or merged.get("endpoint") or "")
-        if self._mcp_auth_overlay is not None:
-            for key in _MCP_AUTH_KEYS:
-                merged.pop(key, None)
+        # pre_operations made sure an auth flag or --clear-auth was passed.
+        for key in _MCP_AUTH_KEYS:
+            merged.pop(key, None)
         merged.update(self._mcp_endpoint_properties or {})
         merged.update(overlay)
-        if self._mcp_auth_overlay is None:
-            if merged.get("authType") == "BearerToken" and not merged.get("bearerToken"):
-                raise CLIError(
-                    "This connector uses a bearer token, which the service never returns. "
-                    "Pass --bearer-token-file again. Nothing was sent.")
-            if not merged.get("authType") and not merged.get("headers"):
-                logger.warning(
-                    "No auth flag was passed, so the connector is saved without authentication. "
-                    "Pass --bearer-token-file, --managed-identity-auth or --oauth-dcr to keep one.")
         properties.extended_properties = merged
 
 

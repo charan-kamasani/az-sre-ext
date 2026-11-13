@@ -6299,15 +6299,22 @@ class ConnectorUpdateMcpArgsTests(unittest.TestCase):
                                extended_properties={"transport": "Http", "endpoint": "https://x.contoso.com"})
         self.assertEqual(command._mcp_auth_overlay["bearerToken"], "new-token")
 
-    def test_endpoint_without_auth_on_a_bearer_connector_is_rejected(self):
-        command, _ = self._run(mcp_endpoint="https://mcp.contoso.com/mcp")
-        with self.assertRaisesRegex(CLIError, "--bearer-token"):
-            self._update(command, self._instance("Mcp", {"authType": "BearerToken"}))
+    def test_endpoint_without_auth_is_rejected(self):
+        with self.assertRaisesRegex(RequiredArgumentMissingError, "--clear-auth"):
+            self._run(mcp_endpoint="https://mcp.contoso.com/mcp")
 
-    def test_endpoint_without_auth_warns_that_auth_is_dropped(self):
-        command, _ = self._run(mcp_endpoint="https://mcp.contoso.com/mcp")
-        _, log = self._update(command, self._instance("Mcp", {"transport": "Http"}))
-        log.warning.assert_called_once()
+    def test_clear_auth_removes_the_stored_auth(self):
+        command, _ = self._run(mcp_endpoint="https://mcp.contoso.com/mcp", clear_auth=True)
+        stored = {"transport": "Http", "authType": "AzureARM", "armScope": "api://x/.default", "partnerType": "P"}
+        merged, _ = self._update(command, self._instance("Mcp", stored))
+        self.assertEqual(merged, {"transport": "Http", "endpoint": "https://mcp.contoso.com/mcp", "partnerType": "P"})
+
+    def test_clear_auth_with_an_auth_flag_or_false_alone_is_rejected(self):
+        with self.assertRaises(MutuallyExclusiveArgumentError):
+            self._run(mcp_endpoint="https://mcp.contoso.com/mcp", clear_auth=True, bearer_token="t")
+        for flag in ("managed_identity_auth", "oauth_dcr"):
+            with self.subTest(flag=flag), self.assertRaisesRegex(InvalidArgumentValueError, "--clear-auth"):
+                self._run(mcp_endpoint="https://mcp.contoso.com/mcp", **{flag: False})
 
     def test_missing_token_file_and_malformed_endpoint_are_rejected(self):
         with self.assertRaises(InvalidArgumentValueError):
@@ -6331,7 +6338,7 @@ class ConnectorUpdateMcpArgsTests(unittest.TestCase):
     def test_update_schema_has_the_flags(self):
         schema = ConnectorUpdate._build_arguments_schema()
         for name in ("mcp_endpoint", "bearer_token", "bearer_token_file", "managed_identity_auth", "mi_token_scope",
-                     "oauth_dcr", "oauth_scopes", "oauth_client_name"):
+                     "oauth_dcr", "oauth_scopes", "oauth_client_name", "clear_auth"):
             self.assertTrue(hasattr(schema, name), name)
 
 
