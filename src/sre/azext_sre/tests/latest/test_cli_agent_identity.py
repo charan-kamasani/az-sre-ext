@@ -537,6 +537,25 @@ class IdentityPatchTests(AgentCliTestCase):
                 self.assertIn(message, errors)
                 self.assertEqual(self.arm.writes(), [])
 
+    def test_removing_the_last_identity_is_refused_before_any_write(self):
+        # The service rejects this but deletes the system identity's principal anyway.
+        for identity, extra in (
+            ({"type": "SystemAssigned"}, ["--system-assigned"]),
+            ({"type": "UserAssigned", "userAssignedIdentities": {self.first: {}}}, ["--user-assigned", self.first]),
+            ({"type": "UserAssigned", "userAssignedIdentities": {self.first: {}, self.second: {}}},
+             ["--user-assigned"]),
+            ({"type": "SystemAssigned, UserAssigned", "userAssignedIdentities": {self.first: {}}},
+             ["--system-assigned", "--user-assigned", self.first]),
+        ):
+            with self.subTest(identity=identity, extra=extra):
+                self.arm.requests.clear()
+                self._add_full_agent(identity)
+                code, _, errors = self.invoke(
+                    "sre", "identity", "remove", "-g", "rg", "--agent-name", "myagent", *extra)
+                self.assertNotEqual(code, 0)
+                self.assertIn("needs at least one managed identity", errors)
+                self.assertEqual(self.arm.writes(), [])
+
 
 class AgentCreateTests(AgentCliTestCase):
     """VA-3 and VA-4: 'agent create' never replaces an agent, and only deletes
