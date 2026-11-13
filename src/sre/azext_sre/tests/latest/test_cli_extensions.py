@@ -714,6 +714,16 @@ class ExtensionCommandCliTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertNotIn(("tools", "t0"), self.service.store)
 
+    def test_scheduled_task_pause_keeps_the_agent_mode_as_stored(self):
+        for route in ("arm", "direct"):
+            with self.subTest(route=route):
+                self._reset()
+                self.service.store[("scheduledTasks", "t1")] = {
+                    "cronExpression": "0 9 * * *", "agentPrompt": "Check", "agentMode": "Autonomous"}
+                code, _, err = self._az(*self._command("scheduled-task", "pause", "-n", "t1"), route=route)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(self.service.store[("scheduledTasks", "t1")]["agentMode"], "Autonomous")
+
 
 def _bash_command_lines(text):
     """Split an example into command lines the way bash reads them: a

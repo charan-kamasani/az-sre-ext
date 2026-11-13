@@ -3098,9 +3098,9 @@ class HttpTriggersShapeValidationTests(unittest.TestCase):
             _encode_extension_value(raw, "httpTriggers")
         self.assertIn("--value.agentMode must be", str(raised.exception))
 
-    def test_agent_mode_is_case_insensitive_and_sent_lowercase(self):
+    def test_agent_mode_is_checked_case_insensitively_and_sent_as_given(self):
         encoded = _encode_extension_value(json.dumps({"agentPrompt": "x", "agentMode": "Review"}), "httpTriggers")
-        self.assertEqual(json.loads(base64.b64decode(encoded))["agentMode"], "review")
+        self.assertEqual(json.loads(base64.b64decode(encoded))["agentMode"], "Review")
 
 
 class ScheduledTaskStatusTests(unittest.TestCase):

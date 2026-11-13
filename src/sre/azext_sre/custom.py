@@ -5434,11 +5434,8 @@ def _normalize_extension_value(raw_value, extension_type=None):
     if extension_type == "tools" and isinstance(parsed, dict) and parsed.get("type") == "PythonTool":
         parsed["type"] = "PythonFunctionTool"
         raw_value = json.dumps(parsed)
-    # The service matches agent modes case-insensitively and stores them lowercase.
-    if (extension_type in ("httpTriggers", "scheduledTasks") and isinstance(parsed, dict)
-            and isinstance(parsed.get("agentMode"), str) and parsed["agentMode"] != parsed["agentMode"].lower()):
-        parsed["agentMode"] = parsed["agentMode"].lower()
-        raw_value = json.dumps(parsed)
+    # agentMode is checked case-insensitively and sent as given: the service
+    # keeps the case it's sent, and scripts compare the stored value.
     validator = EXTENSION_VALUE_VALIDATORS.get(extension_type)
     if validator is not None:
         validator(parsed)
