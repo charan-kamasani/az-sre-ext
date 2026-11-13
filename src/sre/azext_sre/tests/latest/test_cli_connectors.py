@@ -273,6 +273,18 @@ class ConnectorCliTests(unittest.TestCase):
         self.assertEqual(properties["dataSource"], "https://prod.kusto.windows.net/db")
         self.assertEqual(properties["identity"], UAMI_ID)
 
+    def test_knowledge_file_is_sent_with_its_file_name_and_content_type(self):
+        for file_name, content_type in (("runbook.md", "text/markdown"), ("main.tf", None)):
+            with self.subTest(file_name):
+                name = file_name.replace(".", "-")
+                code, _, logs = self._run(
+                    "sre", "knowledge", "create", "-g", "rg", "--agent-name", "myagent", "-n", name,
+                    "--type", "file", "--file-path", self._file(file_name, "# Runbook\n"))
+                self.assertEqual(code, 0, logs.errors)
+                extended = self.arm.connector(name)["properties"]["extendedProperties"]
+                self.assertEqual(extended["displayName"], file_name)
+                self.assertEqual(extended.get("contentType"), content_type)
+
     def test_knowledge_commands_leave_other_connectors_alone(self):
         target = ["-g", "rg", "--agent-name", "myagent"]
         kusto = copy.deepcopy(self.arm.connector("kusto-prod"))

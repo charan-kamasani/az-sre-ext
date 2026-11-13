@@ -2099,10 +2099,14 @@ class _ConnectorConvenienceArgsMixin:
             if connector_type == "KnowledgeFile":
                 with open(file_path, "rb") as handle:
                     content = base64.b64encode(handle.read()).decode("ascii")
-                args.extended_properties = {
-                    "fileContent": content,
-                    "fileName": os.path.basename(file_path),
-                }
+                file_name = os.path.basename(file_path)
+                # Without displayName and contentType the service shows the
+                # connector name and stores application/octet-stream.
+                extended = {"fileContent": content, "fileName": file_name, "displayName": file_name}
+                content_type = KNOWLEDGE_FILE_CONTENT_TYPES.get(os.path.splitext(file_name)[1].lower())
+                if content_type:
+                    extended["contentType"] = content_type
+                args.extended_properties = extended
             else:
                 with open(file_path, "r", encoding="utf-8-sig") as handle:
                     text = handle.read()
@@ -3488,6 +3492,41 @@ KNOWLEDGE_TYPES = {
     "text": "KnowledgeText",
     "webpage": "KnowledgeWebPage",
     "repository": "KnowledgeRepository",
+}
+
+# The file types Knowledge settings indexes, from "Knowledge settings uploads" in
+# https://learn.microsoft.com/azure/sre-agent/upload-knowledge-document
+# (2026-10-29), with the content type sent for each. The portal and the labs send
+# a content type; without one the service stores application/octet-stream.
+KNOWLEDGE_FILE_CONTENT_TYPES = {
+    ".md": "text/markdown",
+    ".txt": "text/plain",
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".doc": "application/msword",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".xls": "application/vnd.ms-excel",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
+    ".json": "application/json",
+    ".csv": "text/csv",
+    ".log": "text/plain",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+    ".xml": "application/xml",
+    ".ini": "text/plain",
+    ".conf": "text/plain",
+    ".cfg": "text/plain",
+    ".config": "text/plain",
+    ".properties": "text/plain",
 }
 
 

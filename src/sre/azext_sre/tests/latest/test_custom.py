@@ -5093,7 +5093,7 @@ class ConnectorConvenienceArgsTests(unittest.TestCase):
             self.assertEqual(
                 args.extended_properties,
                 {"fileContent": base64.b64encode(b"hello world").decode("ascii"),
-                 "fileName": os.path.basename(path)},
+                 "fileName": os.path.basename(path), "displayName": os.path.basename(path)},
             )
         finally:
             os.remove(path)
