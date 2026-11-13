@@ -650,16 +650,16 @@ az sre automation scheduled-task create -g "$RG" --agent-name "$AGENT" \
 ### Create an HTTP trigger
 
 Learn: [Create an HTTP trigger](https://learn.microsoft.com/azure/sre-agent/create-http-trigger).
-**Summary:** CLI to create and call the trigger. Copying its URL, message grouping and Run now
-are in the portal.
+**Summary:** CLI to create the trigger, get its URL and call it. Message grouping and Run now are
+in the portal.
 
 | Step | Label | How |
 | --- | --- | --- |
 | Open Automation and create the HTTP trigger: name, details with `{payload.*}` placeholders, Autonomous | CLI | `az sre automation http-trigger create`, below. |
 | Message grouping: New chat thread for each run | Portal | Automation > the trigger > Edit. The CLI's trigger fields don't include it. |
-| Copy the trigger URL | Portal | Automation (`/views/automation`) > the trigger > Copy. |
+| Copy the trigger URL | CLI | `az sre automation http-trigger show -g "$RG" --agent-name "$AGENT" --name container-app-compliance --query properties.value.triggerUrl -o tsv` |
 | Run the trigger now | Portal | Automation > the trigger > Run trigger now. |
-| Call the trigger from the command line | CLI | The tutorial's `az account get-access-token` and `curl` commands. |
+| Call the trigger from the command line | CLI | `az sre automation http-trigger invoke -g "$RG" --agent-name "$AGENT" --name container-app-compliance --payload "@payload.json"`, which calls the trigger URL with your Azure CLI sign-in. |
 | Call the trigger from your pipeline | External | Your CI/CD pipeline. Store the trigger URL as a secret. |
 | Delete the trigger | CLI | `az sre automation http-trigger delete -g "$RG" --agent-name "$AGENT" --name container-app-compliance --yes` |
 
