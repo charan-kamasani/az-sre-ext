@@ -6257,7 +6257,7 @@ class ConnectorUpdateMcpArgsTests(unittest.TestCase):
                 "extended_properties": None}
         args.update(extra_args)
         command = _bare_command(self._Command, **args)
-        with patch("azext_sre.custom.logger") as fake_logger, patch("sys.argv", ["az"]):
+        with patch("azext_sre.custom.logger") as fake_logger:
             command.pre_operations()
         return command, fake_logger
 
