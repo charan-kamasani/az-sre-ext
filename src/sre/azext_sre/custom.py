@@ -5616,7 +5616,9 @@ def _direct_extension_to_arm_shape(extension_type, envelope):
 def _direct_extension_create(cli_ctx, agent_name, resource_group, extension_type, name, raw_value, overwrite):
     raw_value = _normalize_extension_value(raw_value, extension_type)
     properties = json.loads(raw_value)
-    properties.pop("name", None)
+    if extension_type != "incidentFilters":
+        # An incident filter's name property is its display name; the item's name is in the path.
+        properties.pop("name", None)
     path = _direct_extension_path(extension_type, name)
     envelope_type = DIRECT_EXTENSION_ROUTES[extension_type][1]
     if envelope_type is None:
@@ -7145,6 +7147,10 @@ class ResponsePlanCreate(AAZCommand):
             options=["--subagent"], required=True,
             help="Name of the existing subagent that handles matched incidents. Use meta_agent for the main agent.",
         )
+        schema.display_name = AAZStrArg(
+            options=["--display-name"],
+            help="Name the portal shows for the plan. Default: the plan's --name.",
+        )
         _add_response_plan_criteria_args(schema)
         schema.mode = AAZStrArg(
             options=["--mode"], default="autonomous",
@@ -7175,6 +7181,7 @@ class ResponsePlanCreate(AAZCommand):
         if mode not in RESPONSE_PLAN_MODES:
             raise CLIError(f"--mode must be one of: {', '.join(RESPONSE_PLAN_MODES)}.")
         flt = {
+            "name": _arg_value(args.display_name) or name,
             "incidentPlatform": platform,
             "handlingAgent": _arg_value(args.subagent),
             "agentMode": mode,
@@ -7338,6 +7345,9 @@ class ResponsePlanUpdate(AAZCommand):
         schema.mode = AAZStrArg(
             options=["--mode"], help="Agent autonomy: autonomous or review.",
         )
+        schema.display_name = AAZStrArg(
+            options=["--display-name"], help="Name the portal shows for the plan.",
+        )
         _add_response_plan_criteria_args(schema)
         cls._args_schema = schema
         return schema
@@ -7350,6 +7360,9 @@ class ResponsePlanUpdate(AAZCommand):
         name = _arg_value(args.extension_name)
         cleared = set()
         changes = _response_plan_criteria(args, cleared)
+        display_name = _arg_value(args.display_name)
+        if display_name is not None:
+            changes["name"] = display_name
         platform = _arg_value(args.platform)
         if platform is not None:
             if platform not in RESPONSE_PLAN_PLATFORMS:

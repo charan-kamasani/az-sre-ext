@@ -1545,13 +1545,13 @@ Match criteria use ARM; linked instructions use the agent API.
 
 | Verb | Exact syntax |
 | --- | --- |
-| `create` | `az sre response-plan create --agent-name <value> --resource-group <value> --name <value> --platform <value> --subagent <value> [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--incident-type <json-or-@file>] [--impacted-service <value>] [--owning-team <json-or-@file>] [--merge-enabled {false,true}] [--merge-window-hours <integer>] [--max-investigation-attempts <integer>] [--alert-id <value>] [--target-resource-type <value>] [--target-resource <value>] [--instructions <value>] [--processing-guide <json-or-@file>] [--mode <value>] [--disabled {false,true}] [--overwrite {false,true}]` |
+| `create` | `az sre response-plan create --agent-name <value> --resource-group <value> --name <value> --platform <value> --subagent <value> [--display-name <value>] [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--incident-type <json-or-@file>] [--impacted-service <value>] [--owning-team <json-or-@file>] [--merge-enabled {false,true}] [--merge-window-hours <integer>] [--max-investigation-attempts <integer>] [--alert-id <value>] [--target-resource-type <value>] [--target-resource <value>] [--instructions <value>] [--processing-guide <json-or-@file>] [--mode <value>] [--disabled {false,true}] [--overwrite {false,true}]` |
 | `delete` | `az sre response-plan delete --agent-name <value> --resource-group <value> --name <value> [--yes]` |
 | `disable` | `az sre response-plan disable --agent-name <value> --resource-group <value> --name <value>` |
 | `enable` | `az sre response-plan enable --agent-name <value> --resource-group <value> --name <value>` |
 | `list` | `az sre response-plan list [--name <value>] [--resource-group <value>] [--agent-url <value>]` |
 | `show` | `az sre response-plan show [--agent-name <value>] [--resource-group <value>] [--agent-url <value>] --name <value>` |
-| `update` | `az sre response-plan update --agent-name <value> --resource-group <value> --name <value> [--platform <value>] [--subagent <value>] [--mode <value>] [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--incident-type <json-or-@file>] [--impacted-service <value>] [--owning-team <json-or-@file>] [--merge-enabled {false,true}] [--merge-window-hours <integer>] [--max-investigation-attempts <integer>] [--alert-id <value>] [--target-resource-type <value>] [--target-resource <value>] [--instructions <value>] [--processing-guide <json-or-@file>]` |
+| `update` | `az sre response-plan update --agent-name <value> --resource-group <value> --name <value> [--platform <value>] [--subagent <value>] [--mode <value>] [--display-name <value>] [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--incident-type <json-or-@file>] [--impacted-service <value>] [--owning-team <json-or-@file>] [--merge-enabled {false,true}] [--merge-window-hours <integer>] [--max-investigation-attempts <integer>] [--alert-id <value>] [--target-resource-type <value>] [--target-resource <value>] [--instructions <value>] [--processing-guide <json-or-@file>]` |
 
 ### `az sre response-plan create`
 
@@ -1561,7 +1561,7 @@ Routes matching incidents to a subagent. Connect the incident platform and creat
 
 **Syntax**
 
-`az sre response-plan create --agent-name <value> --resource-group <value> --name <value> --platform <value> --subagent <value> [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--incident-type <json-or-@file>] [--impacted-service <value>] [--owning-team <json-or-@file>] [--merge-enabled {false,true}] [--merge-window-hours <integer>] [--max-investigation-attempts <integer>] [--alert-id <value>] [--target-resource-type <value>] [--target-resource <value>] [--instructions <value>] [--processing-guide <json-or-@file>] [--mode <value>] [--disabled {false,true}] [--overwrite {false,true}]`
+`az sre response-plan create --agent-name <value> --resource-group <value> --name <value> --platform <value> --subagent <value> [--display-name <value>] [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--incident-type <json-or-@file>] [--impacted-service <value>] [--owning-team <json-or-@file>] [--merge-enabled {false,true}] [--merge-window-hours <integer>] [--max-investigation-attempts <integer>] [--alert-id <value>] [--target-resource-type <value>] [--target-resource <value>] [--instructions <value>] [--processing-guide <json-or-@file>] [--mode <value>] [--disabled {false,true}] [--overwrite {false,true}]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -1570,6 +1570,7 @@ Routes matching incidents to a subagent. Connect the incident platform and creat
 | `--name`, `-n`, `--extension-name` | String | Yes |  |  | Name of the response plan. |
 | `--platform` | String | Yes |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. Icm is Microsoft-internal only. |
 | `--subagent` | String | Yes |  |  | Name of the existing subagent that handles matched incidents. Use meta_agent for the main agent. |
+| `--display-name` | String | No |  |  | Name the portal shows for the plan. Default: the plan's --name. |
 | `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2; IcM severities are plain numbers such as 3 4). Default: all. |
 | `--title-contains` | String | No |  |  | Only match incidents whose title contains this text. |
 | `--title-not-contains` | List | No |  |  | Space-separated texts; skip incidents whose title contains any of them. |
@@ -1731,7 +1732,7 @@ Passing a list flag (for example --priority) replaces that whole list. Pass an e
 
 **Syntax**
 
-`az sre response-plan update --agent-name <value> --resource-group <value> --name <value> [--platform <value>] [--subagent <value>] [--mode <value>] [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--incident-type <json-or-@file>] [--impacted-service <value>] [--owning-team <json-or-@file>] [--merge-enabled {false,true}] [--merge-window-hours <integer>] [--max-investigation-attempts <integer>] [--alert-id <value>] [--target-resource-type <value>] [--target-resource <value>] [--instructions <value>] [--processing-guide <json-or-@file>]`
+`az sre response-plan update --agent-name <value> --resource-group <value> --name <value> [--platform <value>] [--subagent <value>] [--mode <value>] [--display-name <value>] [--priority <json-or-@file>] [--title-contains <value>] [--title-not-contains <json-or-@file>] [--incident-type <json-or-@file>] [--impacted-service <value>] [--owning-team <json-or-@file>] [--merge-enabled {false,true}] [--merge-window-hours <integer>] [--max-investigation-attempts <integer>] [--alert-id <value>] [--target-resource-type <value>] [--target-resource <value>] [--instructions <value>] [--processing-guide <json-or-@file>]`
 
 | Option / aliases | Type | Required | Default | Allowed values | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -1741,6 +1742,7 @@ Passing a list flag (for example --priority) replaces that whole list. Pass an e
 | `--platform` | String | No |  |  | Incident platform: AzMonitor, PagerDuty, ServiceNow, Icm. |
 | `--subagent` | String | No |  |  | Name of the existing subagent that handles matched incidents. Use meta_agent for the main agent. |
 | `--mode` | String | No |  |  | Agent autonomy: autonomous or review. |
+| `--display-name` | String | No |  |  | Name the portal shows for the plan. |
 | `--priority` | List | No |  |  | Space-separated priority or severity levels to match (for example Sev0 Sev1 or P1 P2; IcM severities are plain numbers such as 3 4). Default: all. |
 | `--title-contains` | String | No |  |  | Only match incidents whose title contains this text. |
 | `--title-not-contains` | List | No |  |  | Space-separated texts; skip incidents whose title contains any of them. |

@@ -212,7 +212,7 @@ such as OAuth 2.0, are portal-only.
 | Step | Label | How |
 | --- | --- | --- |
 | Agent Canvas > **+** on the subagent > Add incident response plan | CLI | `az sre response-plan create`, below. |
-| Name and severity levels | CLI | `--name`, `--priority` (`Sev0` to `Sev4` for Azure Monitor, `P1`, `P2` and so on for PagerDuty, `1` to `5` for ServiceNow) |
+| Name and severity levels | CLI | `--name`, `--display-name` (the name the portal shows, `--name` by default), `--priority` (`Sev0` to `Sev4` for Azure Monitor, `P1`, `P2` and so on for PagerDuty, `1` to `5` for ServiceNow) |
 | Impacted service, incident type and title keyword | CLI | `--impacted-service`, `--incident-type`, `--title-contains` |
 | Title does not contain | CLI | `--title-not-contains` |
 | Response subagent | CLI | `--subagent` |

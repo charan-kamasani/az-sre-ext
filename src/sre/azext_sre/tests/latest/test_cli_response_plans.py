@@ -397,6 +397,21 @@ class _ResponsePlanCliTests:
             self.assertEqual(code, 0, errors)
             self.assertRegex(output, r"icm\s+True\s+Icm\s+responder\s+3, 4\s")
 
+    def test_display_name_defaults_to_the_plan_name_and_is_kept_by_updates(self):
+        create = ("create", "--platform", "AzMonitor", "--subagent", "responder")
+        for name, extra, display_name in (("vm-perf", (), "vm-perf"),
+                                          ("vm-perf-2", ("--display-name", "VM Performance Alerts"),
+                                           "VM Performance Alerts")):
+            with self.subTest(name):
+                code, _, errors = self._az(*create, "-n", name, *extra)
+                self.assertEqual(code, 0, errors)
+                self.assertEqual(self.azure.filters[name]["name"], display_name)
+        code, _, errors = self._az("update", "-n", "vm-perf", "--display-name", "VM alerts")
+        self.assertEqual(code, 0, errors)
+        code, _, errors = self._az("update", "-n", "vm-perf", "--mode", "autonomous")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.azure.filters["vm-perf"]["name"], "VM alerts")
+
 
 class ResponsePlanArmRouteCliTests(_ResponsePlanCliTests, unittest.TestCase):
     ROUTE = "arm"

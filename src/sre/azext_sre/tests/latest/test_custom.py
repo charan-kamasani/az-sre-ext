@@ -1581,7 +1581,7 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
             platform=None, subagent=None, mode=None, disabled=None, priorities=None,
             title_contains=None, title_not_contains=None, incident_types=None,
             impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
-            instructions=None, processing_guide=None, overwrite=None,
+            instructions=None, processing_guide=None, overwrite=None, display_name=None,
         )
         return _bare_command(command_cls, **{**values, **overrides})._handler(None)
 
@@ -1854,7 +1854,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             subagent=None, mode="review", priorities=["Sev0"], title_contains=None,
             title_not_contains=None, incident_types=None, impacted_service=None,
             owning_teams=None, merge_enabled=None, merge_window_hours=6,
-            instructions=None, processing_guide=None)
+            instructions=None, processing_guide=None, display_name=None)
         command = _bare_command(ResponsePlanUpdate, **values)
         existing = {"name": "plan", "properties": {"value": {
             "handlingAgent": "s", "priorities": ["Sev1"], "titleContains": "x", "handlingAgents": None}}}
@@ -1873,7 +1873,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             subagent=None, mode=None, priorities=None, title_contains=None,
             title_not_contains=None, incident_types=None, impacted_service=None,
             owning_teams=None, merge_enabled=None, merge_window_hours=None,
-            instructions=None, processing_guide=None)
+            instructions=None, processing_guide=None, display_name=None)
         for override in ({}, {"mode": "yolo"}, {"merge_window_hours": 0}):
             with self.subTest(override=override):
                 command = _bare_command(ResponsePlanUpdate, **{**base, **override})
@@ -1888,7 +1888,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             subagent="meta_agent", priorities=None, title_contains=None, title_not_contains=None,
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None,
             merge_window_hours=None, mode="autonomous", disabled=None, instructions=None,
-            processing_guide=None, overwrite=None)
+            processing_guide=None, overwrite=None, display_name=None)
         command = _bare_command(ResponsePlanCreate, **base, max_investigation_attempts=2)
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._incident_resource_create", return_value={}) as create, \
@@ -1980,7 +1980,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             platform="AzMonitor", subagent="responder", priorities=["Sev1"], title_contains=None,
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="review", disabled=None,
-            instructions="Check logs", processing_guide=None, overwrite=None)
+            instructions="Check logs", processing_guide=None, overwrite=None, display_name=None)
         created = []
 
         def fake_create(cli_ctx, agent, rg, ext_type, name, value, path, body, overwrite):
@@ -2004,7 +2004,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             platform="AzMonitor", subagent=subagent, priorities=None, title_contains=None,
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="review", disabled=None,
-            instructions=None, processing_guide=None, overwrite=None)
+            instructions=None, processing_guide=None, overwrite=None, display_name=None)
         show = MagicMock() if subagent_exists else MagicMock(side_effect=ResourceNotFoundError("missing"))
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._incident_resource_create", side_effect=self.rejection), \
@@ -2036,7 +2036,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             platform="AzMonitor", subagent="s", priorities=None, title_contains=None,
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="yolo", disabled=None,
-            instructions=None, processing_guide=None, overwrite=None)
+            instructions=None, processing_guide=None, overwrite=None, display_name=None)
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              self.assertRaises(CLIError):
             command._handler(None)
@@ -2048,7 +2048,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             platform="AzMonitor", subagent="s", priorities=None, title_contains=None,
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="review", disabled=None,
-            instructions=None, processing_guide=None, overwrite=None)
+            instructions=None, processing_guide=None, overwrite=None, display_name=None)
         service_error = self.rejection
         for config, expect_hint in ((None, True), ({"type": "AzMonitor"}, False)):
             agent = {"properties": {"incidentManagementConfiguration": config}}
