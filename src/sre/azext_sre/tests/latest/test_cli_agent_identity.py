@@ -98,6 +98,9 @@ class FakeArm:
         self.lro_statuses = ["InProgress", "Succeeded"]
         self.action_result_body = True
         self.patch_answers_with_location_only = False
+        # A PATCH answers 202, and the agent refuses other writes until its operation is polled to the end.
+        self.patch_is_async = False
+        self.patch_statuses = None
         self.usage_pages = {}
 
     # ---- setup helpers -------------------------------------------------------------------
@@ -192,10 +195,11 @@ class FakeArm:
             return 200, payload, None
         raise AssertionError(f"No fake ARM route for {method} {path}")
 
-    def _new_operation(self, result=None, statuses=None):
+    def _new_operation(self, result=None, statuses=None, on_done=None):
         operation_id = uuid.uuid4().hex
         self.operations[operation_id] = {
-            "statuses": list(statuses if statuses is not None else self.lro_statuses), "result": result}
+            "statuses": list(statuses if statuses is not None else self.lro_statuses), "result": result,
+            "on_done": on_done}
         return {
             "Azure-AsyncOperation": f"{ARM}/fake-operations/{operation_id}/status",
             "Location": f"{ARM}/fake-operations/{operation_id}/result",
@@ -207,6 +211,9 @@ class FakeArm:
         operation = self.operations[operation_id]
         if kind == "status":
             status = operation["statuses"].pop(0) if len(operation["statuses"]) > 1 else operation["statuses"][0]
+            if status != "InProgress" and operation["on_done"]:
+                operation.pop("on_done")()
+                operation["on_done"] = None
             return 200, {"status": status}, {"Retry-After": "0"}
         if operation["result"] is None:
             return 204, None, None
@@ -278,6 +285,10 @@ class FakeArm:
         if method == "DELETE":
             self.resources.pop(key, None)
             return 200, None, None
+        if method in ("PUT", "PATCH") and existing is not None and (
+                existing["properties"].get("provisioningState") == "InProgress"):
+            return 409, _error("OperationConflict", f"Agent '{existing['name']}' is currently being provisioned "
+                               "and cannot be created or updated."), None
         if method == "PUT":
             agent = {
                 "id": agent_id, "name": agent_id.rsplit("/", 1)[-1], "type": "Microsoft.App/agents",
@@ -306,6 +317,11 @@ class FakeArm:
             if self.patch_answers_with_location_only:
                 location = self._new_operation()["Location"]
                 return 202, None, {"Location": location, "Retry-After": "0"}
+            if self.patch_is_async:
+                agent["properties"]["provisioningState"] = "InProgress"
+                return 202, None, self._new_operation(
+                    statuses=self.patch_statuses,
+                    on_done=lambda: agent["properties"].update(provisioningState="Succeeded"))
             return 200, _strip_write_only(agent), None
         raise AssertionError(f"No fake ARM route for {method} {agent_id}")
 
@@ -609,6 +625,25 @@ class AgentCreateTests(AgentCliTestCase):
         self.assertIn("Agent 'myagent' was created, but applying --monthly-unit-limit failed", errors)
         self.assertIn("az sre agent update --name myagent --resource-group rg", errors)
         self.assertIsNotNone(self.arm.agent())
+        self.assertEqual(len(self._identities()), 1)
+
+    def test_create_waits_for_the_settings_update_to_finish(self):
+        self.arm.patch_is_async = True
+        code, _, errors = self.invoke(*self.CREATE, "--monthly-unit-limit", "700",
+                                      "--experimental-settings", '{"EnableWorkspaceTools": true}', "-o", "none")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.arm.writes("/agents/myagent")[-1], ("PATCH", {"properties": {
+            "experimentalSettings": {"EnableWorkspaceTools": True}, "monthlyAgentUnitLimit": 700}}))
+        code, _, errors = self.invoke("sre", "agent", "update", "-g", "rg", "-n", "myagent", "--tags", "env=prod",
+                                      "-o", "none")
+        self.assertEqual(code, 0, errors)
+
+    def test_settings_update_that_fails_later_says_the_agent_was_created(self):
+        self.arm.patch_is_async = True
+        self.arm.patch_statuses = ["InProgress", "Failed"]
+        code, _, errors = self.invoke(*self.CREATE, "--monthly-unit-limit", "700")
+        self.assertNotEqual(code, 0)
+        self.assertIn("Agent 'myagent' was created, but applying --monthly-unit-limit failed", errors)
         self.assertEqual(len(self._identities()), 1)
 
     ACTIONS = ("--action-configuration", "{access-level:Low,mode:Review}")

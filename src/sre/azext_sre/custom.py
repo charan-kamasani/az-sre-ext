@@ -1105,6 +1105,9 @@ class _ExperimentalSettingsOnCreateMixin:
 
     The generated create can't carry these properties, and a PUT that does carry
     experimentalSettings replaces the service's own flags instead of adding to them.
+    The PATCH can finish after the service answers (202), and the agent refuses
+    other changes with OperationConflict until it does, so it is polled to the
+    end like the create itself.
     """
 
     def pre_operations(self):
@@ -1116,26 +1119,42 @@ class _ExperimentalSettingsOnCreateMixin:
             )
         super().pre_operations()
 
-    def post_operations(self):
-        super().post_operations()
-        properties = _extra_agent_properties(self.ctx.args)
-        if not properties:
+    def _execute_operations(self):
+        yield from super()._execute_operations()
+        if not _extra_agent_properties(self.ctx.args):
             return
         try:
-            _arm_request(self.cli_ctx, "PATCH", _ctx_agent_id(self.ctx), API_VERSION,
-                         body={"properties": properties})
+            polling = self.AgentsPatchUnmodeled(ctx=self.ctx)()
         except Exception as ex:
-            agent_name = _arg_value(self.ctx.args.agent_name)
-            resource_group = _arg_value(self.ctx.args.resource_group)
-            flags = " and ".join(flag for key, flag in (
-                ("experimentalSettings", "--experimental-settings"),
-                ("monthlyAgentUnitLimit", "--monthly-unit-limit"),
-            ) if key in properties)
-            raise CLIError(
-                f"Agent '{agent_name}' was created, but applying {flags} failed: {ex}\n"
-                f"Retry with 'az sre agent update --name {agent_name} --resource-group {resource_group}' "
-                f"and the same {flags}."
-            ) from ex
+            raise self._settings_error(ex) from ex
+        yield _CleanupOnFailurePolling(polling, self._raise_settings_error)
+
+    def _raise_settings_error(self, error):
+        raise self._settings_error(error) from error
+
+    def _settings_error(self, error):
+        properties = _extra_agent_properties(self.ctx.args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        flags = " and ".join(flag for key, flag in (
+            ("experimentalSettings", "--experimental-settings"),
+            ("monthlyAgentUnitLimit", "--monthly-unit-limit"),
+        ) if key in properties)
+        return CLIError(
+            f"Agent '{agent_name}' was created, but applying {flags} failed: {error}\n"
+            f"Retry with 'az sre agent update --name {agent_name} --resource-group {resource_group}' "
+            f"and the same {flags}."
+        )
+
+    class AgentsPatchUnmodeled(_GeneratedCreate.AgentsCreateOrUpdate):
+
+        @property
+        def method(self):
+            return "PATCH"
+
+        @property
+        def content(self):
+            return {"properties": _extra_agent_properties(self.ctx.args)}
 
 
 class _ActionModeEnum(AAZArgEnum):

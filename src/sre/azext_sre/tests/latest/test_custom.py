@@ -4301,28 +4301,11 @@ class ExperimentalSettingsOnCreateTests(unittest.TestCase):
             resource_group="rg", agent_name="myagent", **args))
         return cmd
 
-    def test_settings_are_patched_after_create(self):
-        cmd = self._command(experimental_settings={"EnableWorkspaceTools": True}, no_wait=False)
-        cmd.pre_operations()
-        with patch("azext_sre.custom._arm_request") as arm:
-            cmd.post_operations()
-        arm.assert_called_once_with(
-            cmd.cli_ctx, "PATCH", "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/agents/myagent",
-            ANY, body={"properties": {"experimentalSettings": {"EnableWorkspaceTools": True}}})
-
-    def test_no_request_without_settings_and_no_wait_is_rejected(self):
-        with patch("azext_sre.custom._arm_request") as arm:
-            self._command(experimental_settings=None, no_wait=False).post_operations()
-        arm.assert_not_called()
+    def test_no_wait_is_rejected_with_settings(self):
         with self.assertRaisesRegex(CLIError, "--no-wait"):
             self._command(experimental_settings={"A": True}, no_wait=True).pre_operations()
 
-    def test_monthly_unit_limit_is_patched_after_create(self):
-        cmd = self._command(experimental_settings=None, monthly_unit_limit=1000, no_wait=False)
-        cmd.pre_operations()
-        with patch("azext_sre.custom._arm_request") as arm:
-            cmd.post_operations()
-        self.assertEqual(arm.call_args.kwargs["body"], {"properties": {"monthlyAgentUnitLimit": 1000}})
+    def test_negative_monthly_unit_limit_is_rejected(self):
         with self.assertRaisesRegex(CLIError, "negative"):
             self._command(experimental_settings=None, monthly_unit_limit=-1, no_wait=False).pre_operations()
 
