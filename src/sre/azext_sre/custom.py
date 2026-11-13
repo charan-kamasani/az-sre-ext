@@ -293,13 +293,15 @@ def _data_plane_request(cli_ctx, agent_name, resource_group, method, path, body=
 
     Unless retry is off, a GET, PUT or DELETE is sent again after a gateway error
     (502, 503 or 504), which the agent's API answers with for a while after the
-    agent starts.
+    agent starts. A gateway can answer an error for a delete the agent carried
+    out, so a retried DELETE that then gets 404 has succeeded.
     """
     import time
 
     endpoint = agent_url or _resolve_agent_endpoint(cli_ctx, agent_name, resource_group)
     url = f"{endpoint.rstrip('/')}{path}"
     retry_delays = list(_AGENT_API_RETRY_DELAYS) if retry and method in ("GET", "PUT", "DELETE") else []
+    gateway_error = None
     while True:
         try:
             response = send_raw_request(
@@ -314,10 +316,16 @@ def _data_plane_request(cli_ctx, agent_name, resource_group, method, path, body=
         except Exception as ex:  # Azure CLI normalizes HTTP errors by command.
             status_code = getattr(getattr(ex, "response", None), "status_code", None)
             if status_code in _AGENT_API_GATEWAY_ERRORS and retry_delays:
+                gateway_error = status_code
                 delay = retry_delays.pop(0)
-                logger.info("The agent's API answered %s; trying again in %s seconds.", status_code, delay)
+                logger.warning("The agent's API answered %s; trying again in %s seconds.", status_code, delay)
                 time.sleep(delay)
                 continue
+            if status_code == 404 and method == "DELETE" and gateway_error:
+                logger.warning(
+                    "The agent's API answered %s to the delete, and the item was gone when the CLI tried "
+                    "again, so it's deleted.", gateway_error)
+                return {}
             if missing_ok and status_code == 404:
                 return None
             raise

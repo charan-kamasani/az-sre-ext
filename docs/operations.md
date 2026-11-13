@@ -23,7 +23,9 @@ az sre agent delete -g myrg -n myagent -y
 `agent start` waits until the agent's own API answers, which took one to two
 minutes in testing. Until then that API answers 404 or 502, so commands that
 use it reported items as not found; they also retry a 502, 503 or 504 a few
-times. `--no-wait` skips the wait.
+times, with a warning each time. A delete whose retry finds the item gone
+counts as done, since the first try can have gone through. `--no-wait` skips
+the wait.
 
 At least one managed identity is required at create time:
 
