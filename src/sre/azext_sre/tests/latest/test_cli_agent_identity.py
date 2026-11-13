@@ -19,6 +19,7 @@ import re
 import shlex
 import socket
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -98,6 +99,14 @@ class FakeArm:
         self.lro_statuses = ["InProgress", "Succeeded"]
         self.action_result_body = True
         self.patch_answers_with_location_only = False
+        # A PATCH answers 202, and the agent refuses other writes until its operation is polled to the end.
+        self.patch_is_async = False
+        self.patch_statuses = None
+        # Statuses the agent's own API answers its next requests with, as its gateway does while it starts.
+        self.agent_api_warmup = []
+        # Called with the request's timeout instead of answering, as when the agent's API accepts
+        # connections but never replies; it raises the timeout.
+        self.agent_api_no_reply = None
         self.usage_pages = {}
 
     # ---- setup helpers -------------------------------------------------------------------
@@ -143,8 +152,14 @@ class FakeArm:
 
     # ---- transport -----------------------------------------------------------------------
     def send(self, adapter, request, **kwargs):
-        del adapter, kwargs
+        del adapter
         url = urlparse(request.url)
+        if url.hostname == "myagent.abc.swedencentral.azuresre.ai":
+            self.requests.append((request.method, url.path, None, None))
+            if self.agent_api_no_reply:
+                self.agent_api_no_reply(kwargs.get("timeout"))
+            status = self.agent_api_warmup.pop(0) if self.agent_api_warmup else 200
+            return _response(request, status, {"value": []} if status == 200 else None)
         if url.hostname != "management.azure.com":
             raise AssertionError(f"Request to an unexpected host: {request.method} {request.url}")
         body = json.loads(request.body) if request.body else None
@@ -192,10 +207,11 @@ class FakeArm:
             return 200, payload, None
         raise AssertionError(f"No fake ARM route for {method} {path}")
 
-    def _new_operation(self, result=None, statuses=None):
+    def _new_operation(self, result=None, statuses=None, on_done=None):
         operation_id = uuid.uuid4().hex
         self.operations[operation_id] = {
-            "statuses": list(statuses if statuses is not None else self.lro_statuses), "result": result}
+            "statuses": list(statuses if statuses is not None else self.lro_statuses), "result": result,
+            "on_done": on_done}
         return {
             "Azure-AsyncOperation": f"{ARM}/fake-operations/{operation_id}/status",
             "Location": f"{ARM}/fake-operations/{operation_id}/result",
@@ -207,6 +223,9 @@ class FakeArm:
         operation = self.operations[operation_id]
         if kind == "status":
             status = operation["statuses"].pop(0) if len(operation["statuses"]) > 1 else operation["statuses"][0]
+            if status != "InProgress" and operation["on_done"]:
+                operation.pop("on_done")()
+                operation["on_done"] = None
             return 200, {"status": status}, {"Retry-After": "0"}
         if operation["result"] is None:
             return 204, None, None
@@ -254,6 +273,11 @@ class FakeArm:
             return 400, _error(
                 "ManagedIdentityRequired",
                 "At least one managed identity (SystemAssigned or UserAssigned) must be assigned to the agent."), None
+        action = (agent.get("properties") or {}).get("actionConfiguration")
+        if isinstance(action, dict) and not action.get("identity"):
+            return 400, _error(
+                "InvalidIdentity", f"The identity value '{action.get('identity') or ''}' of 'ActionConfiguration' "
+                "is invalid."), None
         app_insights = ((agent.get("properties") or {}).get("logConfiguration") or {}).get(
             "applicationInsightsConfiguration")
         if isinstance(app_insights, dict) and (
@@ -273,6 +297,10 @@ class FakeArm:
         if method == "DELETE":
             self.resources.pop(key, None)
             return 200, None, None
+        if method in ("PUT", "PATCH") and existing is not None and (
+                existing["properties"].get("provisioningState") == "InProgress"):
+            return 409, _error("OperationConflict", f"Agent '{existing['name']}' is currently being provisioned "
+                               "and cannot be created or updated."), None
         if method == "PUT":
             agent = {
                 "id": agent_id, "name": agent_id.rsplit("/", 1)[-1], "type": "Microsoft.App/agents",
@@ -301,6 +329,11 @@ class FakeArm:
             if self.patch_answers_with_location_only:
                 location = self._new_operation()["Location"]
                 return 202, None, {"Location": location, "Retry-After": "0"}
+            if self.patch_is_async:
+                agent["properties"]["provisioningState"] = "InProgress"
+                return 202, None, self._new_operation(
+                    statuses=self.patch_statuses,
+                    on_done=lambda: agent["properties"].update(provisioningState="Succeeded"))
             return 200, _strip_write_only(agent), None
         raise AssertionError(f"No fake ARM route for {method} {agent_id}")
 
@@ -606,6 +639,79 @@ class AgentCreateTests(AgentCliTestCase):
         self.assertIsNotNone(self.arm.agent())
         self.assertEqual(len(self._identities()), 1)
 
+    def test_create_waits_for_the_settings_update_to_finish(self):
+        self.arm.patch_is_async = True
+        code, _, errors = self.invoke(*self.CREATE, "--monthly-unit-limit", "700",
+                                      "--experimental-settings", '{"EnableWorkspaceTools": true}', "-o", "none")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.arm.writes("/agents/myagent")[-1], ("PATCH", {"properties": {
+            "experimentalSettings": {"EnableWorkspaceTools": True}, "monthlyAgentUnitLimit": 700}}))
+        code, _, errors = self.invoke("sre", "agent", "update", "-g", "rg", "-n", "myagent", "--tags", "env=prod",
+                                      "-o", "none")
+        self.assertEqual(code, 0, errors)
+
+    def test_settings_update_that_fails_later_says_the_agent_was_created(self):
+        self.arm.patch_is_async = True
+        self.arm.patch_statuses = ["InProgress", "Failed"]
+        code, _, errors = self.invoke(*self.CREATE, "--monthly-unit-limit", "700")
+        self.assertNotEqual(code, 0)
+        self.assertIn("Agent 'myagent' was created, but applying --monthly-unit-limit failed", errors)
+        self.assertEqual(len(self._identities()), 1)
+
+    ACTIONS = ("--action-configuration", "{access-level:Low,mode:Review}")
+
+    def test_action_configuration_without_an_identity_gets_the_agents_user_assigned_identity(self):
+        uami = self.arm.add_identity("actions")
+        for label, extra in (("identity the command creates", ()),
+                             ("one --mi-user-assigned", ("--mi-user-assigned", uami))):
+            with self.subTest(label):
+                self.arm.resources = {k: v for k, v in self.arm.resources.items() if "/agents/" not in k}
+                code, _, errors = self.invoke(*self.CREATE, *self.ACTIONS, *extra, "-o", "none")
+                self.assertEqual(code, 0, errors)
+                agent = self.arm.agent()
+                self.assertEqual([agent["properties"]["actionConfiguration"]["identity"]],
+                                 list(agent["identity"]["userAssignedIdentities"]))
+        self.arm.resources = {k: v for k, v in self.arm.resources.items() if "/agents/" not in k}
+        code, _, errors = self.invoke(*self.CREATE, *self.ACTIONS, "--mi-system-assigned", "-o", "none")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.arm.agent()["properties"]["actionConfiguration"]["identity"], "system")
+
+    def test_action_identity_is_not_guessed_among_several_user_assigned_identities(self):
+        first, second = self.arm.add_identity("first"), self.arm.add_identity("second")
+        code, _, errors = self.invoke(*self.CREATE, *self.ACTIONS, "--mi-user-assigned", first, second)
+        self.assertNotEqual(code, 0)
+        self.assertIn("--action-configuration", errors)
+        self.assertEqual(self.arm.writes(), [])
+        code, _, errors = self.invoke(
+            *self.CREATE, "--action-configuration", f"{{access-level:Low,mode:Review,identity:{second}}}",
+            "--mi-user-assigned", first, second, "-o", "none")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.arm.agent()["properties"]["actionConfiguration"]["identity"], second)
+
+
+class _ProbeClock:
+    """Stands in for time.monotonic and time.sleep. Only the thread that probes the
+    agent's API spends time, from its first probe on, and each probe uses up its
+    whole timeout, as when the API accepts connections but never replies."""
+
+    def __init__(self, sleep):
+        self.now = 0.0
+        self._sleep = sleep
+        self._prober = None
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        if threading.get_ident() == self._prober:
+            self.now += seconds
+        self._sleep(seconds)
+
+    def probe_never_replies(self, timeout):
+        self._prober = threading.get_ident()
+        self.now += timeout
+        raise requests.exceptions.ReadTimeout("The agent's API accepted the connection but didn't reply.")
+
 
 class AgentLifecycleTests(AgentCliTestCase):
     """VA-5, VA-6, VA-7, VA-8 and VA-9."""
@@ -621,6 +727,39 @@ class AgentLifecycleTests(AgentCliTestCase):
         code, output, errors = self.invoke("sre", "agent", "start", "-g", "rg", "-n", "myagent")
         self.assertEqual(code, 0, errors)
         self.assertEqual(json.loads(output)["properties"]["powerState"], "Running")
+
+    def test_start_or_stop_conflict_shows_the_services_reason(self):
+        self.arm.add_agent()
+        for verb in ("start", "stop"):
+            with self.subTest(verb):
+                # The service answers with a bare JSON string, not an ARM error object.
+                self.arm.inject("POST", rf"/agents/myagent/{verb}$", 409, "Agent lifecycle or power policy changed.")
+                code, _, errors = self.invoke("sre", "agent", verb, "-g", "rg", "-n", "myagent")
+                self.assertNotEqual(code, 0)
+                self.assertIn("Agent lifecycle or power policy changed.", errors)
+
+    def test_start_waits_until_the_agents_api_answers(self):
+        self.arm.add_agent(properties={"powerState": "Stopped"})
+        self.arm.agent_api_warmup = [404, 502, 503]
+        code, _, errors = self.invoke("sre", "agent", "start", "-g", "rg", "-n", "myagent", "-o", "none")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.arm.agent_api_warmup, [])
+
+        self.arm.agent_api_warmup = [404]
+        code, _, errors = self.invoke("sre", "agent", "start", "-g", "rg", "-n", "myagent", "--no-wait")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.arm.agent_api_warmup, [404])
+
+    def test_start_stops_waiting_after_five_minutes_when_the_agents_api_never_replies(self):
+        self.arm.add_agent(properties={"powerState": "Stopped"})
+        clock = _ProbeClock(time.sleep)
+        self.arm.agent_api_no_reply = clock.probe_never_replies
+        with patch("time.monotonic", clock.monotonic), patch("time.sleep", clock.sleep):
+            code, _, errors = self.invoke("sre", "agent", "start", "-g", "rg", "-n", "myagent", "-o", "none")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.arm.agent()["properties"]["powerState"], "Running")
+        self.assertIn("Agent 'myagent' is running, but its API didn't answer within 5 minutes", errors)
+        self.assertAlmostEqual(clock.now, 5 * 60, delta=10)
 
     def test_wait_commands_fail_when_they_time_out(self):
         self.arm.add_agent()
@@ -755,6 +894,35 @@ class NetworkUpdateTests(AgentCliTestCase):
                 self.assertNotEqual(code, 0)
                 self.assertIn("--sandbox-configuration has nothing to set", errors)
                 self.assertEqual(self.arm.writes(), [])
+
+    DEFAULT_HOSTS = ["management.azure.com", "api.loganalytics.io", "learn.microsoft.com"]
+
+    def _add_limited_agent(self):
+        self.arm.add_agent(properties={"sandboxConfiguration": {"egress": {
+            "mode": "Limited", "allowedHosts": list(self.DEFAULT_HOSTS), "allowedRegistries": ["pypi"]}}})
+
+    def test_allowed_hosts_are_added_to_the_current_list(self):
+        self._add_limited_agent()
+        code, output, errors = self.invoke(
+            "sre", "network", "update", "-g", "rg", "-n", "myagent",
+            "--sandbox-configuration", "{egress:{mode:Limited,allowed-hosts:[example.com,LEARN.microsoft.com]}}")
+        self.assertEqual(code, 0, errors)
+        expected = self.DEFAULT_HOSTS + ["example.com"]
+        egress = self.arm.agent()["properties"]["sandboxConfiguration"]["egress"]
+        self.assertEqual(egress["allowedHosts"], expected)
+        self.assertEqual(egress["allowedRegistries"], ["pypi"])
+        self.assertEqual(json.loads(output)["sandboxConfiguration"]["egress"]["allowedHosts"], expected)
+
+    def test_replacing_the_allowed_hosts_names_the_hosts_it_drops(self):
+        self._add_limited_agent()
+        code, _, errors = self.invoke(
+            "sre", "network", "update", "-g", "rg", "-n", "myagent", "--replace-allowed-hosts",
+            "--sandbox-configuration", "{egress:{allowed-hosts:[example.com,api.loganalytics.io]}}")
+        self.assertEqual(code, 0, errors)
+        egress = self.arm.agent()["properties"]["sandboxConfiguration"]["egress"]
+        self.assertEqual(egress["allowedHosts"], ["example.com", "api.loganalytics.io"])
+        self.assertIn("management.azure.com, learn.microsoft.com", errors)
+        self.assertNotIn("api.loganalytics.io", errors)
 
 
 def _examples(command):

@@ -111,7 +111,8 @@ the labels below.
   identities (`properties.knowledgeGraphConfiguration.identity` and
   `properties.actionConfiguration.identity`) to the user-assigned identity it creates.
   `az sre agent create` also creates a user-assigned identity, but sets neither unless you pass
-  `--knowledge-graph-configuration` and `--action-configuration`.
+  `--knowledge-graph-configuration` and `--action-configuration`. An `--action-configuration`
+  without `identity` gets the user-assigned identity the command creates.
 - **Azure resource access.** When you add a subscription, resource group or management group,
   the portal assigns roles to the agent's identity and also adds the scope to the agent's
   managed resources (`properties.knowledgeGraphConfiguration.managedResources`).
@@ -211,7 +212,7 @@ such as OAuth 2.0, are portal-only.
 | Step | Label | How |
 | --- | --- | --- |
 | Agent Canvas > **+** on the subagent > Add incident response plan | CLI | `az sre response-plan create`, below. |
-| Name and severity levels | CLI | `--name`, `--priority` (`Sev0` to `Sev4` for Azure Monitor, `P1`, `P2` and so on for PagerDuty, `1` to `5` for ServiceNow) |
+| Name and severity levels | CLI | `--name`, `--display-name` (the name the portal shows, `--name` by default), `--priority` (`Sev0` to `Sev4` for Azure Monitor, `P1`, `P2` and so on for PagerDuty, `1` to `5` for ServiceNow) |
 | Impacted service, incident type and title keyword | CLI | `--impacted-service`, `--incident-type`, `--title-contains` |
 | Title does not contain | CLI | `--title-not-contains` |
 | Response subagent | CLI | `--subagent` |
@@ -630,7 +631,7 @@ Learn: [Create scheduled tasks](https://learn.microsoft.com/azure/sre-agent/crea
 | Step | Label | How |
 | --- | --- | --- |
 | Open Automation and create a scheduled task: name, task details, frequency, time of day | CLI | `az sre automation scheduled-task create`, below. |
-| Leave the response subagent, model tier and autonomy level at their defaults | CLI | Leave those fields out. To hand the task to a subagent, add `"agent": "<subagent>"`. |
+| Leave the response subagent, model tier and autonomy level at their defaults | CLI | Leave those fields out. To hand the task to a subagent, add `"agent": "<subagent>"`. Without `agentMode` the task runs autonomously, even when the agent runs in review mode; add `"agentMode": "review"` to have its actions wait for approval. |
 | Message grouping for updates | Portal | To change it from the default, use Automation > Edit. The CLI's task fields don't include it. |
 | Weekly, monthly or custom cron schedules | CLI | `cronExpression`, always in UTC. |
 | Limit how long it runs with Repeat until or a run limit | CLI | `endTime` (an ISO 8601 date-time) or `maxExecutions`. |
@@ -649,16 +650,16 @@ az sre automation scheduled-task create -g "$RG" --agent-name "$AGENT" \
 ### Create an HTTP trigger
 
 Learn: [Create an HTTP trigger](https://learn.microsoft.com/azure/sre-agent/create-http-trigger).
-**Summary:** CLI to create and call the trigger. Copying its URL, message grouping and Run now
-are in the portal.
+**Summary:** CLI to create the trigger, get its URL and call it. Message grouping and Run now are
+in the portal.
 
 | Step | Label | How |
 | --- | --- | --- |
 | Open Automation and create the HTTP trigger: name, details with `{payload.*}` placeholders, Autonomous | CLI | `az sre automation http-trigger create`, below. |
 | Message grouping: New chat thread for each run | Portal | Automation > the trigger > Edit. The CLI's trigger fields don't include it. |
-| Copy the trigger URL | Portal | Automation (`/views/automation`) > the trigger > Copy. |
+| Copy the trigger URL | CLI | `az sre automation http-trigger show -g "$RG" --agent-name "$AGENT" --name container-app-compliance --query properties.value.triggerUrl -o tsv` |
 | Run the trigger now | Portal | Automation > the trigger > Run trigger now. |
-| Call the trigger from the command line | CLI | The tutorial's `az account get-access-token` and `curl` commands. |
+| Call the trigger from the command line | CLI | `az sre automation http-trigger invoke -g "$RG" --agent-name "$AGENT" --name container-app-compliance --payload "@payload.json"`, which calls the trigger URL with your Azure CLI sign-in. |
 | Call the trigger from your pipeline | External | Your CI/CD pipeline. Store the trigger URL as a secret. |
 | Delete the trigger | CLI | `az sre automation http-trigger delete -g "$RG" --agent-name "$AGENT" --name container-app-compliance --yes` |
 

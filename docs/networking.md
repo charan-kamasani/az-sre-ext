@@ -30,17 +30,23 @@ az sre network update -g myrg --agent-name myagent \
 ```
 
 The service merges `--sandbox-configuration` into the existing settings:
-fields you leave out keep their current values, and a list you pass, such as
-`allowed-hosts`, replaces that list. So the `Limited` command above makes
-`example.com` the only allowed host but keeps the default registries, code
-repositories and `allowHttpMcpServerNetworkAccess`. To add a host to the
-current list, start from the current settings:
+fields you leave out keep their current values, and a list you pass replaces
+that list. For `allowed-hosts`, `network update` reads the agent's current
+list first and sends it back with your hosts added. So the `Limited` command
+above adds `example.com` and keeps the service's default hosts, registries,
+code repositories and `allowHttpMcpServerNetworkAccess`. Other lists, such as
+`allowed-registries`, replace the stored list.
+
+To remove allowed hosts, pass the complete list with `--replace-allowed-hosts`.
+A warning names the hosts it removes, which can include the service's
+defaults. Start from the current settings:
 
 ```bash
 az sre network show -g myrg --agent-name myagent --query sandboxConfiguration > sandbox.json
-# Edit sandbox.json to add your hosts. Fields left as null are ignored.
+# Edit egress.allowedHosts in sandbox.json. Fields left as null are ignored.
 # Don't commit the file: it holds any proxy URLs set on the agent.
-az sre network update -g myrg --agent-name myagent --sandbox-configuration @sandbox.json
+az sre network update -g myrg --agent-name myagent --replace-allowed-hosts \
+  --sandbox-configuration @sandbox.json
 ```
 
 Because fields set to `null` are ignored, `network update` can't clear a
@@ -48,7 +54,7 @@ setting such as an HTTP proxy or the VNet subnet. A `--vnet-configuration` or
 `--sandbox-configuration` value that sets nothing once nulls are dropped (for
 example `"{egress:{http-proxy:null}}"` or `"{}"`) fails before anything is sent,
 instead of sending an empty PATCH and exiting 0. An empty list does count: it
-replaces the stored list.
+clears the stored list (for `allowed-hosts`, only with `--replace-allowed-hosts`).
 
 Proxy URLs can carry credentials, so `network update` keeps its request and
 response bodies out of `--debug` output and `az.log`. A value typed on the

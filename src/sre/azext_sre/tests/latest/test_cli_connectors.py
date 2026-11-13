@@ -273,6 +273,45 @@ class ConnectorCliTests(unittest.TestCase):
         self.assertEqual(properties["dataSource"], "https://prod.kusto.windows.net/db")
         self.assertEqual(properties["identity"], UAMI_ID)
 
+    def test_knowledge_file_is_sent_with_its_file_name_and_content_type(self):
+        for file_name, content_type in (("runbook.md", "text/markdown"), ("main.tf", None)):
+            with self.subTest(file_name):
+                name = file_name.replace(".", "-")
+                code, _, logs = self._run(
+                    "sre", "knowledge", "create", "-g", "rg", "--agent-name", "myagent", "-n", name,
+                    "--type", "file", "--file-path", self._file(file_name, "# Runbook\n"))
+                self.assertEqual(code, 0, logs.errors)
+                extended = self.arm.connector(name)["properties"]["extendedProperties"]
+                self.assertEqual(extended["displayName"], file_name)
+                self.assertEqual(extended.get("contentType"), content_type)
+
+    def test_knowledge_file_the_agent_does_not_index_gets_a_warning(self):
+        for file_name, warned in (("main.tf", True), ("RUNBOOK.MD", False)):
+            with self.subTest(file_name):
+                code, _, logs = self._run(
+                    "sre", "knowledge", "create", "-g", "rg", "--agent-name", "myagent",
+                    "-n", file_name.lower().replace(".", "-"), "--type", "file",
+                    "--file-path", self._file(file_name, "resource x {}\n"))
+                self.assertEqual(code, 0, logs.errors)
+                self.assertEqual("--type text" in logs.warnings, warned, logs.warnings)
+
+    def test_connector_table_shows_app_insights_by_its_portal_name(self):
+        for name, wire_type in (("appi", "AppInsights"), ("appi2", "ApplicationInsights")):
+            self.arm.add_connector(name, dataConnectorType=wire_type, dataSource="https://api.applicationinsights.io")
+        code, output, logs = self._run(
+            "sre", "connector", "list", "-g", "rg", "--agent-name", "myagent", "-o", "table")
+        self.assertEqual(code, 0, logs.errors)
+        rows = {line.split()[0]: line for line in output.splitlines()[2:] if line.strip()}
+        for name in ("appi", "appi2"):
+            self.assertIn("Application Insights", rows[name])
+
+    def test_connector_list_takes_the_agent_name_as_n(self):
+        for flag in ("-n", "--name", "--agent-name"):
+            with self.subTest(flag):
+                code, output, logs = self._run("sre", "connector", "list", "-g", "rg", flag, "myagent")
+                self.assertEqual(code, 0, logs.errors)
+                self.assertEqual(sorted(item["name"] for item in json.loads(output)), ["docs", "kusto-prod"])
+
     def test_knowledge_commands_leave_other_connectors_alone(self):
         target = ["-g", "rg", "--agent-name", "myagent"]
         kusto = copy.deepcopy(self.arm.connector("kusto-prod"))

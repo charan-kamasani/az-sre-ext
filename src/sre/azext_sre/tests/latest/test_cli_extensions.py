@@ -66,7 +66,7 @@ NOUNS = {
                          {"agentPrompt": "Investigate the alert"}),
 }
 DIRECT_ROUTES = {noun.direct_route: noun for noun in NOUNS.values() if noun.direct_route}
-ARM_TYPES = {noun.extension_type for noun in NOUNS.values()}
+ARM_TYPES = {noun.extension_type for noun in NOUNS.values()} | {"globalSettings"}
 PLUGIN_NOUNS = ("plugin marketplace", "plugin install")
 
 Request = namedtuple("Request", "method host path query body auth")
@@ -109,6 +109,8 @@ class FakeAgentService:
         self.trigger_answer = (200, {"success": True}, "application/json", {})
         # ARM's answer to agent extension requests from a tenant outside Microsoft.
         self.arm_tenant_gate = False
+        # Statuses the agent's API answers its next requests with, as its gateway does while it warms up.
+        self.agent_api_gateway_errors = []
 
     def send(self, request, **kwargs):
         del kwargs
@@ -154,6 +156,8 @@ class FakeAgentService:
 
     def _agent_api(self, request, url, body):
         path = url.path.rstrip("/")
+        if self.agent_api_gateway_errors:
+            return _response(request, self.agent_api_gateway_errors.pop(0))
         if path.startswith("/api/v1/httptriggers/trigger/") and request.method == "POST":
             status, content, content_type, headers = self.trigger_answer
             return _response(request, status, content, content_type, headers)
@@ -677,6 +681,72 @@ class ExtensionCommandCliTests(unittest.TestCase):
         code, _, _ = self._az(*self._command("tool", "list"), route="arm")
         self.assertNotEqual(code, 0)
         self.assertEqual({r.host for r in self.service.requests}, {ARM_HOST})
+
+    def test_settings_show_output_can_be_sent_back_with_settings_update(self):
+        # What 'agent settings show' returned live with approval expiry turned off.
+        shown = {"approvalExpirationSetting": {"approvalExpirationInMinutes": None, "enabled": False},
+                 "customInstructions": "", "skillStatuses": [], "toolStatuses": [],
+                 "toolPermissions": {"allow": [], "ask": [], "deny": []}}
+        self.service.store[("globalSettings", "default")] = copy.deepcopy(shown)
+        target = ("-g", "rg", "--agent-name", "myagent")
+        code, out, err = self._az("agent", "settings", "show", *target, "--query", "properties.value")
+        self.assertEqual(code, 0, err)
+        code, _, err = self._az("agent", "settings", "update", *target, "--value", "@" + self._write("s.json", out))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.service.store[("globalSettings", "default")], shown)
+
+    def test_the_feature_check_does_not_wait_out_gateway_errors(self):
+        # It's advisory and runs before many commands, so one 502 sends the command on to ARM.
+        self._reset()
+        self._seed_tools(1)
+        self.service.agent_api_gateway_errors = [502, 502, 502, 502]
+        with patch("time.sleep"):
+            code, _, err = self._az(*self._command("tool", "list"), route="")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.service.agent_api_gateway_errors), 3)
+
+    def test_gateway_errors_from_the_agents_api_are_retried(self):
+        self._reset()
+        self._seed_tools(1)
+        self.service.agent_api_gateway_errors = [502, 503]
+        with patch("time.sleep"):
+            code, _, err = self._az(*self._command("tool", "delete", "-n", "t0", "--yes"), route="direct")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn(("tools", "t0"), self.service.store)
+
+    def test_scheduled_task_pause_keeps_the_agent_mode_as_stored(self):
+        for route in ("arm", "direct"):
+            with self.subTest(route=route):
+                self._reset()
+                self.service.store[("scheduledTasks", "t1")] = {
+                    "cronExpression": "0 9 * * *", "agentPrompt": "Check", "agentMode": "Autonomous"}
+                code, _, err = self._az(*self._command("scheduled-task", "pause", "-n", "t1"), route=route)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(self.service.store[("scheduledTasks", "t1")]["agentMode"], "Autonomous")
+
+    def test_skill_create_attaches_additional_files(self):
+        folder = os.path.join(self.config_dir, "compliance")
+        os.makedirs(os.path.join(folder, "refs"))
+        skill_md = self._write(os.path.join("compliance", "SKILL.md"),
+                               "---\nname: compliance\ndescription: Check deployments\n---\nSee detection.md.\n")
+        detection = self._write(os.path.join("compliance", "detection.md"), "# Detection\n")
+        query = self._write(os.path.join("compliance", "refs", "query.kql"), "AzureActivity\n")
+        for route in ("arm", "direct"):
+            with self.subTest(route=route):
+                self._reset()
+                code, _, err = self._az(*self._command(
+                    "skill", "create", "--file-path", skill_md, "--additional-file", detection,
+                    "--additional-file", query), route=route)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(self.service.store[("skills", "compliance")]["additionalFiles"], [
+                    {"filePath": "detection.md", "content": "# Detection\n"},
+                    {"filePath": "refs/query.kql", "content": "AzureActivity\n"}])
+        self._reset()
+        code, _, err = self._az(*self._command(
+            "skill", "create", "-n", "s", "--value", '{"description": "x"}', "--additional-file", detection))
+        self.assertNotEqual(code, 0)
+        self.assertIn("--additional-file", err)
+        self.assertEqual(self._puts(), [])
 
 
 def _bash_command_lines(text):

@@ -167,10 +167,10 @@ GROUP_EXAMPLES = {
          "text": "az sre usage list -g myrg --agent-name myagent"},
     ],
     "sre automation scheduled-task": [
-        {"name": "Run the agent on a timer against a prompt.",
+        {"name": "Run the agent on a timer against a prompt, in review mode.",
          "text": "az sre automation scheduled-task create -g myrg --agent-name myagent "
                  "-n daily-digest --value '{\"cronExpression\": \"0 9 * * 1-5\", \"agentPrompt\": "
-                 "\"Summarize overnight alerts\"}'"},
+                 "\"Summarize overnight alerts\", \"agentMode\": \"review\"}'"},
         {"name": "List an agent's scheduled tasks.",
          "text": "az sre automation scheduled-task list -g myrg --agent-name myagent"},
     ],

@@ -204,6 +204,10 @@ def _arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_o
 
 
 DATA_PLANE_AUDIENCE = "https://azuresre.dev"
+# What the agent's API answers while its gateway can't reach the agent, as for
+# a minute or two after it starts, and the waits before each new try.
+_AGENT_API_GATEWAY_ERRORS = (502, 503, 504)
+_AGENT_API_RETRY_DELAYS = (5, 10, 20)
 
 
 def _resolve_agent_endpoint(cli_ctx, agent_name, resource_group):
@@ -288,24 +292,47 @@ def _add_read_target_args(schema, short_name=True):
 
 
 def _data_plane_request(cli_ctx, agent_name, resource_group, method, path, body=None,
-                        missing_ok=False, agent_url=None):
-    """Call the agent endpoint using its data-plane OAuth audience."""
+                        missing_ok=False, agent_url=None, retry=True):
+    """Call the agent endpoint using its data-plane OAuth audience.
+
+    Unless retry is off, a GET, PUT or DELETE is sent again after a gateway error
+    (502, 503 or 504), which the agent's API answers with for a while after the
+    agent starts. A gateway can answer an error for a delete the agent carried
+    out, so a retried DELETE that then gets 404 has succeeded.
+    """
+    import time
+
     endpoint = agent_url or _resolve_agent_endpoint(cli_ctx, agent_name, resource_group)
     url = f"{endpoint.rstrip('/')}{path}"
-    try:
-        response = send_raw_request(
-            cli_ctx,
-            method,
-            url,
-            headers=["Content-Type=application/json"],
-            body=json.dumps(body) if body is not None else None,
-            resource=DATA_PLANE_AUDIENCE,
-        )
-    except Exception as ex:  # Azure CLI normalizes HTTP errors by command.
-        status_code = getattr(getattr(ex, "response", None), "status_code", None)
-        if missing_ok and status_code == 404:
-            return None
-        raise
+    retry_delays = list(_AGENT_API_RETRY_DELAYS) if retry and method in ("GET", "PUT", "DELETE") else []
+    gateway_error = None
+    while True:
+        try:
+            response = send_raw_request(
+                cli_ctx,
+                method,
+                url,
+                headers=["Content-Type=application/json"],
+                body=json.dumps(body) if body is not None else None,
+                resource=DATA_PLANE_AUDIENCE,
+            )
+            break
+        except Exception as ex:  # Azure CLI normalizes HTTP errors by command.
+            status_code = getattr(getattr(ex, "response", None), "status_code", None)
+            if status_code in _AGENT_API_GATEWAY_ERRORS and retry_delays:
+                gateway_error = status_code
+                delay = retry_delays.pop(0)
+                logger.warning("The agent's API answered %s; trying again in %s seconds.", status_code, delay)
+                time.sleep(delay)
+                continue
+            if status_code == 404 and method == "DELETE" and gateway_error:
+                logger.warning(
+                    "The agent's API answered %s to the delete, and the item was gone when the CLI tried "
+                    "again, so it's deleted.", gateway_error)
+                return {}
+            if missing_ok and status_code == 404:
+                return None
+            raise
     if not response.content:
         return {}
     content_type = (getattr(response, "headers", None) or {}).get("Content-Type")
@@ -976,6 +1003,13 @@ class _DefaultSystemIdentityMixin:
         user_assigned = getattr(args, "mi_user_assigned", None)
         has_system = has_value(system_assigned)
         has_user = has_value(user_assigned) and len(user_assigned) > 0
+        fill_action_identity = has_value(args.action_configuration) and not has_value(
+            args.action_configuration.identity)
+        if fill_action_identity and has_user and len(user_assigned) > 1:
+            raise InvalidArgumentValueError(
+                "--action-configuration has no identity, and the agent gets more than one user-assigned "
+                "identity. Add the one its actions run as, for example --action-configuration "
+                "\"{identity:RESOURCE_ID,access-level:Low,mode:Review}\".")
         if not has_system and not has_user:
             agent_name = _arg_value(args.agent_name)
             resource_group = _arg_value(args.resource_group)
@@ -994,6 +1028,12 @@ class _DefaultSystemIdentityMixin:
                 "--mi-user-assigned explicitly to override.",
                 identity_id.rsplit("/", 1)[-1],
             )
+        identities = _arg_value(args.mi_user_assigned) or []
+        system = str(_arg_value(args.mi_system_assigned) or "").strip().lower() not in ("", "false")
+        if fill_action_identity and (len(identities) == 1 or (system and not identities)):
+            # The service rejects an action configuration without an identity. The
+            # portal uses the identity it creates; "system" is the system-assigned one.
+            args.action_configuration.identity = identities[0] if identities else "system"
         super().pre_operations()
 
 
@@ -1100,6 +1140,9 @@ class _ExperimentalSettingsOnCreateMixin:
 
     The generated create can't carry these properties, and a PUT that does carry
     experimentalSettings replaces the service's own flags instead of adding to them.
+    The PATCH can finish after the service answers (202), and the agent refuses
+    other changes with OperationConflict until it does, so it is polled to the
+    end like the create itself.
     """
 
     def pre_operations(self):
@@ -1111,26 +1154,42 @@ class _ExperimentalSettingsOnCreateMixin:
             )
         super().pre_operations()
 
-    def post_operations(self):
-        super().post_operations()
-        properties = _extra_agent_properties(self.ctx.args)
-        if not properties:
+    def _execute_operations(self):
+        yield from super()._execute_operations()
+        if not _extra_agent_properties(self.ctx.args):
             return
         try:
-            _arm_request(self.cli_ctx, "PATCH", _ctx_agent_id(self.ctx), API_VERSION,
-                         body={"properties": properties})
+            polling = self.AgentsPatchUnmodeled(ctx=self.ctx)()
         except Exception as ex:
-            agent_name = _arg_value(self.ctx.args.agent_name)
-            resource_group = _arg_value(self.ctx.args.resource_group)
-            flags = " and ".join(flag for key, flag in (
-                ("experimentalSettings", "--experimental-settings"),
-                ("monthlyAgentUnitLimit", "--monthly-unit-limit"),
-            ) if key in properties)
-            raise CLIError(
-                f"Agent '{agent_name}' was created, but applying {flags} failed: {ex}\n"
-                f"Retry with 'az sre agent update --name {agent_name} --resource-group {resource_group}' "
-                f"and the same {flags}."
-            ) from ex
+            raise self._settings_error(ex) from ex
+        yield _CleanupOnFailurePolling(polling, self._raise_settings_error)
+
+    def _raise_settings_error(self, error):
+        raise self._settings_error(error) from error
+
+    def _settings_error(self, error):
+        properties = _extra_agent_properties(self.ctx.args)
+        agent_name = _arg_value(self.ctx.args.agent_name)
+        resource_group = _arg_value(self.ctx.args.resource_group)
+        flags = " and ".join(flag for key, flag in (
+            ("experimentalSettings", "--experimental-settings"),
+            ("monthlyAgentUnitLimit", "--monthly-unit-limit"),
+        ) if key in properties)
+        return CLIError(
+            f"Agent '{agent_name}' was created, but applying {flags} failed: {error}\n"
+            f"Retry with 'az sre agent update --name {agent_name} --resource-group {resource_group}' "
+            f"and the same {flags}."
+        )
+
+    class AgentsPatchUnmodeled(_GeneratedCreate.AgentsCreateOrUpdate):
+
+        @property
+        def method(self):
+            return "PATCH"
+
+        @property
+        def content(self):
+            return {"properties": _extra_agent_properties(self.ctx.args)}
 
 
 class _ActionModeEnum(AAZArgEnum):
@@ -1324,6 +1383,11 @@ class Create(  # pylint: disable=too-many-ancestors
         )
         schema.log_configuration._help["short-summary"] = (
             "Application Insights link for traces. Without it, a warning is shown and trace view is unavailable."
+        )
+        schema.action_configuration._help["short-summary"] = (
+            "What the agent may do and how. Without identity, actions run as the agent's user-assigned identity "
+            "(the one created for it, or the one given with --mi-user-assigned), or as \"system\" when it has "
+            "only a system-assigned identity."
         )
         _add_experimental_settings_arg(schema)
         cls._args_schema = schema
@@ -1733,11 +1797,11 @@ def _connector_access_reminder(connector):
 # Mapped below since the correlation is strong, but flagged here for a
 # future live create+inspect test to fully confirm.
 #
-# Unresolved ambiguity: the portal shows exactly one "Application Insights"
-# card, but the wire-type allowlist has two distinct accepted values,
-# 'AppInsights' and 'ApplicationInsights'. Which one that card actually
-# persists as has not been confirmed by an actual create-and-inspect test,
-# so neither is mapped here yet -- do not guess.
+# Application Insights: the service accepts two wire values, 'AppInsights'
+# (what this CLI creates for the portal name "Application Insights") and
+# 'ApplicationInsights'. Which one the portal's single "Application Insights"
+# card persists hasn't been confirmed by a create-and-inspect test, but both
+# are Application Insights connectors, so both are labeled that way here.
 #
 # The 4 Knowledge* types are confirmed NOT reachable through this same
 # "Connectors" picker at all (empty search, absent from the full catalog
@@ -1771,6 +1835,8 @@ CONNECTOR_TYPE_PORTAL_NAMES = {
     "Icm": "IcM connector",
     "Dgrep": "DGrep",
     "LogAnalytics": "Log Analytics Workspace",
+    "AppInsights": "Application Insights",
+    "ApplicationInsights": "Application Insights",
     "Ev2Mcp": "EV2",
     "GenevaMetrics": "Geneva Metrics",
     "S360": "S360 connector",
@@ -2202,10 +2268,14 @@ class _ConnectorConvenienceArgsMixin:
             if connector_type == "KnowledgeFile":
                 with open(file_path, "rb") as handle:
                     content = base64.b64encode(handle.read()).decode("ascii")
-                args.extended_properties = {
-                    "fileContent": content,
-                    "fileName": os.path.basename(file_path),
-                }
+                file_name = os.path.basename(file_path)
+                # Without displayName and contentType the service shows the
+                # connector name and stores application/octet-stream.
+                extended = {"fileContent": content, "fileName": file_name, "displayName": file_name}
+                content_type = KNOWLEDGE_FILE_CONTENT_TYPES.get(os.path.splitext(file_name)[1].lower())
+                if content_type:
+                    extended["contentType"] = content_type
+                args.extended_properties = extended
             else:
                 with open(file_path, "r", encoding="utf-8-sig") as handle:
                     text = handle.read()
@@ -2761,6 +2831,15 @@ class ConnectorList(_GeneratedConnectorList):
     """
 
     _args_schema = None
+
+    @classmethod
+    def _build_arguments_schema(cls, *args, **kwargs):
+        if cls._args_schema is not None:
+            return cls._args_schema
+        schema = super()._build_arguments_schema(*args, **kwargs)
+        # Like the other list commands, which take the agent's name as -n/--name too.
+        schema.agent_name._options = ["-n", "--name", "--agent-name"]
+        return schema
 
     EMPTY_GUIDANCE = (
         "No connectors found. Add one with 'az sre connector create "
@@ -3688,6 +3767,55 @@ KNOWLEDGE_TYPES = {
     "repository": "KnowledgeRepository",
 }
 
+# The file types Knowledge settings indexes, from "Knowledge settings uploads" in
+# https://learn.microsoft.com/azure/sre-agent/upload-knowledge-document
+# (2026-10-29), with the content type sent for each. The portal and the labs send
+# a content type; without one the service stores application/octet-stream.
+KNOWLEDGE_FILE_CONTENT_TYPES = {
+    ".md": "text/markdown",
+    ".txt": "text/plain",
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".doc": "application/msword",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".xls": "application/vnd.ms-excel",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
+    ".json": "application/json",
+    ".csv": "text/csv",
+    ".log": "text/plain",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+    ".xml": "application/xml",
+    ".ini": "text/plain",
+    ".conf": "text/plain",
+    ".cfg": "text/plain",
+    ".config": "text/plain",
+    ".properties": "text/plain",
+}
+
+
+def _warn_if_knowledge_file_not_indexed(file_path):
+    """Warn when Knowledge settings won't index a file of this type. The service
+    accepts the upload and reports success, but the agent never finds the
+    content (seen live for .tf and .js files)."""
+    extension = os.path.splitext(file_path)[1].lower()
+    if extension in KNOWLEDGE_FILE_CONTENT_TYPES:
+        return
+    logger.warning(
+        "The agent doesn't index %s, so it won't find what's in '%s'. For a text file, such as code, "
+        "add its contents with --type text instead. 'az sre knowledge create --help' lists the file "
+        "types it indexes.",
+        f"'{extension}' files" if extension else "files without an extension", os.path.basename(file_path))
+
 
 def _get_connector(cli_ctx, ctx, name):
     """The agent's connector `name` as ARM returns it, or None if there is none."""
@@ -3772,7 +3900,9 @@ class KnowledgeCreate(AAZCommand):
         )
         schema.file_path = AAZStrArg(
             options=["--file-path"],
-            help="Local file to ingest. Required for --type file/text.",
+            help="Local file to ingest. Required for --type file/text. With --type file, the agent indexes only "
+            + ", ".join(KNOWLEDGE_FILE_CONTENT_TYPES) + " files; add other text files, such as code, "
+            "with --type text.",
         )
         schema.url = AAZStrArg(
             options=["--url"],
@@ -3807,6 +3937,8 @@ class KnowledgeCreate(AAZCommand):
         connector_type = KNOWLEDGE_TYPES[kind]
         if connector_type in ("KnowledgeFile", "KnowledgeText") and not file_path:
             raise CLIError(f"--file-path is required for --type {kind}.")
+        if connector_type == "KnowledgeFile":
+            _warn_if_knowledge_file_not_indexed(file_path)
         if connector_type == "KnowledgeWebPage" and not (url or data_source):
             raise CLIError("--url (or --data-source) is required for --type webpage.")
         if overwrite:
@@ -4048,13 +4180,121 @@ class _EmptyOperationResultMixin:
         return super()._output(*args, **kwargs)
 
 
+def _service_error_text(response):
+    """The service's own message in an error response: a bare JSON string, an
+    ARM error's message, or the raw text."""
+    text = response.text() or ""
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return text.strip()
+    if isinstance(body, str):
+        return body
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict) and isinstance(error.get("message"), str):
+        return error["message"]
+    return text.strip()
+
+
+class _LifecycleConflictMixin:
+    """Explains the 409 that 'agent start' or 'agent stop' gets while an earlier
+    start or stop is still finishing.
+
+    The service's reason is a bare JSON string ("Agent lifecycle or power policy
+    changed."), not an ARM error, so Azure CLI only printed "Operation returned an
+    invalid status 'Conflict'". A retry about 30 seconds later works.
+    """
+
+    _VERB = None
+
+    def on_error(self, response):
+        if response.status_code == 409:
+            reason = _service_error_text(response) or "Conflict."
+            raise CLIError(
+                f"Couldn't {self._VERB} agent '{_arg_value(self.ctx.args.agent_name)}': {reason} "
+                "If it was just started or stopped, try again in about 30 seconds.")
+        return super().on_error(response)
+
+
+# 'agent start' waits up to AGENT_API_WARMUP_SECONDS in all, probe timeouts included, for
+# the agent's own API. It answered within 1 to 2 minutes in the labs.
+AGENT_API_WARMUP_SECONDS = 5 * 60
+AGENT_API_WARMUP_INTERVAL_SECONDS = 10
+AGENT_API_PROBE_TIMEOUT_SECONDS = 30
+# Lists the agent's custom skills; any answer but a gateway's means the API is up.
+AGENT_API_READY_PATH = "/api/v2/extendedAgent/skills"
+
+
+def _agent_api_answers(cli_ctx, endpoint, timeout):
+    """True once the agent's own API answers, rather than its gateway reporting the
+    agent missing (404) or unreachable (502, 503 or 504). Unlike send_raw_request,
+    this request gives up after `timeout` seconds."""
+    from azure.cli.core._profile import Profile
+    from azure.cli.core.util import get_az_rest_user_agent, should_disable_connection_verify
+
+    (token_type, token, _), _, _ = Profile(cli_ctx=cli_ctx).get_raw_token(resource=DATA_PLANE_AUDIENCE)
+    try:
+        response = requests.get(
+            f"{endpoint.rstrip('/')}{AGENT_API_READY_PATH}", allow_redirects=False, timeout=timeout,
+            verify=not should_disable_connection_verify(),
+            headers={"Authorization": f"{token_type} {token}", "User-Agent": get_az_rest_user_agent()})
+    except requests.RequestException as ex:
+        logger.debug("The agent's API didn't answer: %s", ex)
+        return False
+    logger.debug("The agent's API answered %s.", response.status_code)
+    return response.status_code not in (404, *_AGENT_API_GATEWAY_ERRORS)
+
+
+def _wait_for_agent_api(cli_ctx, agent_id, agent_name):
+    """Wait until a started agent's own API answers.
+
+    For a minute or two after the agent is running, that API answers 404 or 502,
+    so commands that use it reported items as not found. Starting has succeeded
+    by then, so this never fails the command. It stops after
+    AGENT_API_WARMUP_SECONDS even when the API accepts connections but never
+    replies: no probe waits past that deadline.
+    """
+    import time
+
+    deadline = time.monotonic() + AGENT_API_WARMUP_SECONDS
+    try:
+        agent = _arm_request(cli_ctx, "GET", agent_id, API_VERSION, missing_ok=True)
+        properties = agent.get("properties") if isinstance(agent, dict) else None
+        endpoint = properties.get("agentEndpoint") if isinstance(properties, dict) else None
+        if not endpoint:
+            return
+        left = deadline - time.monotonic()
+        while left > 0:
+            if _agent_api_answers(cli_ctx, endpoint, min(AGENT_API_PROBE_TIMEOUT_SECONDS, left)):
+                return
+            time.sleep(max(0.0, min(AGENT_API_WARMUP_INTERVAL_SECONDS, deadline - time.monotonic())))
+            left = deadline - time.monotonic()
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.debug("Couldn't check whether the agent's API answers: %s", ex)
+        return
+    logger.warning(
+        "Agent '%s' is running, but its API didn't answer within %d minutes. Until it does, commands "
+        "that use it can fail or report items as not found.", agent_name, AGENT_API_WARMUP_SECONDS // 60)
+
+
 @register_command("sre agent start")
 class Start(_EmptyOperationResultMixin, _GeneratedStart):
     """Start a stopped SRE Agent.
 
+    The command waits until the agent's own API answers, which can take a minute
+    or two after the agent is running. Until then, commands that use that API can
+    report items as not found. --no-wait returns without waiting.
+
     :example: Start a stopped agent
         az sre agent start --name myagent --resource-group myrg
     """
+
+    def post_operations(self):
+        super().post_operations()
+        _wait_for_agent_api(self.cli_ctx, _ctx_agent_id(self.ctx), _arg_value(self.ctx.args.agent_name))
+
+    class AgentsStart(_LifecycleConflictMixin, _GeneratedStart.AgentsStart):
+        _VERB = "start"
 
 
 @register_command("sre agent stop")
@@ -4064,6 +4304,9 @@ class Stop(_EmptyOperationResultMixin, _GeneratedStop):
     :example: Stop a running agent
         az sre agent stop --name myagent --resource-group myrg
     """
+
+    class AgentsStop(_LifecycleConflictMixin, _GeneratedStop.AgentsStop):
+        _VERB = "stop"
 
 
 @register_command("sre agent wait")
@@ -4496,8 +4739,17 @@ class AccessList(AAZCommand):
 class UpdateNetwork(AAZCommand):
     """Configure VNet injection and sandbox egress (preview).
 
-    :example: Limit the agent's sandbox egress to one allowed host
+    Hosts in allowed-hosts are added to the agent's current allowed hosts,
+    which start with the service's defaults. Pass --replace-allowed-hosts to
+    replace the list instead. Other lists you pass, such as allowed-registries,
+    replace the stored list.
+
+    :example: Allow the agent's sandbox to reach one more host
         az sre network update --name myagent --resource-group myrg \\
+            --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}"
+
+    :example: Replace the allowed hosts, including the service's defaults, with one host
+        az sre network update --name myagent --resource-group myrg --replace-allowed-hosts \\
             --sandbox-configuration "{egress:{mode:Limited,allowed-hosts:[example.com]}}"
     """
 
@@ -4564,7 +4816,8 @@ class UpdateNetwork(AAZCommand):
         )
         egress.allowed_hosts = AAZListArg(
             nullable=True, options=["allowed-hosts"],
-            help="Hosts the sandbox is allowed to reach when in Limited mode.",
+            help="Hosts to add to the ones the sandbox can reach in Limited mode. "
+            "With --replace-allowed-hosts, the complete list.",
         )
         egress.allowed_hosts.Element = AAZStrArg()
         egress.allowed_registries = AAZListArg(
@@ -4597,6 +4850,12 @@ class UpdateNetwork(AAZCommand):
         )
         egress.http_proxy.no_proxy.Element = AAZStrArg()
 
+        schema.replace_allowed_hosts = AAZBoolArg(
+            options=["--replace-allowed-hosts"],
+            help="Replace the agent's allowed hosts with the allowed-hosts list instead of adding to them. "
+            "A warning names the hosts this removes, which can include the service's defaults.",
+        )
+
         cls._args_schema = schema
         return schema
 
@@ -4606,6 +4865,7 @@ class UpdateNetwork(AAZCommand):
         resource_group = _arg_value(self.ctx.args.resource_group)
         vnet_configuration = _arg_value(self.ctx.args.vnet_configuration)
         sandbox_configuration = _arg_value(self.ctx.args.sandbox_configuration)
+        replace_hosts = bool(_arg_value(self.ctx.args.replace_allowed_hosts))
 
         if vnet_configuration is None and sandbox_configuration is None:
             raise CLIError(
@@ -4629,6 +4889,10 @@ class UpdateNetwork(AAZCommand):
                 raise CLIError(
                     f"{flag} has nothing to set. Fields set to null are ignored, so this command "
                     "can't clear a setting.")
+        egress = (properties.get("sandboxConfiguration") or {}).get("egress")
+        new_hosts = egress.get("allowedHosts") if isinstance(egress, dict) else None
+        if replace_hosts and new_hosts is None:
+            raise CLIError("--replace-allowed-hosts needs an allowed-hosts list in --sandbox-configuration.")
         proxy = ((sandbox_configuration or {}).get("egress") or {}).get("http_proxy") or {}
         if any("@" in urlparse(url).netloc for url in (proxy.get("http_url"), proxy.get("https_url"))
                if isinstance(url, str)):
@@ -4640,6 +4904,9 @@ class UpdateNetwork(AAZCommand):
         # service sends back, so keep the bodies out of --debug and az.log.
         with _no_http_trace():
             resource_id = _resolve_agent_resource_id(self.cli_ctx, name, resource_group)
+            if new_hosts is not None:
+                current = _arm_request(self.cli_ctx, "GET", resource_id, NETWORK_API_VERSION)
+                egress["allowedHosts"] = _allowed_hosts_to_send(current, new_hosts, replace_hosts)
             updated = _arm_request(
                 self.cli_ctx, "PATCH", resource_id, NETWORK_API_VERSION, body={"properties": properties},
             )
@@ -4651,9 +4918,35 @@ class UpdateNetwork(AAZCommand):
         return _network_view(updated)
 
 
+def _allowed_hosts_to_send(agent, hosts, replace):
+    """The egress allowedHosts list to PATCH, which replaces the stored list.
+
+    The hosts are added to the agent's current ones, which start with the
+    service's defaults, unless replace is set. Then the hosts it drops are named.
+    """
+    properties = agent.get("properties") if isinstance(agent, dict) else None
+    sandbox = properties.get("sandboxConfiguration") if isinstance(properties, dict) else None
+    egress = sandbox.get("egress") if isinstance(sandbox, dict) else None
+    current = egress.get("allowedHosts") if isinstance(egress, dict) else None
+    current = [host for host in current if isinstance(host, str)] if isinstance(current, list) else []
+    if replace:
+        kept = {host.lower() for host in hosts}
+        dropped = [host for host in current if host.lower() not in kept]
+        if dropped:
+            logger.warning("--replace-allowed-hosts removed these hosts from the agent's allowed hosts: %s",
+                           ", ".join(dropped))
+        return hosts
+    merged, seen = [], set()
+    for host in current + hosts:
+        if host.lower() not in seen:
+            seen.add(host.lower())
+            merged.append(host)
+    return merged
+
+
 def _has_network_setting(value):
     """True if a null-free network configuration still sets something. A list
-    counts, even an empty one: it replaces the stored list."""
+    counts, even an empty one."""
     if isinstance(value, dict):
         return any(_has_network_setting(item) for item in value.values())
     return value is not None
@@ -4813,7 +5106,10 @@ def _validate_common_prompts_shape(parsed):
 # "Configured" const (lines 32-37) -- the control-plane team's own test
 # payload that is base64-encoded, PUT, decoded server-side, and asserted
 # byte-for-byte equal on GET/list. All fields are optional (the test also
-# exercises "{}" as valid), so we only type-check fields if present.
+# exercises "{}" as valid), so we only type-check fields that are set. The
+# service returns null for unset ones, such as approvalExpirationInMinutes
+# when approval expiry is off, and 'agent settings show' output must be
+# accepted back as it is.
 def _validate_global_settings_shape(parsed):
     if not isinstance(parsed, dict):
         raise CLIError(
@@ -4827,7 +5123,7 @@ def _validate_global_settings_shape(parsed):
         if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
             raise CLIError(f"{path}.{key} must be a JSON array of strings.")
 
-    if "toolPermissions" in parsed:
+    if parsed.get("toolPermissions") is not None:
         tp = parsed["toolPermissions"]
         if not isinstance(tp, dict):
             raise CLIError("--value.toolPermissions must be a JSON object with 'allow'/'ask'/'deny' arrays.")
@@ -4851,7 +5147,7 @@ def _validate_global_settings_shape(parsed):
             )
 
     def _require_name_enabled_list(obj, key):
-        if key not in obj:
+        if obj.get(key) is None:
             return
         value = obj[key]
         if not isinstance(value, list):
@@ -4865,16 +5161,17 @@ def _validate_global_settings_shape(parsed):
     _require_name_enabled_list(parsed, "toolStatuses")
     _require_name_enabled_list(parsed, "skillStatuses")
 
-    if "customInstructions" in parsed and not isinstance(parsed["customInstructions"], str):
+    if parsed.get("customInstructions") is not None and not isinstance(parsed["customInstructions"], str):
         raise CLIError("--value.customInstructions must be a string.")
 
-    if "approvalExpirationSetting" in parsed:
-        aes = parsed["approvalExpirationSetting"]
+    aes = parsed.get("approvalExpirationSetting")
+    if aes is not None:
         if not isinstance(aes, dict):
             raise CLIError("--value.approvalExpirationSetting must be a JSON object.")
-        if "enabled" in aes and not isinstance(aes["enabled"], bool):
+        if aes.get("enabled") is not None and not isinstance(aes["enabled"], bool):
             raise CLIError("--value.approvalExpirationSetting.enabled must be a boolean.")
-        if "approvalExpirationInMinutes" in aes and not isinstance(aes["approvalExpirationInMinutes"], (int, float)):
+        minutes = aes.get("approvalExpirationInMinutes")
+        if minutes is not None and not isinstance(minutes, (int, float)):
             raise CLIError("--value.approvalExpirationSetting.approvalExpirationInMinutes must be a number.")
 
 
@@ -5410,11 +5707,8 @@ def _normalize_extension_value(raw_value, extension_type=None):
     if extension_type == "tools" and isinstance(parsed, dict) and parsed.get("type") == "PythonTool":
         parsed["type"] = "PythonFunctionTool"
         raw_value = json.dumps(parsed)
-    # The service matches agent modes case-insensitively and stores them lowercase.
-    if (extension_type in ("httpTriggers", "scheduledTasks") and isinstance(parsed, dict)
-            and isinstance(parsed.get("agentMode"), str) and parsed["agentMode"] != parsed["agentMode"].lower()):
-        parsed["agentMode"] = parsed["agentMode"].lower()
-        raw_value = json.dumps(parsed)
+    # agentMode is checked case-insensitively and sent as given: the service
+    # keeps the case it's sent, and scripts compare the stored value.
     validator = EXTENSION_VALUE_VALIDATORS.get(extension_type)
     if validator is not None:
         validator(parsed)
@@ -5595,7 +5889,9 @@ def _direct_extension_to_arm_shape(extension_type, envelope):
 def _direct_extension_create(cli_ctx, agent_name, resource_group, extension_type, name, raw_value, overwrite):
     raw_value = _normalize_extension_value(raw_value, extension_type)
     properties = json.loads(raw_value)
-    properties.pop("name", None)
+    if extension_type != "incidentFilters":
+        # An incident filter's name property is its display name; the item's name is in the path.
+        properties.pop("name", None)
     path = _direct_extension_path(extension_type, name)
     envelope_type = DIRECT_EXTENSION_ROUTES[extension_type][1]
     if envelope_type is None:
@@ -5855,7 +6151,9 @@ def _agent_features(cli_ctx, agent_name, resource_group):
     features = _feature_cache_read(key)
     if features is None:
         try:
-            response = _data_plane_request(cli_ctx, agent_name, resource_group, "GET", FEATURE_STATUS_PATH)
+            # Advisory, and run before many commands, so a gateway error isn't waited out.
+            response = _data_plane_request(
+                cli_ctx, agent_name, resource_group, "GET", FEATURE_STATUS_PATH, retry=False)
             raw = response.get("features") if isinstance(response, dict) else None
             features = raw if isinstance(raw, dict) else {}
         except Exception as ex:  # pylint: disable=broad-except
@@ -6269,6 +6567,33 @@ def _skill_md_tools(tools):
     raise CLIError("The SKILL.md frontmatter 'tools' must be a list of tool names, or pass --tools.")
 
 
+def _skill_additional_files(skill_md_path, paths):
+    """A skill's additionalFiles, in the shape the service stores from --value:
+    each file's text, named by its path from the SKILL.md folder, or by its file
+    name when it's outside that folder."""
+    folder = os.path.dirname(os.path.abspath(skill_md_path))
+    files = []
+    for path in paths:
+        if not os.path.isfile(path):
+            raise CLIError(f"--additional-file '{path}' does not exist.")
+        try:
+            name = os.path.relpath(os.path.abspath(path), folder)
+        except ValueError:  # another drive
+            name = os.path.basename(path)
+        if name.startswith(os.pardir):
+            name = os.path.basename(path)
+        name = name.replace(os.sep, "/")
+        if any(item["filePath"] == name for item in files):
+            raise CLIError(f"More than one --additional-file is named '{name}'.")
+        try:
+            with open(path, "r", encoding="utf-8-sig") as handle:
+                content = handle.read()
+        except UnicodeDecodeError:
+            raise CLIError(f"--additional-file '{path}' isn't UTF-8 text.") from None
+        files.append({"filePath": name, "content": content})
+    return files
+
+
 # ---- sre tool (portal: Extensions > Tools > Custom tools) ----
 @register_command_group("sre tool")
 class _ToolGroup(AAZCommandGroup):
@@ -6363,16 +6688,21 @@ class _AutomationScheduledTaskGroup(AAZCommandGroup):
 class AutomationScheduledTaskCreate(_PinnedExtensionCreate):
     """Create or update a scheduled task.
 
-    :example: Run the agent on a timer against a prompt
+    Without agentMode, the service runs the task in autonomous mode, even when the
+    agent itself runs in review mode. Set agentMode in --value, for example to
+    "review", so the task's actions wait for approval.
+
+    :example: Run the agent on a timer against a prompt, in review mode
         az sre automation scheduled-task create -g myrg --agent-name myagent --name daily-digest \\
-            --value '{"cronExpression": "0 9 * * 1-5", "agentPrompt": "Summarize overnight alerts"}'
+            --value '{"cronExpression": "0 9 * * 1-5", "agentPrompt": "Summarize overnight alerts", "agentMode": "review"}'
     """
 
     _EXTENSION_TYPE = "scheduledTasks"
     _args_schema = None
     _VALUE_HELP = (
         "Task configuration as JSON. Fields: cronExpression, agentPrompt, description, agent, threadId, startTime, endTime, maxExecutions, "
-        "agentMode (readonly, review or autonomous), and isEnabled or status (Active or Paused)."
+        "agentMode (readonly, review or autonomous; the service uses autonomous if it's left out), "
+        "and isEnabled or status (Active or Paused)."
     )
 
 
@@ -7122,6 +7452,10 @@ class ResponsePlanCreate(AAZCommand):
             options=["--subagent"], required=True,
             help="Name of the existing subagent that handles matched incidents. Use meta_agent for the main agent.",
         )
+        schema.display_name = AAZStrArg(
+            options=["--display-name"],
+            help="Name the portal shows for the plan. Default: the plan's --name.",
+        )
         _add_response_plan_criteria_args(schema)
         schema.mode = AAZStrArg(
             options=["--mode"], default="autonomous",
@@ -7152,6 +7486,7 @@ class ResponsePlanCreate(AAZCommand):
         if mode not in RESPONSE_PLAN_MODES:
             raise CLIError(f"--mode must be one of: {', '.join(RESPONSE_PLAN_MODES)}.")
         flt = {
+            "name": _arg_value(args.display_name) or name,
             "incidentPlatform": platform,
             "handlingAgent": _arg_value(args.subagent),
             "agentMode": mode,
@@ -7315,6 +7650,9 @@ class ResponsePlanUpdate(AAZCommand):
         schema.mode = AAZStrArg(
             options=["--mode"], help="Agent autonomy: autonomous or review.",
         )
+        schema.display_name = AAZStrArg(
+            options=["--display-name"], help="Name the portal shows for the plan.",
+        )
         _add_response_plan_criteria_args(schema)
         cls._args_schema = schema
         return schema
@@ -7327,6 +7665,9 @@ class ResponsePlanUpdate(AAZCommand):
         name = _arg_value(args.extension_name)
         cleared = set()
         changes = _response_plan_criteria(args, cleared)
+        display_name = _arg_value(args.display_name)
+        if display_name is not None:
+            changes["name"] = display_name
         platform = _arg_value(args.platform)
         if platform is not None:
             if platform not in RESPONSE_PLAN_PLATFORMS:
@@ -7612,6 +7953,10 @@ class SkillCreate(_PinnedExtensionCreate):
     :example: Name the skill from the SKILL.md frontmatter 'name:' line
         az sre skill create --agent-name myagent --resource-group myrg --file-path SKILL.md
 
+    :example: Create a skill from a SKILL.md file and a reference file next to it
+        az sre skill create --agent-name myagent --resource-group myrg \\
+            --file-path compliance/SKILL.md --additional-file compliance/detection.md
+
     :example: Create a skill from a raw JSON value
         az sre skill create --agent-name myagent --resource-group myrg --name my-skill \\
             --value '{"description": "...", "tools": [], "skillContent": "# My skill\\n..."}'
@@ -7657,6 +8002,14 @@ class SkillCreate(_PinnedExtensionCreate):
             help="Skill description. Only used with --file-path; overrides "
             "the SKILL.md frontmatter's 'description:' line if both are given.",
         )
+        schema.additional_files = AAZListArg(
+            options=["--additional-files"], singular_options=["--additional-file"],
+            arg_group="Skill builder",
+            help="Other text files the skill uses, such as a reference next to SKILL.md. Repeat --additional-file "
+            "for each, or list them after --additional-files. They're sent as additionalFiles, named by their "
+            "path from the SKILL.md folder. Only used with --file-path.",
+        )
+        schema.additional_files.Element = AAZStrArg()
         cls._args_schema = schema
         return schema
 
@@ -7664,10 +8017,14 @@ class SkillCreate(_PinnedExtensionCreate):
         args = self.ctx.args
         file_path = _arg_value(getattr(args, "file_path", None))
         explicit_value = _arg_value(getattr(args, "value", None))
+        additional_files = _arg_value(getattr(args, "additional_files", None))
         if file_path and explicit_value:
             raise CLIError("Specify either --file-path or --value, not both.")
         if not file_path and not explicit_value:
             raise CLIError("Specify either --file-path or --value.")
+        if additional_files and not file_path:
+            raise CLIError("--additional-file is only used with --file-path. With --value, put the files in "
+                           "its additionalFiles list as {\"filePath\": ..., \"content\": ...} objects.")
         name = _arg_value(getattr(args, "extension_name", None))
         if not file_path:
             if not name:
@@ -7698,9 +8055,10 @@ class SkillCreate(_PinnedExtensionCreate):
         if not isinstance(description, str):
             raise CLIError("The SKILL.md frontmatter description must be text. Quote it, or pass --description.")
         tools = _arg_value(getattr(args, "tools", None)) or _skill_md_tools(frontmatter.get("tools"))
-        args.value = json.dumps(
-            {"description": description.strip(), "tools": list(tools), "skillContent": content}
-        )
+        value = {"description": description.strip(), "tools": list(tools), "skillContent": content}
+        if additional_files:
+            value["additionalFiles"] = _skill_additional_files(file_path, additional_files)
+        args.value = json.dumps(value)
 
 
 @register_command("sre skill show")

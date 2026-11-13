@@ -32,7 +32,7 @@ ENDPOINT_HOST = "myagent--1a2b.cafe.swedencentral.azuresre.ai"
 ARM_NULL_ECHO = ("titleContains", "titleNotContains", "incidentTypes", "owningTeamIds", "handlingAgents",
                  "impactedService", "alertId", "priorities")
 REASONS = {200: "OK", 204: "No Content", 400: "Bad Request", 403: "Forbidden", 404: "Not Found",
-           500: "Internal Server Error"}
+           500: "Internal Server Error", 504: "Gateway Timeout"}
 
 
 def _arm_error(code, message):
@@ -61,11 +61,17 @@ class _FakeAzure:
         self.incident_platform = "AzMonitor"
         self.requests = []
         self.failures = []
+        self.lost_answers = []
         self.unexpected = []
 
     def fail(self, method, api, kind, status, body=None, name=None, content_type="application/json"):
         """Answer matching requests (name None matches any) with this response from now on."""
         self.failures.append((method, api, kind, name, status, body, content_type))
+
+    def lose_answer(self, method, api, kind, status):
+        """Carry out the next matching request but answer it with this status, as a gateway that
+        times out on a request the agent completed does."""
+        self.lost_answers.append((method, api, kind, status))
 
     def writes(self):
         return [entry[:4] for entry in self.requests if entry[0] in ("PUT", "DELETE")]
@@ -97,6 +103,10 @@ class _FakeAzure:
                         and f[3] in (None, name)), None)
         status, payload, content_type = (failure[4], failure[5], failure[6]) if failure else \
             self._handle(request.method, api, kind, name, body)
+        lost = next((entry for entry in self.lost_answers if entry[:3] == (request.method, api, kind)), None)
+        if lost and not failure:
+            self.lost_answers.remove(lost)
+            status, payload, content_type = lost[3], None, None
         self.requests.append((request.method, api, kind, name, status))
         return self._reply(request, status, payload, content_type)
 
@@ -252,6 +262,19 @@ class _ResponsePlanCliTests:
         self.assertEqual(self.azure.handlers.get("p", {}).get("customInstructions"), "Check logs")
         self.assertIn("p", self.azure.filters)
 
+    def test_delete_that_went_through_but_got_a_gateway_timeout_succeeds(self):
+        self._plan("p")
+        if self.ROUTE == "arm":
+            # Only the agent's own API can delete it.
+            self.azure.fail("DELETE", "arm", "incidentFilters", 403, AUTHORIZATION_FAILED)
+        self.azure.lose_answer("DELETE", "agent", "incidentFilters", 504)
+        with patch("time.sleep"):
+            code, _, errors = self._az("delete", "-n", "p", "--yes")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.azure.filters, {})
+        self.assertIn("trying again", errors)
+        self.assertIn("was gone when the CLI tried again", errors)
+
     def test_create_without_instructions_warns_when_the_name_already_has_some(self):
         # 'x' was left behind by a delete that removed the plan but not its instructions.
         self.azure.handlers.update({
@@ -396,6 +419,21 @@ class _ResponsePlanCliTests:
             code, output, errors = self._az("list", "-o", "table")
             self.assertEqual(code, 0, errors)
             self.assertRegex(output, r"icm\s+True\s+Icm\s+responder\s+3, 4\s")
+
+    def test_display_name_defaults_to_the_plan_name_and_is_kept_by_updates(self):
+        create = ("create", "--platform", "AzMonitor", "--subagent", "responder")
+        for name, extra, display_name in (("vm-perf", (), "vm-perf"),
+                                          ("vm-perf-2", ("--display-name", "VM Performance Alerts"),
+                                           "VM Performance Alerts")):
+            with self.subTest(name):
+                code, _, errors = self._az(*create, "-n", name, *extra)
+                self.assertEqual(code, 0, errors)
+                self.assertEqual(self.azure.filters[name]["name"], display_name)
+        code, _, errors = self._az("update", "-n", "vm-perf", "--display-name", "VM alerts")
+        self.assertEqual(code, 0, errors)
+        code, _, errors = self._az("update", "-n", "vm-perf", "--mode", "autonomous")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.azure.filters["vm-perf"]["name"], "VM alerts")
 
 
 class ResponsePlanArmRouteCliTests(_ResponsePlanCliTests, unittest.TestCase):

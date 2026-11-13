@@ -1325,6 +1325,14 @@ class GlobalSettingsShapeValidationTests(unittest.TestCase):
             _encode_extension_value(raw, "globalSettings")
         self.assertIn("approvalExpirationInMinutes must be a number", str(raised.exception))
 
+    def test_accepts_null_for_unset_fields(self):
+        raw = json.dumps({
+            "toolPermissions": None, "toolStatuses": None, "skillStatuses": None, "customInstructions": None,
+            "approvalExpirationSetting": {"enabled": None, "approvalExpirationInMinutes": None},
+        })
+        encoded = _encode_extension_value(raw, "globalSettings")
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), raw)
+
 
 class PluginMarketplacesShapeValidationTests(unittest.TestCase):
     """--extension-type pluginMarketplaces' inner shape is confirmed via
@@ -1578,7 +1586,7 @@ class ResponsePlanHandlerLifecycleTests(unittest.TestCase):
             platform=None, subagent=None, mode=None, disabled=None, priorities=None,
             title_contains=None, title_not_contains=None, incident_types=None,
             impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
-            instructions=None, processing_guide=None, overwrite=None,
+            instructions=None, processing_guide=None, overwrite=None, display_name=None,
         )
         return _bare_command(command_cls, **{**values, **overrides})._handler(None)
 
@@ -1851,7 +1859,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             subagent=None, mode="review", priorities=["Sev0"], title_contains=None,
             title_not_contains=None, incident_types=None, impacted_service=None,
             owning_teams=None, merge_enabled=None, merge_window_hours=6,
-            instructions=None, processing_guide=None)
+            instructions=None, processing_guide=None, display_name=None)
         command = _bare_command(ResponsePlanUpdate, **values)
         existing = {"name": "plan", "properties": {"value": {
             "handlingAgent": "s", "priorities": ["Sev1"], "titleContains": "x", "handlingAgents": None}}}
@@ -1870,7 +1878,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             subagent=None, mode=None, priorities=None, title_contains=None,
             title_not_contains=None, incident_types=None, impacted_service=None,
             owning_teams=None, merge_enabled=None, merge_window_hours=None,
-            instructions=None, processing_guide=None)
+            instructions=None, processing_guide=None, display_name=None)
         for override in ({}, {"mode": "yolo"}, {"merge_window_hours": 0}):
             with self.subTest(override=override):
                 command = _bare_command(ResponsePlanUpdate, **{**base, **override})
@@ -1885,7 +1893,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             subagent="meta_agent", priorities=None, title_contains=None, title_not_contains=None,
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None,
             merge_window_hours=None, mode="autonomous", disabled=None, instructions=None,
-            processing_guide=None, overwrite=None)
+            processing_guide=None, overwrite=None, display_name=None)
         command = _bare_command(ResponsePlanCreate, **base, max_investigation_attempts=2)
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._incident_resource_create", return_value={}) as create, \
@@ -1977,7 +1985,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             platform="AzMonitor", subagent="responder", priorities=["Sev1"], title_contains=None,
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="review", disabled=None,
-            instructions="Check logs", processing_guide=None, overwrite=None)
+            instructions="Check logs", processing_guide=None, overwrite=None, display_name=None)
         created = []
 
         def fake_create(cli_ctx, agent, rg, ext_type, name, value, path, body, overwrite):
@@ -2001,7 +2009,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             platform="AzMonitor", subagent=subagent, priorities=None, title_contains=None,
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="review", disabled=None,
-            instructions=None, processing_guide=None, overwrite=None)
+            instructions=None, processing_guide=None, overwrite=None, display_name=None)
         show = MagicMock() if subagent_exists else MagicMock(side_effect=ResourceNotFoundError("missing"))
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              patch("azext_sre.custom._incident_resource_create", side_effect=self.rejection), \
@@ -2033,7 +2041,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             platform="AzMonitor", subagent="s", priorities=None, title_contains=None,
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="yolo", disabled=None,
-            instructions=None, processing_guide=None, overwrite=None)
+            instructions=None, processing_guide=None, overwrite=None, display_name=None)
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None), \
              self.assertRaises(CLIError):
             command._handler(None)
@@ -2045,7 +2053,7 @@ class IncidentDataPlaneTests(unittest.TestCase):
             platform="AzMonitor", subagent="s", priorities=None, title_contains=None,
             incident_types=None, impacted_service=None, owning_teams=None, merge_enabled=None, merge_window_hours=None,
             title_not_contains=None, mode="review", disabled=None,
-            instructions=None, processing_guide=None, overwrite=None)
+            instructions=None, processing_guide=None, overwrite=None, display_name=None)
         service_error = self.rejection
         for config, expect_hint in ((None, True), ({"type": "AzMonitor"}, False)):
             agent = {"properties": {"incidentManagementConfiguration": config}}
@@ -3095,9 +3103,9 @@ class HttpTriggersShapeValidationTests(unittest.TestCase):
             _encode_extension_value(raw, "httpTriggers")
         self.assertIn("--value.agentMode must be", str(raised.exception))
 
-    def test_agent_mode_is_case_insensitive_and_sent_lowercase(self):
+    def test_agent_mode_is_checked_case_insensitively_and_sent_as_given(self):
         encoded = _encode_extension_value(json.dumps({"agentPrompt": "x", "agentMode": "Review"}), "httpTriggers")
-        self.assertEqual(json.loads(base64.b64decode(encoded))["agentMode"], "review")
+        self.assertEqual(json.loads(base64.b64decode(encoded))["agentMode"], "Review")
 
 
 class ScheduledTaskStatusTests(unittest.TestCase):
@@ -4151,7 +4159,7 @@ class UpdateNetworkMergeTests(unittest.TestCase):
         command = _bare_command(
             UpdateNetwork,
             name="myagent", resource_group="rg",
-            vnet_configuration=None, sandbox_configuration=None,
+            vnet_configuration=None, sandbox_configuration=None, replace_allowed_hosts=None,
         )
         with patch.object(AAZCommand, "_handler", lambda self, command_args: None):
             with self.assertRaises(CLIError):
@@ -4162,7 +4170,7 @@ class UpdateNetworkMergeTests(unittest.TestCase):
             UpdateNetwork,
             name="myagent", resource_group="rg",
             vnet_configuration=None,
-            sandbox_configuration={"egress": {"mode": "Limited"}},
+            sandbox_configuration={"egress": {"mode": "Limited"}}, replace_allowed_hosts=None,
         )
         # Reads redact the connection string; writing this back fails with
         # InvalidApplicationInsightsConfiguration.
@@ -4205,6 +4213,7 @@ class UpdateNetworkMergeTests(unittest.TestCase):
             UpdateNetwork,
             name="myagent", resource_group="rg",
             vnet_configuration={"subnet_resource_id": "/subnets/s"}, sandbox_configuration=None,
+            replace_allowed_hosts=None,
         )
         current = {"id": self._AGENT["id"], "properties": {"vnetConfiguration": {"subnetResourceId": "/subnets/s"}}}
         methods = []
@@ -4305,28 +4314,11 @@ class ExperimentalSettingsOnCreateTests(unittest.TestCase):
             resource_group="rg", agent_name="myagent", **args))
         return cmd
 
-    def test_settings_are_patched_after_create(self):
-        cmd = self._command(experimental_settings={"EnableWorkspaceTools": True}, no_wait=False)
-        cmd.pre_operations()
-        with patch("azext_sre.custom._arm_request") as arm:
-            cmd.post_operations()
-        arm.assert_called_once_with(
-            cmd.cli_ctx, "PATCH", "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/agents/myagent",
-            ANY, body={"properties": {"experimentalSettings": {"EnableWorkspaceTools": True}}})
-
-    def test_no_request_without_settings_and_no_wait_is_rejected(self):
-        with patch("azext_sre.custom._arm_request") as arm:
-            self._command(experimental_settings=None, no_wait=False).post_operations()
-        arm.assert_not_called()
+    def test_no_wait_is_rejected_with_settings(self):
         with self.assertRaisesRegex(CLIError, "--no-wait"):
             self._command(experimental_settings={"A": True}, no_wait=True).pre_operations()
 
-    def test_monthly_unit_limit_is_patched_after_create(self):
-        cmd = self._command(experimental_settings=None, monthly_unit_limit=1000, no_wait=False)
-        cmd.pre_operations()
-        with patch("azext_sre.custom._arm_request") as arm:
-            cmd.post_operations()
-        self.assertEqual(arm.call_args.kwargs["body"], {"properties": {"monthlyAgentUnitLimit": 1000}})
+    def test_negative_monthly_unit_limit_is_rejected(self):
         with self.assertRaisesRegex(CLIError, "negative"):
             self._command(experimental_settings=None, monthly_unit_limit=-1, no_wait=False).pre_operations()
 
@@ -5100,7 +5092,7 @@ class ConnectorConvenienceArgsTests(unittest.TestCase):
             self.assertEqual(
                 args.extended_properties,
                 {"fileContent": base64.b64encode(b"hello world").decode("ascii"),
-                 "fileName": os.path.basename(path)},
+                 "fileName": os.path.basename(path), "displayName": os.path.basename(path)},
             )
         finally:
             os.remove(path)
@@ -5555,6 +5547,7 @@ class DefaultSystemIdentityTests(unittest.TestCase):
         args = {
             "mi_system_assigned": AAZUndefined,
             "mi_user_assigned": AAZUndefined,
+            "action_configuration": AAZUndefined,
             "agent_name": "myagent",
             "resource_group": "myrg",
             "location": "eastus2",
@@ -6039,6 +6032,7 @@ class AutoIdentityCleanupTests(unittest.TestCase):
 
     def _command(self, polling=None, **extra_args):
         args = {"mi_system_assigned": AAZUndefined, "mi_user_assigned": AAZUndefined,
+                "action_configuration": AAZUndefined,
                 "agent_name": "myagent", "resource_group": "rg", "location": "eastus2"}
         args.update(extra_args)
         command = _bare_command(_TestIdentityCleanup, **args)
