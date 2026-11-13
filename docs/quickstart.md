@@ -102,8 +102,9 @@ with a permission error.
 
    `--name` is a label you choose.
 
-   In the portal, under **Connectors**, it shows up with the service "Azure Data
-   Explorer" and the status **Connected**.
+   In the portal, under **Connectors**, it shows up as "Azure Data Explorer" with the
+   status **Connected** right away. That only means the connector was saved. Queries
+   fail with a permission error until you grant access in step 3.
 
 2. Get the principal ID of the identity the connector queries with. A connector created
    without `--identity` uses the agent's **system-assigned** identity. That's the one
