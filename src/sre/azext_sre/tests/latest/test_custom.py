@@ -6182,13 +6182,14 @@ class McpEndpointSafetyTests(unittest.TestCase):
 
     def test_malformed_endpoint_is_rejected(self):
         for endpoint in ("https://exa mple/mcp", "https://example.com/%%", "https://example.com/a%zz",
-                         "https://", "https:///mcp", "https://exa_mple.com/mcp", "https://example.com:99999/"):
+                         "https://", "https:///mcp", "https://example.com:99999/"):
             with self.subTest(endpoint=endpoint), self.assertRaises(InvalidArgumentValueError):
                 self._run(mcp_endpoint=endpoint)
 
     def test_well_formed_endpoints_are_accepted(self):
         for endpoint in ("https://mcp.contoso.com:8443/v1/mcp?x=1", "https://10.0.0.4/mcp",
-                         "https://example.com/a%20b", "https://[::1]/mcp", "https://localhost:8443/mcp"):
+                         "https://example.com/a%20b", "https://[::1]/mcp", "https://localhost:8443/mcp",
+                         "https://exa_mple.com/mcp", "https://bücher.example/mcp"):
             with self.subTest(endpoint=endpoint):
                 self.assertEqual(self._run(mcp_endpoint=endpoint)[0].data_source, endpoint)
 

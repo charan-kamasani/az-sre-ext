@@ -529,7 +529,7 @@ Create an Agent Connector.
 | `--bearer-token` | String | No |  |  | For Mcp: static bearer token, PAT or API key sent with every request. It shows up in shell history, so prefer --bearer-token-file. |
 | `--bearer-token-file` | String | No |  |  | For Mcp: path to a file that holds the bearer token, PAT or API key. Surrounding whitespace, such as a trailing newline, is removed. |
 | `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one. |
-| `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth true: token scope to request. Default on create: `https://management.azure.com/.default`. On update, the stored scope is kept unless this is passed. |
+| `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth true: token scope to request. Default: `https://management.azure.com/.default`. On update, a stored scope isn't reused, so pass it again. |
 | `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
 | `--oauth-scopes` | String | No |  |  | For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. |
 | `--oauth-client-name` | String | No |  |  | For Mcp with --oauth-dcr: client name to register. Optional. |
@@ -708,7 +708,7 @@ An update sends the whole connector back, and the service never returns a connec
 | `--bearer-token` | String | No |  |  | For Mcp: static bearer token, PAT or API key sent with every request. It shows up in shell history, so prefer --bearer-token-file. |
 | `--bearer-token-file` | String | No |  |  | For Mcp: path to a file that holds the bearer token, PAT or API key. Surrounding whitespace, such as a trailing newline, is removed. |
 | `--managed-identity-auth` | Boolean | No |  | `false`, `true` | For Mcp: authenticate with the agent's managed identity. Use --identity for a user-assigned one. |
-| `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth true: token scope to request. Default on create: `https://management.azure.com/.default`. On update, the stored scope is kept unless this is passed. |
+| `--mi-token-scope` | String | No |  |  | For Mcp with --managed-identity-auth true: token scope to request. Default: `https://management.azure.com/.default`. On update, a stored scope isn't reused, so pass it again. |
 | `--oauth-dcr` | Boolean | No |  | `false`, `true` | For Mcp: use OAuth with dynamic client registration. Finish consent in the portal. |
 | `--oauth-scopes` | String | No |  |  | For Mcp with --oauth-dcr: comma-separated OAuth scopes to request. |
 | `--oauth-client-name` | String | No |  |  | For Mcp with --oauth-dcr: client name to register. Optional. |
