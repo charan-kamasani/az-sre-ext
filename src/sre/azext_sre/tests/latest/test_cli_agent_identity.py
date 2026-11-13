@@ -19,6 +19,7 @@ import re
 import shlex
 import socket
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -101,6 +102,11 @@ class FakeArm:
         # A PATCH answers 202, and the agent refuses other writes until its operation is polled to the end.
         self.patch_is_async = False
         self.patch_statuses = None
+        # Statuses the agent's own API answers its next requests with, as its gateway does while it starts.
+        self.agent_api_warmup = []
+        # Called with the request's timeout instead of answering, as when the agent's API accepts
+        # connections but never replies; it raises the timeout.
+        self.agent_api_no_reply = None
         self.usage_pages = {}
 
     # ---- setup helpers -------------------------------------------------------------------
@@ -146,8 +152,14 @@ class FakeArm:
 
     # ---- transport -----------------------------------------------------------------------
     def send(self, adapter, request, **kwargs):
-        del adapter, kwargs
+        del adapter
         url = urlparse(request.url)
+        if url.hostname == "myagent.abc.swedencentral.azuresre.ai":
+            self.requests.append((request.method, url.path, None, None))
+            if self.agent_api_no_reply:
+                self.agent_api_no_reply(kwargs.get("timeout"))
+            status = self.agent_api_warmup.pop(0) if self.agent_api_warmup else 200
+            return _response(request, status, {"value": []} if status == 200 else None)
         if url.hostname != "management.azure.com":
             raise AssertionError(f"Request to an unexpected host: {request.method} {request.url}")
         body = json.loads(request.body) if request.body else None
@@ -677,6 +689,30 @@ class AgentCreateTests(AgentCliTestCase):
         self.assertEqual(self.arm.agent()["properties"]["actionConfiguration"]["identity"], second)
 
 
+class _ProbeClock:
+    """Stands in for time.monotonic and time.sleep. Only the thread that probes the
+    agent's API spends time, from its first probe on, and each probe uses up its
+    whole timeout, as when the API accepts connections but never replies."""
+
+    def __init__(self, sleep):
+        self.now = 0.0
+        self._sleep = sleep
+        self._prober = None
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        if threading.get_ident() == self._prober:
+            self.now += seconds
+        self._sleep(seconds)
+
+    def probe_never_replies(self, timeout):
+        self._prober = threading.get_ident()
+        self.now += timeout
+        raise requests.exceptions.ReadTimeout("The agent's API accepted the connection but didn't reply.")
+
+
 class AgentLifecycleTests(AgentCliTestCase):
     """VA-5, VA-6, VA-7, VA-8 and VA-9."""
 
@@ -701,6 +737,29 @@ class AgentLifecycleTests(AgentCliTestCase):
                 code, _, errors = self.invoke("sre", "agent", verb, "-g", "rg", "-n", "myagent")
                 self.assertNotEqual(code, 0)
                 self.assertIn("Agent lifecycle or power policy changed.", errors)
+
+    def test_start_waits_until_the_agents_api_answers(self):
+        self.arm.add_agent(properties={"powerState": "Stopped"})
+        self.arm.agent_api_warmup = [404, 502, 503]
+        code, _, errors = self.invoke("sre", "agent", "start", "-g", "rg", "-n", "myagent", "-o", "none")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.arm.agent_api_warmup, [])
+
+        self.arm.agent_api_warmup = [404]
+        code, _, errors = self.invoke("sre", "agent", "start", "-g", "rg", "-n", "myagent", "--no-wait")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.arm.agent_api_warmup, [404])
+
+    def test_start_stops_waiting_after_five_minutes_when_the_agents_api_never_replies(self):
+        self.arm.add_agent(properties={"powerState": "Stopped"})
+        clock = _ProbeClock(time.sleep)
+        self.arm.agent_api_no_reply = clock.probe_never_replies
+        with patch("time.monotonic", clock.monotonic), patch("time.sleep", clock.sleep):
+            code, _, errors = self.invoke("sre", "agent", "start", "-g", "rg", "-n", "myagent", "-o", "none")
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(self.arm.agent()["properties"]["powerState"], "Running")
+        self.assertIn("Agent 'myagent' is running, but its API didn't answer within 5 minutes", errors)
+        self.assertAlmostEqual(clock.now, 5 * 60, delta=10)
 
     def test_wait_commands_fail_when_they_time_out(self):
         self.arm.add_agent()

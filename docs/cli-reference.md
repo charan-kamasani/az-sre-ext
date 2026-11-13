@@ -353,6 +353,8 @@ Show the details of an SRE Agent.
 
 Start a stopped SRE Agent.
 
+The command waits until the agent's own API answers, which can take a minute or two after the agent is running. Until then, commands that use that API can report items as not found. --no-wait returns without waiting.
+
 **Syntax**
 
 `az sre agent start [--no-wait] --name <value> --resource-group <value>`

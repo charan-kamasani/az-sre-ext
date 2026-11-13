@@ -200,6 +200,10 @@ def _arm_request(cli_ctx, method, resource_id, api_version, body=None, missing_o
 
 
 DATA_PLANE_AUDIENCE = "https://azuresre.dev"
+# What the agent's API answers while its gateway can't reach the agent, as for
+# a minute or two after it starts, and the waits before each new try.
+_AGENT_API_GATEWAY_ERRORS = (502, 503, 504)
+_AGENT_API_RETRY_DELAYS = (5, 10, 20)
 
 
 def _resolve_agent_endpoint(cli_ctx, agent_name, resource_group):
@@ -284,24 +288,39 @@ def _add_read_target_args(schema, short_name=True):
 
 
 def _data_plane_request(cli_ctx, agent_name, resource_group, method, path, body=None,
-                        missing_ok=False, agent_url=None):
-    """Call the agent endpoint using its data-plane OAuth audience."""
+                        missing_ok=False, agent_url=None, retry=True):
+    """Call the agent endpoint using its data-plane OAuth audience.
+
+    Unless retry is off, a GET, PUT or DELETE is sent again after a gateway error
+    (502, 503 or 504), which the agent's API answers with for a while after the
+    agent starts.
+    """
+    import time
+
     endpoint = agent_url or _resolve_agent_endpoint(cli_ctx, agent_name, resource_group)
     url = f"{endpoint.rstrip('/')}{path}"
-    try:
-        response = send_raw_request(
-            cli_ctx,
-            method,
-            url,
-            headers=["Content-Type=application/json"],
-            body=json.dumps(body) if body is not None else None,
-            resource=DATA_PLANE_AUDIENCE,
-        )
-    except Exception as ex:  # Azure CLI normalizes HTTP errors by command.
-        status_code = getattr(getattr(ex, "response", None), "status_code", None)
-        if missing_ok and status_code == 404:
-            return None
-        raise
+    retry_delays = list(_AGENT_API_RETRY_DELAYS) if retry and method in ("GET", "PUT", "DELETE") else []
+    while True:
+        try:
+            response = send_raw_request(
+                cli_ctx,
+                method,
+                url,
+                headers=["Content-Type=application/json"],
+                body=json.dumps(body) if body is not None else None,
+                resource=DATA_PLANE_AUDIENCE,
+            )
+            break
+        except Exception as ex:  # Azure CLI normalizes HTTP errors by command.
+            status_code = getattr(getattr(ex, "response", None), "status_code", None)
+            if status_code in _AGENT_API_GATEWAY_ERRORS and retry_delays:
+                delay = retry_delays.pop(0)
+                logger.info("The agent's API answered %s; trying again in %s seconds.", status_code, delay)
+                time.sleep(delay)
+                continue
+            if missing_ok and status_code == 404:
+                return None
+            raise
     if not response.content:
         return {}
     content_type = (getattr(response, "headers", None) or {}).get("Content-Type")
@@ -3867,13 +3886,82 @@ class _LifecycleConflictMixin:
         return super().on_error(response)
 
 
+# 'agent start' waits up to AGENT_API_WARMUP_SECONDS in all, probe timeouts included, for
+# the agent's own API. It answered within 1 to 2 minutes in the labs.
+AGENT_API_WARMUP_SECONDS = 5 * 60
+AGENT_API_WARMUP_INTERVAL_SECONDS = 10
+AGENT_API_PROBE_TIMEOUT_SECONDS = 30
+# Lists the agent's custom skills; any answer but a gateway's means the API is up.
+AGENT_API_READY_PATH = "/api/v2/extendedAgent/skills"
+
+
+def _agent_api_answers(cli_ctx, endpoint, timeout):
+    """True once the agent's own API answers, rather than its gateway reporting the
+    agent missing (404) or unreachable (502, 503 or 504). Unlike send_raw_request,
+    this request gives up after `timeout` seconds."""
+    from azure.cli.core._profile import Profile
+    from azure.cli.core.util import get_az_rest_user_agent, should_disable_connection_verify
+
+    (token_type, token, _), _, _ = Profile(cli_ctx=cli_ctx).get_raw_token(resource=DATA_PLANE_AUDIENCE)
+    try:
+        response = requests.get(
+            f"{endpoint.rstrip('/')}{AGENT_API_READY_PATH}", allow_redirects=False, timeout=timeout,
+            verify=not should_disable_connection_verify(),
+            headers={"Authorization": f"{token_type} {token}", "User-Agent": get_az_rest_user_agent()})
+    except requests.RequestException as ex:
+        logger.debug("The agent's API didn't answer: %s", ex)
+        return False
+    logger.debug("The agent's API answered %s.", response.status_code)
+    return response.status_code not in (404, *_AGENT_API_GATEWAY_ERRORS)
+
+
+def _wait_for_agent_api(cli_ctx, agent_id, agent_name):
+    """Wait until a started agent's own API answers.
+
+    For a minute or two after the agent is running, that API answers 404 or 502,
+    so commands that use it reported items as not found. Starting has succeeded
+    by then, so this never fails the command. It stops after
+    AGENT_API_WARMUP_SECONDS even when the API accepts connections but never
+    replies: no probe waits past that deadline.
+    """
+    import time
+
+    deadline = time.monotonic() + AGENT_API_WARMUP_SECONDS
+    try:
+        agent = _arm_request(cli_ctx, "GET", agent_id, API_VERSION, missing_ok=True)
+        properties = agent.get("properties") if isinstance(agent, dict) else None
+        endpoint = properties.get("agentEndpoint") if isinstance(properties, dict) else None
+        if not endpoint:
+            return
+        left = deadline - time.monotonic()
+        while left > 0:
+            if _agent_api_answers(cli_ctx, endpoint, min(AGENT_API_PROBE_TIMEOUT_SECONDS, left)):
+                return
+            time.sleep(max(0.0, min(AGENT_API_WARMUP_INTERVAL_SECONDS, deadline - time.monotonic())))
+            left = deadline - time.monotonic()
+    except Exception as ex:  # pylint: disable=broad-except
+        logger.debug("Couldn't check whether the agent's API answers: %s", ex)
+        return
+    logger.warning(
+        "Agent '%s' is running, but its API didn't answer within %d minutes. Until it does, commands "
+        "that use it can fail or report items as not found.", agent_name, AGENT_API_WARMUP_SECONDS // 60)
+
+
 @register_command("sre agent start")
 class Start(_EmptyOperationResultMixin, _GeneratedStart):
     """Start a stopped SRE Agent.
 
+    The command waits until the agent's own API answers, which can take a minute
+    or two after the agent is running. Until then, commands that use that API can
+    report items as not found. --no-wait returns without waiting.
+
     :example: Start a stopped agent
         az sre agent start --name myagent --resource-group myrg
     """
+
+    def post_operations(self):
+        super().post_operations()
+        _wait_for_agent_api(self.cli_ctx, _ctx_agent_id(self.ctx), _arg_value(self.ctx.args.agent_name))
 
     class AgentsStart(_LifecycleConflictMixin, _GeneratedStart.AgentsStart):
         _VERB = "start"
@@ -5734,7 +5822,9 @@ def _agent_features(cli_ctx, agent_name, resource_group):
     features = _feature_cache_read(key)
     if features is None:
         try:
-            response = _data_plane_request(cli_ctx, agent_name, resource_group, "GET", FEATURE_STATUS_PATH)
+            # Advisory, and run before many commands, so a gateway error isn't waited out.
+            response = _data_plane_request(
+                cli_ctx, agent_name, resource_group, "GET", FEATURE_STATUS_PATH, retry=False)
             raw = response.get("features") if isinstance(response, dict) else None
             features = raw if isinstance(raw, dict) else {}
         except Exception as ex:  # pylint: disable=broad-except

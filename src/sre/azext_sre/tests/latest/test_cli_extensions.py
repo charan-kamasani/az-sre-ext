@@ -109,6 +109,8 @@ class FakeAgentService:
         self.trigger_answer = (200, {"success": True}, "application/json", {})
         # ARM's answer to agent extension requests from a tenant outside Microsoft.
         self.arm_tenant_gate = False
+        # Statuses the agent's API answers its next requests with, as its gateway does while it warms up.
+        self.agent_api_gateway_errors = []
 
     def send(self, request, **kwargs):
         del kwargs
@@ -154,6 +156,8 @@ class FakeAgentService:
 
     def _agent_api(self, request, url, body):
         path = url.path.rstrip("/")
+        if self.agent_api_gateway_errors:
+            return _response(request, self.agent_api_gateway_errors.pop(0))
         if path.startswith("/api/v1/httptriggers/trigger/") and request.method == "POST":
             status, content, content_type, headers = self.trigger_answer
             return _response(request, status, content, content_type, headers)
@@ -690,6 +694,25 @@ class ExtensionCommandCliTests(unittest.TestCase):
         code, _, err = self._az("agent", "settings", "update", *target, "--value", "@" + self._write("s.json", out))
         self.assertEqual(code, 0, err)
         self.assertEqual(self.service.store[("globalSettings", "default")], shown)
+
+    def test_the_feature_check_does_not_wait_out_gateway_errors(self):
+        # It's advisory and runs before many commands, so one 502 sends the command on to ARM.
+        self._reset()
+        self._seed_tools(1)
+        self.service.agent_api_gateway_errors = [502, 502, 502, 502]
+        with patch("time.sleep"):
+            code, _, err = self._az(*self._command("tool", "list"), route="")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.service.agent_api_gateway_errors), 3)
+
+    def test_gateway_errors_from_the_agents_api_are_retried(self):
+        self._reset()
+        self._seed_tools(1)
+        self.service.agent_api_gateway_errors = [502, 503]
+        with patch("time.sleep"):
+            code, _, err = self._az(*self._command("tool", "delete", "-n", "t0", "--yes"), route="direct")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn(("tools", "t0"), self.service.store)
 
 
 def _bash_command_lines(text):

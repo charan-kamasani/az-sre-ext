@@ -20,6 +20,11 @@ az sre agent delete -g myrg -n myagent -y
 `start`/`stop` and `connector list-secret` only accept `--agent-name` (no
 `-n` shorthand) — this is existing, confirmed-correct behavior, not a bug.
 
+`agent start` waits until the agent's own API answers, which took one to two
+minutes in testing. Until then that API answers 404 or 502, so commands that
+use it reported items as not found; they also retry a 502, 503 or 504 a few
+times. `--no-wait` skips the wait.
+
 At least one managed identity is required at create time:
 
 ```bash
