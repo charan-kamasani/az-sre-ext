@@ -3530,6 +3530,20 @@ KNOWLEDGE_FILE_CONTENT_TYPES = {
 }
 
 
+def _warn_if_knowledge_file_not_indexed(file_path):
+    """Warn when Knowledge settings won't index a file of this type. The service
+    accepts the upload and reports success, but the agent never finds the
+    content (seen live for .tf and .js files)."""
+    extension = os.path.splitext(file_path)[1].lower()
+    if extension in KNOWLEDGE_FILE_CONTENT_TYPES:
+        return
+    logger.warning(
+        "The agent doesn't index %s, so it won't find what's in '%s'. For a text file, such as code, "
+        "add its contents with --type text instead. 'az sre knowledge create --help' lists the file "
+        "types it indexes.",
+        f"'{extension}' files" if extension else "files without an extension", os.path.basename(file_path))
+
+
 def _get_connector(cli_ctx, ctx, name):
     """The agent's connector `name` as ARM returns it, or None if there is none."""
     return _arm_request(
@@ -3613,7 +3627,9 @@ class KnowledgeCreate(AAZCommand):
         )
         schema.file_path = AAZStrArg(
             options=["--file-path"],
-            help="Local file to ingest. Required for --type file/text.",
+            help="Local file to ingest. Required for --type file/text. With --type file, the agent indexes only "
+            + ", ".join(KNOWLEDGE_FILE_CONTENT_TYPES) + " files; add other text files, such as code, "
+            "with --type text.",
         )
         schema.url = AAZStrArg(
             options=["--url"],
@@ -3648,6 +3664,8 @@ class KnowledgeCreate(AAZCommand):
         connector_type = KNOWLEDGE_TYPES[kind]
         if connector_type in ("KnowledgeFile", "KnowledgeText") and not file_path:
             raise CLIError(f"--file-path is required for --type {kind}.")
+        if connector_type == "KnowledgeFile":
+            _warn_if_knowledge_file_not_indexed(file_path)
         if connector_type == "KnowledgeWebPage" and not (url or data_source):
             raise CLIError("--url (or --data-source) is required for --type webpage.")
         if overwrite:

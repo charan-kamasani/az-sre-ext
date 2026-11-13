@@ -1168,7 +1168,7 @@ Add a knowledge source (file or web page) to an SRE Agent.
 | `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
 | `--name`, `-n` | String | Yes |  |  | Name of this knowledge source. |
 | `--type` | String | Yes |  | `file`, `text`, `webpage`, `repository` | Kind of knowledge source. One of: file, repository, text, webpage. |
-| `--file-path` | String | No |  |  | Local file to ingest. Required for --type file/text. |
+| `--file-path` | String | No |  |  | Local file to ingest. Required for --type file/text. With --type file, the agent indexes only .md, .txt, .pdf, .docx, .pptx, .xlsx, .doc, .ppt, .xls, .png, .jpg, .jpeg, .gif, .webp, .bmp, .tiff, .tif, .json, .csv, .log, .yaml, .yml, .xml, .ini, .conf, .cfg, .config, .properties files; add other text files, such as code, with --type text. |
 | `--url` | String | No |  |  | Web page URL to ingest. Required for --type webpage. Cannot be combined with --data-source. |
 | `--data-source` | String | No |  |  | Raw --data-source passthrough, for --type repository or any case --file-path/--url don't cover. |
 | `--overwrite` | Boolean | No |  | `false`, `true` | Allow replacing an existing knowledge source of the same name. Other connector types are never replaced. |

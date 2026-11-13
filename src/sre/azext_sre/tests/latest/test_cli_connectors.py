@@ -285,6 +285,16 @@ class ConnectorCliTests(unittest.TestCase):
                 self.assertEqual(extended["displayName"], file_name)
                 self.assertEqual(extended.get("contentType"), content_type)
 
+    def test_knowledge_file_the_agent_does_not_index_gets_a_warning(self):
+        for file_name, warned in (("main.tf", True), ("RUNBOOK.MD", False)):
+            with self.subTest(file_name):
+                code, _, logs = self._run(
+                    "sre", "knowledge", "create", "-g", "rg", "--agent-name", "myagent",
+                    "-n", file_name.lower().replace(".", "-"), "--type", "file",
+                    "--file-path", self._file(file_name, "resource x {}\n"))
+                self.assertEqual(code, 0, logs.errors)
+                self.assertEqual("--type text" in logs.warnings, warned, logs.warnings)
+
     def test_knowledge_commands_leave_other_connectors_alone(self):
         target = ["-g", "rg", "--agent-name", "myagent"]
         kusto = copy.deepcopy(self.arm.connector("kusto-prod"))

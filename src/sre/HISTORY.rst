@@ -12,6 +12,7 @@ Release History
 * Connector and knowledge commands refuse names such as `..`, which sent the request to the agent itself, before sending anything. New connector names must follow the service's naming rule.
 * `az sre knowledge show`, `delete` and `create --overwrite` refuse to act on connectors that aren't knowledge sources.
 * `az sre knowledge create --type file` sends the file name as the display name and a content type that matches the file extension, such as `text/markdown` for `.md`, as the portal does. The service used to show the knowledge source's name and store `application/octet-stream`.
+* `az sre knowledge create --type file` warns when the agent doesn't index that type of file, such as `.tf` or `.js`: the service accepts it, but the agent never finds its content. The warning suggests `--type text`, and the help lists the file types the agent indexes.
 * `az sre connector list-secret` prints `dataSource`, which Azure CLI hid before.
 * Errors from nested `az` commands no longer repeat their arguments, and `az sre knowledge create` keeps its `--data-source` value out of debug logs.
 * `az sre connector create --oauth-dcr true` prints the portal link where the sign-in is finished.
