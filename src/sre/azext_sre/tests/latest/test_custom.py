@@ -6225,10 +6225,10 @@ class McpEndpointSafetyTests(unittest.TestCase):
         self.assertEqual(fmt.read_file(handle.name), "token-123")
         with open(handle.name, "wb") as raw:
             raw.write(b"\xffsecret\xfe")
-        with self.assertRaises(AAZInvalidArgValueError) as raised:
+        with self.assertRaisesRegex(AAZInvalidArgValueError, "UTF-8") as raised:
             fmt.read_file(handle.name)
-        self.assertIn(handle.name, str(raised.exception))
-        self.assertNotIn("secret", str(raised.exception).replace(handle.name, ""))
+        self.assertNotIn(handle.name, str(raised.exception))
+        self.assertNotIn("secret", str(raised.exception))
 
 
 class ConnectorUpdateMcpArgsTests(unittest.TestCase):

@@ -77,7 +77,8 @@ from azure.cli.core.aaz import (
     register_command_group,
 )
 from azure.cli.core.aaz._operation import AAZHttpOperation
-from azure.cli.core.aaz.exceptions import AAZInvalidArgValueError, AAZUnknownFieldError
+from azure.cli.core.aaz.exceptions import (
+    AAZInvalidArgValueError, AAZInvalidShorthandSyntaxError, AAZInvalidValueError, AAZUnknownFieldError)
 from azure.cli.core.azclierror import (
     CLIError, InvalidArgumentValueError, MutuallyExclusiveArgumentError, RequiredArgumentMissingError,
     ResourceNotFoundError)
@@ -2004,26 +2005,56 @@ def _check_final_auth_endpoint(extended_properties, data_source):
         _validate_authenticated_endpoint(extended_properties.get("endpoint"), data_source)
 
 
+# Azure CLI replaces '@<file>' in any argument with the file's contents, so
+# '--bearer-token-file @token.txt' passes the token itself. Errors about
+# --bearer-token-file therefore never include its value.
+_BEARER_TOKEN_FILE_HINT = ("Pass the path without a leading @ (Azure CLI replaces @<file> with the "
+                           "file's contents). Nothing was sent.")
+
+
+class _BearerTokenFileArg(AAZFileArg):
+    """Before the file is read, AAZ parses the value as shorthand syntax, whose
+    errors, such as for an unclosed leading quote, repeat the value. Those
+    errors get the hint instead."""
+
+    def _build_cmd_action(self):
+        class Action(super()._build_cmd_action()):
+            @classmethod
+            def decode_str(cls, value):
+                try:
+                    return super().decode_str(value)
+                except AAZInvalidShorthandSyntaxError:
+                    raise AAZInvalidValueError(_BEARER_TOKEN_FILE_HINT) from None
+
+        return Action
+
+
 class _BearerTokenFileFormat(AAZFileArgTextFormat):
     """Reads --bearer-token-file as UTF-8 text, so the path is all Azure CLI
     sees and logs. Surrounding whitespace, such as a trailing newline, is
-    dropped. Errors name the path, never the contents."""
+    dropped. Errors never include the value, which can be the token itself."""
 
     def __init__(self):
         super().__init__(encoding="utf-8-sig")
 
     def __call__(self, ctx, value):
-        if isinstance(value._data, str):  # pylint: disable=protected-access
-            value._data = os.path.expanduser(value._data)  # pylint: disable=protected-access
-        return super().__call__(ctx, value)
+        # Replaces AAZFileArgFormat.__call__, whose missing-file error repeats the value.
+        path = value._data  # pylint: disable=protected-access
+        if not isinstance(path, str) or value._is_patch:  # pylint: disable=protected-access
+            return value
+        path = os.path.expanduser(path)
+        if not os.path.isfile(path):
+            raise AAZInvalidArgValueError(f"The file doesn't exist. {_BEARER_TOKEN_FILE_HINT}")
+        value._data = self.read_file(path)  # pylint: disable=protected-access
+        return value
 
     def read_file(self, file_path):
         try:
             return super().read_file(file_path).strip()
         except UnicodeDecodeError:
-            raise AAZInvalidArgValueError(f"File '{file_path}' isn't UTF-8 text.") from None
+            raise AAZInvalidArgValueError("The file isn't UTF-8 text.") from None
         except OSError:
-            raise AAZInvalidArgValueError(f"Can't read file '{file_path}'.") from None
+            raise AAZInvalidArgValueError("Can't read the file.") from None
 
 
 def _add_mcp_auth_args(schema):
@@ -2038,10 +2069,10 @@ def _add_mcp_auth_args(schema):
         help="For Mcp: static bearer token, PAT or API key sent with every request. "
              "It shows up in shell history, so prefer --bearer-token-file.",
     )
-    schema.bearer_token_file = AAZFileArg(
+    schema.bearer_token_file = _BearerTokenFileArg(
         options=["--bearer-token-file"],
         arg_group="MCP",
-        help="For Mcp: path to a file that holds the bearer token, PAT or API key. "
+        help="For Mcp: path, without a leading @, to a file that holds the bearer token, PAT or API key. "
              "Surrounding whitespace, such as a trailing newline, is removed.",
         fmt=_BearerTokenFileFormat(),
     )

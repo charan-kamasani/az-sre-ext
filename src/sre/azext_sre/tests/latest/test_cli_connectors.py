@@ -419,7 +419,7 @@ class ConnectorCliTests(unittest.TestCase):
         missing = os.path.join(self.files, "nope.txt")
         empty = self._file("empty.txt", "\n")
         both = ["--bearer-token-file", self._file("t.txt", "fake-secret"), "--bearer-token", "fake-secret"]
-        for arguments, expected in ((["--bearer-token-file", missing], "nope.txt"),
+        for arguments, expected in ((["--bearer-token-file", missing], "--bearer-token-file"),
                                     (["--bearer-token-file", empty], "empty"),
                                     (both, "not both")):
             with self.subTest(arguments=arguments):
@@ -438,6 +438,33 @@ class ConnectorCliTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("empty", logs.errors)
         self.assertEqual(self.arm.sent("PUT"), [])
+        self.assertEqual(self.arm.connector("mcp1"), stored)
+
+    def _command_log(self):
+        """What Azure CLI kept in its command log, which saves each command's errors."""
+        return "".join(path.read_text(encoding="utf-8", errors="replace")
+                       for path in Path(os.environ["AZURE_CONFIG_DIR"], "commands").glob("*"))
+
+    def test_bearer_token_file_given_an_at_file_never_shows_the_token(self):
+        # Azure CLI replaces '@<file>' with the file's contents, so the flag gets the token itself.
+        # cmd.exe's `echo 'fake-secret-123' > quoted.txt` keeps the quotes and the space, which AAZ
+        # then fails to parse as shorthand syntax.
+        token_files = [self._file("token.txt", "fake-secret-123\n"), self._file("quoted.txt", "'fake-secret-123' \n")]
+        self._add_mcp_bearer_connector()
+        stored = copy.deepcopy(self.arm.connector("mcp1"))
+        for run, name in ((self._create_mcp, "mcp-at"), (self._update_mcp, "mcp1")):
+            for token_file in token_files:
+                for arguments in (["--bearer-token-file", "@" + token_file], ["--bearer-token-file=@" + token_file]):
+                    with self.subTest(command=run.__name__, arguments=arguments):
+                        self.arm.requests.clear()
+                        code, output, logs = run(name, *arguments, "--debug")
+                        self.assertNotEqual(code, 0)
+                        self.assertEqual(self.arm.requests, [])
+                        self.assertIn("--bearer-token-file", logs.errors)
+                        command_log = self._command_log()
+                        self.assertIn("--bearer-token-file", command_log)
+                        self.assertNotIn("fake-secret", output + logs.everything + command_log)
+        self.assertIsNone(self.arm.connector("mcp-at"))
         self.assertEqual(self.arm.connector("mcp1"), stored)
 
     def test_token_rotation_keeps_the_connectors_other_settings(self):
