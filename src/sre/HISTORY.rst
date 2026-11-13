@@ -6,6 +6,7 @@ Release History
 1.0.0b1
 ++++++
 * Initial release.
+* `--agent-url`, `--mcp-endpoint` and `automation http-trigger invoke` check URLs after Azure CLI's own `normalize_url` (the same check `az rest` uses; on Azure CLI older than 2.90, a copy of it), and `--mcp-endpoint` is saved in that normalized form.
 * `az sre access list` shows principal object IDs instead of display names by default, so it no longer calls Microsoft Graph. Add `--show-names` to fill in display names from Graph.
 * `--assignee-me`, `az sre agent create --grant-access-to-me` and `az sre managed-resource grant/revoke/list` no longer call Microsoft Graph, and `--assignee-me` now resolves the signed-in account in the tenant of `--subscription`.
 * `az sre connector update` refuses an update that would clear settings the service never returns. Pass `--data-source` and `--identity` again on every update (`null` for one the connector doesn't have), and all of `--extended-properties` for an MCP connector. Knowledge sources are changed with `az sre knowledge create --overwrite` instead.
