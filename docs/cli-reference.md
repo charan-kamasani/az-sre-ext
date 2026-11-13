@@ -536,11 +536,12 @@ Create an Agent Connector.
 
 **Examples**
 
-- Connect Azure Data Explorer
+- Connect one Azure Data Explorer (Kusto) cluster and database
 
   ```bash
   az sre connector create --agent-name myagent --resource-group myrg \
-  --name adx --data-connector-type "Azure Data Explorer"
+  --name production --data-connector-type Kusto \
+  --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"
   ```
 - Connect the GitHub MCP server
 
@@ -571,13 +572,6 @@ Create an Agent Connector.
   --name mcp --data-connector-type Mcp \
   --mcp-endpoint "https://myserver.contoso.com/mcp" \
   --managed-identity-auth true
-  ```
-- Connect one Kusto cluster and database
-
-  ```bash
-  az sre connector create --agent-name myagent --resource-group myrg \
-  --name kusto --data-connector-type "Azure Data Explorer" \
-  --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"
   ```
 
 ### `az sre connector delete`

@@ -108,6 +108,7 @@ from azext_sre.custom import (
     _annotate_connector_consent_status,
     _arg_value,
     _cli_invoke,
+    _connector_access_reminder,
     _connector_consent_guidance,
     _connector_consent_status,
     _decode_extension_envelope,
@@ -4959,6 +4960,29 @@ class ConnectorConvenienceArgsTests(unittest.TestCase):
         command = _bare_command(_TestConnectorConvenience, **args)
         command.pre_operations()
         return command.ctx.args
+
+    def test_kusto_client_rejects_data_source(self):
+        with self.assertRaisesRegex(CLIError, "--data-connector-type Kusto"):
+            self._run(data_connector_type="KustoClient",
+                      data_source="https://c.westus.kusto.windows.net/db")
+
+    def test_kusto_accepts_data_source(self):
+        args = self._run(data_connector_type="Kusto",
+                         data_source="https://c.westus.kusto.windows.net/db")
+        self.assertEqual(args.data_source, "https://c.westus.kusto.windows.net/db")
+
+    def test_kusto_client_reminder_points_to_kusto_connector(self):
+        with patch("azext_sre.custom.logger") as fake_logger:
+            _connector_access_reminder({"name": "adx", "properties": {"dataConnectorType": "KustoClient"}})
+        message = fake_logger.warning.call_args[0][0] % fake_logger.warning.call_args[0][1:]
+        self.assertIn("doesn't connect to a cluster", message)
+        self.assertIn("--data-connector-type Kusto", message)
+
+    def test_kusto_reminder_asks_for_grant(self):
+        with patch("azext_sre.custom.logger") as fake_logger:
+            _connector_access_reminder({"name": "prod", "properties": {"dataConnectorType": "Kusto"}})
+        message = fake_logger.warning.call_args[0][0] % fake_logger.warning.call_args[0][1:]
+        self.assertIn("database-principal-assignment create", message)
 
     def test_github_flag_fills_canonical_endpoint(self):
         args = self._run(data_connector_type="Mcp", github=True)

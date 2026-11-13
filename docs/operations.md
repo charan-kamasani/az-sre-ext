@@ -326,6 +326,14 @@ create one connector — it can create several:
   below) -- so the CLI does not offer a convenience flag for it. If you
   need multiple clusters, create one `Kusto` connector per cluster instead.
 
+Only `Kusto` connectors make the agent's Kusto query tool start. A
+`KustoClient` connector on its own stays "Connecting" in the portal and
+gives the agent no Kusto tool (live-verified; the runtime starts the tool
+only when a `Kusto` connector with a data source exists). So the `Kusto`
+connector is the one you need; the `KustoClient` parent is optional. The
+CLI warns after creating a `KustoClient` connector, and rejects
+`--data-source` on one.
+
 To replicate a cluster group yourself:
 
 ```bash

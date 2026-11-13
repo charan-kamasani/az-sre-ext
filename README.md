@@ -103,9 +103,14 @@ az sre connector create \
   --subscription "$SUBSCRIPTION_ID" \
   --resource-group "$RG" \
   --agent-name "$AGENT" \
-  --name adx \
-  --data-connector-type "Azure Data Explorer"
+  --name production \
+  --data-connector-type Kusto \
+  --data-source "https://<cluster>.<region>.kusto.windows.net/<database>"
 ```
+
+The portal shows this as "Azure Data Explorer". Use `Kusto` with `--data-source`, not
+`"Azure Data Explorer"`: in the CLI that name creates a `KustoClient` connector, which only sets
+the identity for Kusto queries and can't query a cluster on its own.
 
 A new connector links the data source but doesn't give the agent access to it. Grant the
 agent's identity a reader role on the data source next.

@@ -1650,14 +1650,24 @@ def _is_knowledge_type(data_connector_type):
 # Succeeded immediately, but a query through it fails with a Kusto 403
 # ("Principal '...' is not authorized to read database ...") until the
 # agent's identity is separately granted a role (e.g. Viewer) on the target
-# Kusto database -- see docs/quickstart.md's "connector created is not
-# connector working" section for the exact follow-up command.
-RBAC_GAP_CONNECTOR_TYPES = {"Kusto", "KustoClient"}
+# Kusto database -- see docs/quickstart.md's "Connect a data source" section.
+RBAC_GAP_CONNECTOR_TYPES = {"Kusto"}
+
+# KustoClient ("Azure Data Explorer") names no cluster. The runtime starts its
+# Kusto query tool only when a "Kusto" connector with a data source exists;
+# a KustoClient row only supplies the identity setting for that tool
+# (sreagent-runtime KustoMcpLaunchGenerator.IsActiveKustoClusterConnector).
+# Live-confirmed 2026-11-13: a KustoClient connector alone stays "Connecting"
+# in the portal and the agent has no Kusto tool.
+KUSTO_CLUSTER_CONNECTOR_HINT = (
+    "az sre connector create --data-connector-type Kusto "
+    "--data-source https://<cluster>.<region>.kusto.windows.net/<database> ..."
+)
 
 
 def _connector_access_reminder(connector):
-    """Warn after creating an RBAC-gap connector type that the ARM link
-    alone does not grant query access yet."""
+    """Warn after creating a Kusto-family connector about the follow-up step
+    it still needs before the agent can query anything."""
     if not isinstance(connector, dict):
         return
     properties = connector.get("properties")
@@ -1666,7 +1676,15 @@ def _connector_access_reminder(connector):
         if isinstance(properties, dict)
         else connector.get("dataConnectorType")
     )
-    if data_connector_type in RBAC_GAP_CONNECTOR_TYPES:
+    if data_connector_type == "KustoClient":
+        logger.warning(
+            "Connector '%s' (Azure Data Explorer) only sets which identity Kusto "
+            "queries use; it doesn't connect to a cluster. The agent can't query "
+            "Kusto until it also has a Kusto connector for each database: %s",
+            connector.get("name"),
+            KUSTO_CLUSTER_CONNECTOR_HINT,
+        )
+    elif data_connector_type in RBAC_GAP_CONNECTOR_TYPES:
         logger.warning(
             "Connector '%s' is created, but the agent's identity has not "
             "been granted access to query it yet -- queries will fail with "
@@ -1999,6 +2017,13 @@ class _ConnectorConvenienceArgsMixin:
         github = _arg_value(getattr(args, "github", None))
         tool_access = _arg_value(getattr(args, "tool_access", None))
 
+        if connector_type == "KustoClient" and _arg_value(getattr(args, "data_source", None)):
+            raise CLIError(
+                "'Azure Data Explorer' (KustoClient) connectors don't take --data-source; "
+                "the agent ignores it. To connect a cluster and database, use: "
+                + KUSTO_CLUSTER_CONNECTOR_HINT
+            )
+
         if tool_access is not None:
             if connector_type != "KustoClient":
                 raise CLIError(
@@ -2244,9 +2269,10 @@ class ConnectorCreate(
 ):
     """Create an Agent Connector.
 
-    :example: Connect Azure Data Explorer
+    :example: Connect one Azure Data Explorer (Kusto) cluster and database
         az sre connector create --agent-name myagent --resource-group myrg \\
-            --name adx --data-connector-type "Azure Data Explorer"
+            --name production --data-connector-type Kusto \\
+            --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"
 
     :example: Connect the GitHub MCP server
         az sre connector create --agent-name myagent --resource-group myrg \\
@@ -2269,11 +2295,6 @@ class ConnectorCreate(
             --name mcp --data-connector-type Mcp \\
             --mcp-endpoint "https://myserver.contoso.com/mcp" \\
             --managed-identity-auth true
-
-    :example: Connect one Kusto cluster and database
-        az sre connector create --agent-name myagent --resource-group myrg \\
-            --name kusto --data-connector-type "Azure Data Explorer" \\
-            --data-source "https://mycluster.westus.kusto.windows.net/mydatabase"
     """
 
     _args_schema = None
