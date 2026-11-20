@@ -97,6 +97,70 @@ WORKSPACE_ARG_OPTIONS = {
     (("sre", "agent", "stop"), "$Path.agentName"): ["n", "name", "agent-name"],
 }
 
+# Agent data-plane API. There is no published contract yet, so the Swagger
+# under specification/app/data-plane is provisional (see its info.description).
+# The client fetches the agent's endpoint from the ARM resource and calls it
+# with a token for DATA_PLANE_SCOPE.
+DATA_PLANE_VERSION = "2026-11-20-preview"
+DATA_PLANE_SCOPE = "https://azuresre.dev/.default"
+DATA_PLANE_ARM_RESOURCE = "/subscriptions/{}/resourcegroups/{}/providers/microsoft.app/agents/{}"
+DATA_PLANE_ENDPOINT_PROPERTY = "properties.agentEndpoint"
+
+# Final names of the data-plane commands, keyed by (resource id, HTTP method).
+DATA_PLANE_COMMANDS = {
+    ("/api/v1/threads", "get"): ("sre", "thread", "list"),
+    ("/api/v1/threads", "post"): ("sre", "thread", "create"),
+    ("/api/v1/threads/{}", "get"): ("sre", "thread", "show"),
+}
+# Object arguments flattened into individual options:
+# {command: {object arg var: {sub arg var: options}}}.
+DATA_PLANE_FLATTEN_ARGS = {
+    ("sre", "thread", "create"): {
+        "$body.startMessage": {
+            "$body.startMessage.text": ["message"],
+            "$body.startMessage.agent": ["subagent"],
+        },
+    },
+}
+DATA_PLANE_GROUP_HELP = {
+    ("sre", "thread"): {
+        "short": "Manage conversation threads with an SRE Agent.",
+    },
+}
+DATA_PLANE_COMMAND_HELP = {
+    ("sre", "thread", "list"): "List conversation threads.",
+    ("sre", "thread", "create"): "Start a conversation thread with an SRE Agent.",
+    ("sre", "thread", "show"): "Show a conversation thread.",
+}
+DATA_PLANE_EXAMPLES = {
+    ("sre", "thread", "list"): [
+        {
+            "name": "List the 10 most recent threads",
+            "commands": ["sre thread list -g myrg --agent-name myagent --top 10"],
+        },
+    ],
+    ("sre", "thread", "create"): [
+        {
+            "name": "Ask the agent a question",
+            "commands": [
+                "sre thread create -g myrg --agent-name myagent --message \"Why is checkout slow?\"",
+            ],
+        },
+        {
+            "name": "Start a thread handled by a subagent",
+            "commands": [
+                "sre thread create -g myrg --agent-name myagent --message \"Triage alert 42\" --subagent triage",
+            ],
+        },
+    ],
+    ("sre", "thread", "show"): [
+        {
+            "name": "Show a thread",
+            "commands": ["sre thread show -g myrg --agent-name myagent --thread-id <thread-id>"],
+        },
+    ],
+}
+
 # Examples for `wait` commands, which aaz-dev synthesizes during CLI generation
 # (they have no command model to carry examples).
 WAIT_COMMAND_EXAMPLES = {
@@ -205,6 +269,7 @@ def generate(aaz_dev: str, aaz_repo: Path, root: Path) -> None:
                             "aaz_path": str(aaz_worktree),
                             "swagger_module_path": str(root / SPEC_MODULE_PATH),
                             "cli_extension_path": str(cli_output),
+                            "data_plane_workspace_path": str(work_root / "data-plane-workspace"),
                         }
                     ),
                 ],
@@ -333,10 +398,95 @@ def _generate_command_models() -> dict:
         leaf.examples = ws.generate_examples_by_swagger(leaf, command)
 
     ws.generate_to_aaz()
-    return resources
+    return [(Config.DEFAULT_PLANE, resource_id, version) for resource_id, version in resources.items()]
 
 
-def _generate_cli_code(resources: dict) -> None:
+def _generate_data_plane_command_models(workspace_path: str) -> list:
+    """Build the agent data-plane commands in a second workspace exported to the same aaz tree.
+
+    The workspace is disk-backed because aaz-dev only exports a data-plane
+    client configuration from one.
+    """
+    # pylint: disable=import-error,import-outside-toplevel
+    from command.controller.specs_manager import AAZSpecsManager
+    from command.controller.workspace_manager import WorkspaceManager
+    from command.model.configuration import CMDCommandExample, CMDHelp
+    from swagger.controller.specs_manager import SwaggerSpecsManager
+    from swagger.utils.source import SourceTypeEnum
+    from utils.plane import PlaneEnum
+
+    plane = PlaneEnum.Data(RESOURCE_PROVIDER)
+    swagger_specs = SwaggerSpecsManager()
+    rp = swagger_specs.get_module_manager(plane, SWAGGER_MODULE).get_openapi_resource_provider(RESOURCE_PROVIDER)
+    resource_ids = sorted(rp.get_resource_map())
+    expected = sorted({resource_id for resource_id, _ in DATA_PLANE_COMMANDS})
+    if resource_ids != expected:
+        raise SystemExit(f"Unexpected data-plane resources: {resource_ids}, expected {expected}")
+
+    ws = WorkspaceManager.new(
+        name=f"{EXTENSION_NAME}-data-plane",
+        plane=plane,
+        folder=workspace_path,
+        mod_names=SWAGGER_MODULE,
+        resource_provider=RESOURCE_PROVIDER,
+        swagger_manager=swagger_specs,
+        aaz_manager=AAZSpecsManager(),
+        source=SourceTypeEnum.OpenAPI,
+    )
+    ws.create_cfg_editor(
+        auth={"aad": {"scopes": [DATA_PLANE_SCOPE]}},
+        arm_resource={
+            "module": SWAGGER_MODULE,
+            "version": API_VERSION,
+            "id": DATA_PLANE_ARM_RESOURCE,
+            "subresource": DATA_PLANE_ENDPOINT_PROPERTY,
+        },
+    )
+    ws.add_new_resources_by_swagger(
+        mod_names=SWAGGER_MODULE,
+        version=DATA_PLANE_VERSION,
+        resources=[{"id": resource_id, "options": {"update_by": "None"}} for resource_id in resource_ids],
+    )
+
+    renamed = set()
+    for leaf in list(ws.iter_command_tree_leaves()):
+        command = ws.load_cfg_editor_by_command(leaf).find_command(*leaf.names)
+        key = (leaf.resources[0].id, command.operations[0].http.request.method.lower())
+        if key not in DATA_PLANE_COMMANDS:
+            raise SystemExit(f"Unmapped data-plane operation: {key}")
+        ws.rename_command_tree_leaf(*leaf.names, new_leaf_names=list(DATA_PLANE_COMMANDS[key]))
+        renamed.add(key)
+    if renamed != set(DATA_PLANE_COMMANDS):
+        raise SystemExit(f"Data-plane operations not found: {sorted(set(DATA_PLANE_COMMANDS) - renamed)}")
+    # Renaming the leaves leaves the Swagger-derived 'app api v1 ...' groups empty.
+    if not ws.delete_command_tree_node("app"):
+        raise SystemExit("Data-plane command group not found: app")
+
+    for names, flatten in DATA_PLANE_FLATTEN_ARGS.items():
+        cfg_editor = ws.load_cfg_editor_by_command(ws.find_command_tree_leaf(*names))
+        for arg_var, sub_args_options in flatten.items():
+            cfg_editor.flatten_arg(*names, arg_var=arg_var, sub_args_options=sub_args_options)
+
+    # The data-plane workspace also writes the shared 'sre' group; keep its help.
+    ws.update_command_tree_node_help("sre", help=WORKSPACE_GROUP_HELP[("sre",)])
+    for names, help_data in DATA_PLANE_GROUP_HELP.items():
+        ws.update_command_tree_node_help(*names, help=help_data)
+    unexpected = [
+        node.names for node in ws.iter_command_tree_nodes()
+        if node is not ws.ws.command_tree and node.names[0] != "sre"
+    ]
+    if unexpected:
+        raise SystemExit(f"Data-plane command groups outside 'sre': {unexpected}")
+    for leaf in ws.iter_command_tree_leaves():
+        names = tuple(leaf.names)
+        leaf.help = CMDHelp({"short": DATA_PLANE_COMMAND_HELP[names]})
+        leaf.examples = [CMDCommandExample(example) for example in DATA_PLANE_EXAMPLES[names]]
+
+    ws.generate_to_aaz()
+    return [(plane, resource_id, DATA_PLANE_VERSION) for resource_id in resource_ids]
+
+
+def _generate_cli_code(resources: list) -> None:
     """Mirror `aaz-dev cli generate-by-swagger-tag` for the selected resources."""
     # pylint: disable=import-error,import-outside-toplevel,protected-access
     from cli.api._cmds import _build_profile
@@ -359,8 +509,8 @@ def _generate_cli_code(resources: dict) -> None:
 
     aaz_specs = AAZSpecsManager()
     commands_map = {}
-    for resource_id, version in resources.items():
-        cfg_reader = aaz_specs.load_resource_cfg_reader(Config.DEFAULT_PLANE, resource_id, version)
+    for plane, resource_id, version in resources:
+        cfg_reader = aaz_specs.load_resource_cfg_reader(plane, resource_id, version)
         if not cfg_reader:
             raise SystemExit(f"Command models missing in aaz for {resource_id} {version}")
         for cmd_names, command in cfg_reader.iter_commands():
@@ -378,6 +528,7 @@ def _generate_cli_code(resources: dict) -> None:
 def run_in_aaz_dev(paths: dict) -> None:
     _configure_aaz_dev(paths)
     resources = _generate_command_models()
+    resources += _generate_data_plane_command_models(paths["data_plane_workspace_path"])
     _generate_cli_code(resources)
 
 

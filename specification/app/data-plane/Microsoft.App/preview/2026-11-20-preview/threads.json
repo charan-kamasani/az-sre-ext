@@ -1,0 +1,182 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "SRE Agent data plane (provisional)",
+    "version": "2026-11-20-preview",
+    "description": "PROVISIONAL. No published contract exists. Routes come from https://learn.microsoft.com/azure/sre-agent/api-reference; the create body and list envelope match microsoft/mcp tools/Azure.Mcp.Tools.SreAgent. top/skip/filter follow the proposed az sre thread list options and are not service-verified. Thread is open-ended so unknown fields are preserved. The version is a local snapshot label, not a wire api-version."
+  },
+  "host": "agent.azuresre.ai",
+  "schemes": [
+    "https"
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/api/v1/threads": {
+      "get": {
+        "operationId": "Threads_List",
+        "description": "List conversation threads.",
+        "responses": {
+          "200": {
+            "description": "Fixture response.",
+            "schema": {
+              "$ref": "#/definitions/ThreadList"
+            }
+          },
+          "default": {
+            "$ref": "#/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "top",
+            "in": "query",
+            "type": "integer",
+            "default": 25,
+            "description": "Maximum number of threads to return."
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "type": "integer",
+            "description": "Number of threads to skip."
+          },
+          {
+            "name": "filter",
+            "in": "query",
+            "type": "string",
+            "description": "OData filter expression."
+          }
+        ]
+      },
+      "post": {
+        "operationId": "Threads_Create",
+        "description": "Start a conversation.",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CreateThread"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Thread created.",
+            "schema": {
+              "$ref": "#/definitions/Thread"
+            }
+          },
+          "default": {
+            "$ref": "#/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/threads/{threadId}": {
+      "parameters": [
+        {
+          "name": "threadId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "description": "Thread identifier."
+        }
+      ],
+      "get": {
+        "operationId": "Threads_Get",
+        "description": "Get a conversation thread.",
+        "responses": {
+          "200": {
+            "description": "Fixture response.",
+            "schema": {
+              "$ref": "#/definitions/Thread"
+            }
+          },
+          "default": {
+            "$ref": "#/responses/Error"
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "CreateThread": {
+      "type": "object",
+      "required": [
+        "startMessage"
+      ],
+      "properties": {
+        "startMessage": {
+          "type": "object",
+          "required": [
+            "text"
+          ],
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "Opening message."
+            },
+            "agent": {
+              "type": "string",
+              "description": "Name of the subagent that handles the thread."
+            }
+          }
+        }
+      }
+    },
+    "Thread": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      }
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "ThreadList": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Thread"
+          }
+        },
+        "nextLink": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "responses": {
+    "Error": {
+      "description": "Fixture error envelope.",
+      "schema": {
+        "$ref": "#/definitions/ErrorResponse"
+      }
+    }
+  }
+}

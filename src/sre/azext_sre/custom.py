@@ -264,6 +264,34 @@ def _validate_agent_url(agent_url):
     return f"https://{parsed.hostname}" + (f":{port}" if port is not None else "")
 
 
+def _guard_generated_data_plane_client():
+    """Make generated data-plane commands send their token only to a *.azuresre.ai agent.
+
+    The generated client uses whatever agentEndpoint the ARM GET returns.
+    aaz-dev has no hook for this and register_client refuses a replacement
+    class, so wrap the generated _build_base_url.
+    """
+    from .aaz.latest._clients import AAZMicrosoftAppDataPlaneClient as client
+    build_base_url = client._build_base_url.__func__  # pylint: disable=protected-access
+    if getattr(build_base_url, "_sre_guarded", False):
+        return
+
+    def _build_base_url(cls, ctx, **kwargs):
+        endpoint = build_base_url(cls, ctx, **kwargs)
+        if not _is_azuresre_https_url(endpoint):
+            raise CLIError(
+                f"Refusing to call agent endpoint {endpoint!r}: "
+                "it is not an https endpoint on *.azuresre.ai."
+            )
+        return endpoint
+
+    _build_base_url._sre_guarded = True
+    client._build_base_url = classmethod(_build_base_url)  # pylint: disable=protected-access
+
+
+_guard_generated_data_plane_client()
+
+
 def _read_target(args):
     """Return (agent_name, resource_group, agent_url) and require one addressing mode."""
     agent_name = _arg_value(args.agent_name)

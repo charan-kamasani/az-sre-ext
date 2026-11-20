@@ -10,7 +10,7 @@ Regenerate with: python3 scripts/generate_cli_reference.py
 > argument metadata. Do not edit it manually. Regenerate it with
 > `python3 scripts/generate_cli_reference.py`.
 
-Public surface: **24 groups** and **84 commands**.
+Public surface: **25 groups** and **87 commands**.
 
 ## Important caveats
 
@@ -60,6 +60,7 @@ In PowerShell, pass JSON with --value @file.json instead of inline.
 | `response-plan` | Route incidents to a subagent (portal: Triggers & response plans). |
 | `skill` | Manage custom skills, which are specialized capabilities the agent can use. |
 | `subagent` | Manage named sub-agents the meta-agent can hand off work to. |
+| `thread` | Manage conversation threads with an SRE Agent. |
 | `tool` | Manage custom tools the agent can call. |
 | `usage` | Read an SRE Agent's usage and billing stats. |
 
@@ -2029,6 +2030,92 @@ Show a sub-agent.
 
   ```bash
   az sre subagent show -g myrg --agent-name myagent --name app-investigator
+  ```
+
+## `az sre thread`
+
+Manage conversation threads with an SRE Agent.
+
+| Verb | Exact syntax |
+| --- | --- |
+| `create` | `az sre thread create --agent-name <value> --resource-group <value> [--subagent <value>] --message <value>` |
+| `list` | `az sre thread list [--next-token <value>] [--max-items <value>] --agent-name <value> --resource-group <value> [--filter <value>] [--skip <integer>] [--top <integer>]` |
+| `show` | `az sre thread show --agent-name <value> --resource-group <value> --thread-id <value>` |
+
+### `az sre thread create`
+
+Start a conversation thread with an SRE Agent.
+
+**Syntax**
+
+`az sre thread create --agent-name <value> --resource-group <value> [--subagent <value>] --message <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | The name of the Agent |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--subagent` | String | No |  |  | Name of the subagent that handles the thread. |
+| `--message` | String | Yes |  |  | Opening message. |
+
+**Examples**
+
+- Ask the agent a question
+
+  ```bash
+  az sre thread create -g myrg --agent-name myagent --message "Why is checkout slow?"
+  ```
+- Start a thread handled by a subagent
+
+  ```bash
+  az sre thread create -g myrg --agent-name myagent --message "Triage alert 42" --subagent triage
+  ```
+
+### `az sre thread list`
+
+List conversation threads.
+
+**Syntax**
+
+`az sre thread list [--next-token <value>] [--max-items <value>] --agent-name <value> --resource-group <value> [--filter <value>] [--skip <integer>] [--top <integer>]`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--next-token` | String | No |  |  | Token to specify where to start paginating. This is the token value from a previously truncated response. |
+| `--max-items` | String | No |  |  | Total number of items to return in the command's output. If the total number of items available is more than the value specified, a token is provided in the command's output. To resume pagination, provide the token value in `--next-token` argument of a subsequent command. |
+| `--agent-name` | String | Yes |  |  | The name of the Agent |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--filter` | String | No |  |  | OData filter expression. |
+| `--skip` | Integer | No |  |  | Number of threads to skip. |
+| `--top` | Integer | No | 25 |  | Maximum number of threads to return. |
+
+**Examples**
+
+- List the 10 most recent threads
+
+  ```bash
+  az sre thread list -g myrg --agent-name myagent --top 10
+  ```
+
+### `az sre thread show`
+
+Show a conversation thread.
+
+**Syntax**
+
+`az sre thread show --agent-name <value> --resource-group <value> --thread-id <value>`
+
+| Option / aliases | Type | Required | Default | Allowed values | Description |
+| --- | --- | --- | --- | --- | --- |
+| `--agent-name` | String | Yes |  |  | The name of the Agent |
+| `--resource-group`, `-g` | String | Yes |  |  | Name of resource group. You can configure the default group using `az configure --defaults group=<name>` |
+| `--thread-id` | String | Yes |  |  | Thread identifier. |
+
+**Examples**
+
+- Show a thread
+
+  ```bash
+  az sre thread show -g myrg --agent-name myagent --thread-id <thread-id>
   ```
 
 ## `az sre tool`
